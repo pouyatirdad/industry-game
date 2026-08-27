@@ -89,11 +89,14 @@
         <div class="prices__head">
           <label class="home">Market <select id="prices-country"></select></label>
           <div class="speeds" id="prices-view"></div>
+          <!-- Thirty-four flags is thirty-four clicks. Each pair reads as a
+               switch: the side that is already set lights up, so pressing it
+               again is visibly a no-op rather than a button that did nothing. -->
           <div class="policy-all" aria-label="Bulk exchange policy">
-            <button type="button" id="all-sell-on" title="Offer every commodity on the exchange">All &#8599;</button>
-            <button type="button" id="all-sell-off" title="Offer nothing on the exchange">No &#8599;</button>
-            <button type="button" id="all-buy-on" title="Bid for every commodity on the exchange">All &#8601;</button>
-            <button type="button" id="all-buy-off" title="Bid for nothing on the exchange">No &#8601;</button>
+            <button type="button" id="all-sell-on" title="Offer every commodity on the exchange (&#8599; on for all)">Sell all</button>
+            <button type="button" id="all-sell-off" title="Offer nothing on the exchange (&#8599; off for all)">Sell none</button>
+            <button type="button" id="all-buy-on" title="Bid for every commodity on the exchange (&#8601; on for all)">Buy all</button>
+            <button type="button" id="all-buy-off" title="Bid for nothing on the exchange (&#8601; off for all)">Buy none</button>
           </div>
         </div>
         <table class="market prices">

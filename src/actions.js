@@ -3,7 +3,7 @@ import { BUILDINGS } from './data/buildings.js';
 import { COMMODITIES, COMMODITY_IDS } from './data/commodities.js';
 import { COUNTRIES } from './data/countries.js';
 import { TECHS, canResearch, techChain } from './data/technology.js';
-import { buildingOnTile, pushAlert, isOwnSoil, isPlayer, ownerById, ownerName,
+import { buildingOnTile, exchangeOf, pushAlert, isOwnSoil, isPlayer, ownerById, ownerName,
   knowsTech, learnTech, contractById, contractLeft, declineTech } from './core/state.js';
 import { licenceCost, clampShare } from './systems/research.js';
 import { canSignContract, signContract, quotePrice, describe as describeContract } from './systems/contracts.js';
@@ -341,22 +341,40 @@ export function toggleImport(state, commodityId) {
   return { ok: true, on: state.imports[commodityId] };
 }
 
+// Thirty-four flags is thirty-four clicks, so the whole side moves at once.
+// Both of these SAY what they did: a policy you set on a paused game changes
+// nothing you can see happening, and a button that looks inert is a button you
+// assume is broken.
 export function setAllExports(state, on) {
   for (const id of COMMODITY_IDS) state.exports[id] = Boolean(on);
-  if (!on) withdrawPolicyListings(state, null, 'sell');
-  return { ok: true, on: Boolean(on) };
+  const pulled = on ? 0 : withdrawPolicyListings(state, null, 'sell');
+  pushAlert(state, on
+    ? `Offering all ${COMMODITY_IDS.length} commodities on the exchange.`
+    : `Offering nothing on the exchange${pulled ? ` — ${pulled} ask${pulled > 1 ? 's' : ''} withdrawn` : ''}. Exports are yours to place by hand.`, 'info');
+  return { ok: true, on: Boolean(on), pulled };
 }
 
 export function setAllImports(state, on) {
   for (const id of COMMODITY_IDS) state.imports[id] = Boolean(on);
-  if (!on) withdrawPolicyListings(state, null, 'buy');
-  return { ok: true, on: Boolean(on) };
+  const pulled = on ? 0 : withdrawPolicyListings(state, null, 'buy');
+  pushAlert(state, on
+    ? `Bidding for all ${COMMODITY_IDS.length} commodities on the exchange.`
+    : `Bidding for nothing on the exchange${pulled ? ` — ${pulled} bid${pulled > 1 ? 's' : ''} withdrawn` : ''}. Imports are yours to arrange by hand.`, 'info');
+  return { ok: true, on: Boolean(on), pulled };
 }
 
+// A flag turned off pulls the terms it was standing behind, or your government
+// would keep a promise it is no longer willing to make. `exchangeOf` rather than
+// `state.exchange` because a save written before the exchange existed has no
+// book at all, and a throw here would leave the panel unrepainted — which looks
+// exactly like a button that does nothing.
 function withdrawPolicyListings(state, commodityId, side) {
-  state.exchange.listings = state.exchange.listings.filter((listing) => listing.from !== state.home
+  const book = exchangeOf(state);
+  const before = book.listings.length;
+  book.listings = book.listings.filter((listing) => listing.from !== state.home
     || listing.side !== side
     || (commodityId && listing.commodity !== commodityId));
+  return before - book.listings.length;
 }
 
 export function setSpeed(state, speed) {

@@ -221,6 +221,9 @@
 }
 .policy-all { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 3px; }
 .policy-all button { padding: 2px 6px; font-size: 10px; border-radius: 4px; }
+/* The side that already stands this way. Pressing it again does nothing, and
+   showing that is the difference between "already set" and "broken". */
+.policy-all button[data-active="true"] { background: var(--panel-2); color: var(--ink); border-color: var(--accent); }
 
 .prices th, .prices td { padding: 0 3px; }
 .prices td { text-align: right; }

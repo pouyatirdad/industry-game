@@ -94,6 +94,15 @@ export function updateResources(refs, ctx) {
   const make = factoryFlow(state, state.home, 'out');
   const usage = mine ? burn : factoryFlow(state, where, 'in');
 
+  // Each bulk button lights up when the whole side already stands that way, so
+  // "Sell all" on a book that is already all-sell reads as a switch that is
+  // ON rather than as a button that did nothing when you pressed it.
+  const every = (flags, want) => COMMODITY_IDS.every((id) => Boolean(flags[id]) === want);
+  setAttr(refs.allSellOn, 'data-active', every(state.exports, true) ? 'true' : null);
+  setAttr(refs.allSellOff, 'data-active', every(state.exports, false) ? 'true' : null);
+  setAttr(refs.allBuyOn, 'data-active', every(state.imports, true) ? 'true' : null);
+  setAttr(refs.allBuyOff, 'data-active', every(state.imports, false) ? 'true' : null);
+
   let idle = 0;
   for (const row of refs.pricesBody.children) {
     const id = row.dataset.commodity;

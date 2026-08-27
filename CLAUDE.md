@@ -491,6 +491,11 @@ Five things earn their own view rather than sharing one:
   load-bearing and says whose figures each half is. The bracket in the `In` column is the feedstock
   share, which is how you see the industrial import channel working at all. The treasury only ever
   shows money and the exchange only ever shows listings, so this is the only place that shows *goods*.
+  Above the table, **Sell all / Sell none / Buy all / Buy none** move all thirty-four flags at once.
+  Each pair is a switch and the side that already stands lights up (`data-active`), because a bulk
+  button whose work is invisible — you pressed "Sell all" on a book that was already all-sell — is
+  indistinguishable from a broken one. They also `pushAlert`, since a policy set on a paused game
+  changes nothing you can watch happening.
 - **Ranks** scores all countries against each other. The scoring rule (`scoreNations` in
   `src/ui/ranks.js`) is the one piece of UI with a rule rather than a layout in it, so it is covered
   by the suite — which means it must stay free of the DOM, like a system. Its measures are
@@ -638,7 +643,10 @@ everything else that floats.
 
 **`state.exchange` rides along in the save** like the contracts do — plain arrays and numbers, no
 `Map`s. `exchangeOf(state)` tolerates a state built before it existed rather than making every
-caller check, the same way `noteLedger` does.
+caller check, the same way `noteLedger` does. **Reach for it in `actions.js` too, never
+`state.exchange.listings`.** The UI renders *after* the action returns, so anything that throws in
+there leaves the panel painted with the old state — the mutation happened, the screen did not move,
+and what the player sees is a button that does nothing.
 
 **Save compatibility.** Anything put on `state` must be JSON-round-trippable — no `Map`, `Set`,
 `Date`, or class instances, or load will silently produce a broken game. Bump `SAVE_VERSION` in

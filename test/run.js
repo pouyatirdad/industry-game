@@ -1704,6 +1704,31 @@ test('bulk export and import policy clears the matching side of your book', () =
     'all disabled imports withdraw your bids');
 });
 
+// A save written before the exchange existed has no book at all. Reaching into
+// `state.exchange.listings` threw there, and because the click handler renders
+// AFTER the action, the throw left the panel unrepainted — which is exactly what
+// a button that does nothing looks like.
+test('the bulk policy buttons work on a state with no exchange at all', () => {
+  const state = fixture();
+  delete state.exchange;
+
+  equal(setAllExports(state, false).ok, true, 'turning every export off still succeeds');
+  equal(COMMODITY_IDS.every((id) => state.exports[id] === false), true, 'and every flag is off');
+
+  equal(setAllImports(state, true).ok, true, 'as does turning every import on');
+  equal(COMMODITY_IDS.every((id) => state.imports[id] === true), true, 'and every flag is on');
+});
+
+test('a bulk policy change says what it did', () => {
+  const state = fixture();
+  post(state, { from: state.home, side: 'sell', commodity: 'steel', qty: 10, price: 100 });
+  const before = state.alerts.length;
+
+  const result = setAllExports(state, false);
+  equal(result.pulled, 1, 'the ask it was standing behind comes off the book');
+  assert(state.alerts.length > before, 'and the change announces itself');
+});
+
 // ---- the clearing fund and lending ----------------------------------------
 
 test('the exchange takes a cut of both sides and it goes into the fund', () => {
