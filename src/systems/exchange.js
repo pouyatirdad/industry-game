@@ -224,6 +224,45 @@ function bidPrice(state, id, commodityId, forIndustry) {
   return round2(Math.min(ceiling, local * (1 + premium)));
 }
 
+// The terms this nation's own government would have posted, for one commodity
+// on one side — the same two figures `topAsks` and `topBids` work out for
+// everybody else, handed to YOU as a draft. It decides nothing: the form is
+// filled in and you still have to post it.
+//
+// It is here rather than in the panel because it is the governments' own
+// arithmetic, and a second copy of it in the UI would drift from this one the
+// first time either was tuned.
+export function suggestListing(state, countryId, side, commodityId) {
+  const flows = industryFlows(state);
+  const depots = depotsByOwner(state);
+  const burns = flows.burns.get(countryId)?.[commodityId] ?? 0;
+
+  if (side === 'sell') {
+    const stock = stockIn(depots.get(countryId) ?? [], commodityId);
+    const keep = unmet(state, countryId, commodityId) + burns * CONFIG.trade.inputBuffer;
+    const free = stock - keep - promisedBy(state, countryId, commodityId) * CONFIG.trade.inputBuffer;
+    return {
+      // Offered as a rate, like a government's own ask: this empties the shelf
+      // over the term rather than promising away what has not been dug yet.
+      qty: rate(free / 8),
+      price: askPrice(state, countryId, commodityId),
+    };
+  }
+
+  const deficit = burns - (flows.makes.get(countryId)?.[commodityId] ?? 0);
+  const want = Math.max(0, deficit) + unmet(state, countryId, commodityId) * CONFIG.trade.maxFill;
+  return {
+    qty: rate(want - coveredBy(state, countryId, commodityId)),
+    price: bidPrice(state, countryId, commodityId, deficit > 0),
+  };
+}
+
+// A suggestion is a form to be posted, so it is never zero: a blank quantity is
+// the one thing that stops the form being usable at all.
+function rate(value) {
+  return Math.max(0.1, Math.round(value * 10) / 10);
+}
+
 export function post(state, listing) {
   const book = exchangeOf(state);
   const row = {

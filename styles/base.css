@@ -28,15 +28,13 @@ body {
   font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
 }
 
-/* Scrollbars are hairlines. There are a lot of scrollable boxes on this screen
-   and a default-weight bar in each one costs more width than the numbers it
-   sits beside. */
-* { scrollbar-width: thin; scrollbar-color: #ffffff2e transparent; }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #ffffff2e; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #ffffff4d; }
-::-webkit-scrollbar-corner { background: transparent; }
+/* Scrollbars are INVISIBLE everywhere — the map, the panes, the build menu.
+   There are a lot of scrollable boxes on this screen and a bar down the side of
+   each cost more width than the numbers it sat beside. Everything still
+   SCROLLS: the wheel, a drag, a trackpad and the keyboard all work, and every
+   box that can overflow says `overflow: auto` rather than `hidden`. */
+* { scrollbar-width: none; -ms-overflow-style: none; }
+::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
 h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin-bottom: 6px; }
@@ -88,7 +86,7 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   backdrop-filter: blur(8px);
 }
 .panel--left { left: 10px; }
-.panel--tabs { right: 10px; width: 520px; }
+.panel--tabs { right: 10px; width: 560px; }
 .layout[data-left="false"] .panel--left { display: none; }
 .layout[data-left="true"] .rail { display: none; }
 
@@ -102,7 +100,7 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   background: transparent; border: 0; color: var(--muted); border-radius: 6px;
 }
 .panel__close:hover { background: var(--panel-2); color: var(--ink); border: 0; }
-.panel__body { flex: 1; min-height: 0; overflow-y: hidden; padding: 12px 14px 14px; }
+.panel__body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 14px; }
 
 /* The handle that brings the left panel back. */
 .rail {
@@ -219,14 +217,14 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* On a narrow window the panels stay modals; they just take the width they need
    and the map runs on underneath. */
 @media (max-width: 1100px) {
-  .panel--tabs { width: min(520px, calc(100vw - 20px)); }
+  .panel--tabs { width: min(560px, calc(100vw - 20px)); }
   .alerts { width: min(560px, calc(100vw - 40px)); }
 }
 
 /* ---- world-map additions ---- */
 .home { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
 /* One line, never two: this note sits between the table and its heading. */
-#market-note { margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#prices-note { margin-top: 5px; }
 .home select {
   background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 5px 6px; font: inherit; font-size: 12px;

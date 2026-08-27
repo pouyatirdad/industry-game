@@ -85,12 +85,12 @@
    deliberately not a modal that blocks: you can ignore it, and the same offers
    are in their tabs either way. */
 .inbox {
-  position: absolute; z-index: 6; right: 542px; top: 12px;
+  position: absolute; z-index: 6; right: 582px; top: 12px;
   display: flex; flex-direction: column; gap: 6px;
   width: 262px; max-height: 62vh; overflow-y: auto;
   pointer-events: none;
 }
-.layout:not([data-left="true"]) .inbox { right: 542px; }
+.layout:not([data-left="true"]) .inbox { right: 582px; }
 .panel--tabs[data-open="false"] ~ .inbox { right: 12px; }
 .layout[data-paused="true"] .post__ttl { animation-play-state: paused; }
 

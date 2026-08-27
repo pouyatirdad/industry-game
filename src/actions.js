@@ -331,12 +331,32 @@ export function cancelContract(state, id) {
 
 export function toggleExport(state, commodityId) {
   state.exports[commodityId] = !state.exports[commodityId];
+  if (!state.exports[commodityId]) withdrawPolicyListings(state, commodityId, 'sell');
   return { ok: true, on: state.exports[commodityId] };
 }
 
 export function toggleImport(state, commodityId) {
   state.imports[commodityId] = !state.imports[commodityId];
+  if (!state.imports[commodityId]) withdrawPolicyListings(state, commodityId, 'buy');
   return { ok: true, on: state.imports[commodityId] };
+}
+
+export function setAllExports(state, on) {
+  for (const id of COMMODITY_IDS) state.exports[id] = Boolean(on);
+  if (!on) withdrawPolicyListings(state, null, 'sell');
+  return { ok: true, on: Boolean(on) };
+}
+
+export function setAllImports(state, on) {
+  for (const id of COMMODITY_IDS) state.imports[id] = Boolean(on);
+  if (!on) withdrawPolicyListings(state, null, 'buy');
+  return { ok: true, on: Boolean(on) };
+}
+
+function withdrawPolicyListings(state, commodityId, side) {
+  state.exchange.listings = state.exchange.listings.filter((listing) => listing.from !== state.home
+    || listing.side !== side
+    || (commodityId && listing.commodity !== commodityId));
 }
 
 export function setSpeed(state, speed) {

@@ -4,9 +4,10 @@ import { createLoop } from './core/loop.js';
 import { CONFIG } from './core/config.js';
 import { runTick } from './systems/index.js';
 import { build, canBuild, demolish, toggleExport, toggleImport,
-  setSpeed, togglePause, setResearch, setResearchShare, buyTech, acceptTechOffer, declineTechOffer,
+  setAllExports, setAllImports, setSpeed, togglePause, setResearch, setResearchShare, buyTech, acceptTechOffer, declineTechOffer,
   proposeContract, acceptContractOffer, declineContractOffer, cancelContract,
   postListing, cancelListing, take, takeLoan, repayLoan } from './actions.js';
+import { suggestListing } from './systems/exchange.js';
 import { sellersOf } from './systems/research.js';
 import { COUNTRIES } from './data/countries.js';
 import { createRenderer } from './ui/render.js';
@@ -59,7 +60,7 @@ const ctx = {
       ?? ctx.state.tiles.find((t) => t.countryId === countryId && t.buildingId == null);
     if (tile) ctx.ui.selectedTileId = tile.id;
     ctx.ui.marketCountry = countryId;
-    renderer.refs.marketCountry.value = countryId;
+    renderer.refs.pricesCountry.value = countryId;
     render();
   },
 
@@ -143,8 +144,22 @@ const ctx = {
 
   onMarketCountry(countryId) { ctx.ui.marketCountry = countryId; render(); },
 
+  // The terms your own government would have posted for you, filled into the
+  // form: what you actually have spare (or are actually short of) and the price
+  // it would have asked. It is a draft like any other — nothing is posted until
+  // you press Post.
+  onSuggestListing() {
+    const { side, commodity } = ctx.ui.listing;
+    Object.assign(ctx.ui.listing, suggestListing(ctx.state, ctx.state.home, side, commodity));
+    render();
+  },
+
+  onBookFilter(filter) { ctx.ui.bookFilter = filter; render(); },
+
   onToggleExport(commodityId) { toggleExport(ctx.state, commodityId); render(); },
   onToggleImport(commodityId) { toggleImport(ctx.state, commodityId); render(); },
+  onSetAllExports(on) { setAllExports(ctx.state, on); render(); },
+  onSetAllImports(on) { setAllImports(ctx.state, on); render(); },
   onSpeed(speed) { setSpeed(ctx.state, speed); render(); },
   onTogglePause() { togglePause(ctx.state); render(); },
 
@@ -185,7 +200,7 @@ function replaceState(next, message) {
   ctx.ui.rankSort = rankSort;
   renderer.remountMap();
   renderer.refs.homeSelect.value = ctx.state.home;
-  renderer.refs.marketCountry.value = ctx.ui.marketCountry;
+  renderer.refs.pricesCountry.value = ctx.ui.marketCountry;
   pushAlert(ctx.state, message, 'info');
   render();
 }

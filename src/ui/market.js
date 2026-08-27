@@ -6,6 +6,11 @@ import { exchangeOf, isPlayer, ownerName } from '../core/state.js';
 import { borrowLimit } from '../systems/exchange.js';
 import { money, moneyShort, num, price, priceShort, qtyShort, setAttr, setText, html } from './format.js';
 
+const FILTERS = [
+  { id: 'all', label: 'Everybody', title: 'Every ask and bid on earth.' },
+  { id: 'mine', label: 'Yours', title: 'Only the terms you have posted yourself — the ones you can withdraw.' },
+];
+
 // THE GLOBAL EXCHANGE, on screen.
 //
 // This is the one pane that shows what the rest of the world is trying to do
@@ -32,11 +37,21 @@ export function mountMarket(refs, ctx) {
       </div>
       <p class="draft__quote muted"></p>
       <div class="draft__act">
-        <button type="button" class="post__mid">Use mid price</button>
+        <button type="button" class="post__auto">Fill from my books</button>
         <button type="button" class="primary post__go">Post</button>
       </div>
     </div>`);
   refs.listingDraft.replaceChildren(wrap);
+
+  // Your own terms are a handful of listings sorted by price among everybody
+  // else's — findable only by reading the whole book. This is how you pull them
+  // out again to withdraw one.
+  refs.bookFilter.replaceChildren(...FILTERS.map((filter) => {
+    const btn = html(`<button type="button" class="speed" data-filter="${filter.id}">${filter.label}</button>`);
+    btn.title = filter.title;
+    btn.addEventListener('click', () => ctx.onBookFilter(filter.id));
+    return btn;
+  }));
 
   wrap.querySelector('.post__commodity')
     .replaceChildren(...COMMODITY_IDS.map((id) => option(id, COMMODITIES[id].name)));
@@ -52,12 +67,12 @@ export function mountMarket(refs, ctx) {
   for (const el of wrap.querySelectorAll('select, input')) {
     el.addEventListener('change', () => ctx.onListingDraft(read()));
   }
-  // The commodity you picked has a price at home; this fills it in, because a
-  // blank price field is the one thing that stops the form being usable at all.
-  wrap.querySelector('.post__mid').addEventListener('click', () => {
-    const { state, ui } = ctx;
-    ctx.onListingDraft({ price: state.markets[state.home][ui.listing.commodity].price });
-  });
+  // What your own government would have posted for this commodity: the quantity
+  // you actually have spare (or are actually short of) and the price it would
+  // have asked, worked out by the same code every other nation posts through.
+  // A blank price and a guessed quantity were the two things that stopped the
+  // form being usable at all.
+  wrap.querySelector('.post__auto').addEventListener('click', () => ctx.onSuggestListing());
   wrap.querySelector('.post__go').addEventListener('click', () => ctx.onPostListing());
 }
 
@@ -115,6 +130,9 @@ function updateDraft(refs, ctx) {
   setText(wrap.querySelector('.draft__quote'),
     `at home ${price(local)} · base ${price(base)} · ${draft.side === 'sell' ? '+' : '-'}${money(value)}/tick if it fills`);
   setText(wrap.querySelector('.post__go'), draft.side === 'sell' ? 'Post ask' : 'Post bid');
+  setAttr(wrap.querySelector('.post__auto'), 'title', draft.side === 'sell'
+    ? 'Fill the form with what you actually have spare, at the price your own government would ask.'
+    : 'Fill the form with what you are actually short of, at the price your own government would bid.');
 }
 
 function setValue(el, value) {
@@ -124,19 +142,30 @@ function setValue(el, value) {
 // The book itself. Sorted so the best terms for YOU are at the top of each
 // side: the cheapest thing anybody will sell, and the most anybody will pay.
 function updateBook(refs, ctx) {
-  const { state } = ctx;
+  const { state, ui } = ctx;
   const book = exchangeOf(state);
-  const rows = book.listings.slice().sort((a, b) => {
-    if (a.side !== b.side) return a.side === 'sell' ? -1 : 1;
-    return a.side === 'sell' ? a.price - b.price : b.price - a.price;
-  }).slice(0, 40);
+  const onlyMine = ui.bookFilter === 'mine';
+  const rows = book.listings
+    .filter((l) => !onlyMine || l.from === state.home)
+    .sort((a, b) => {
+      if (a.side !== b.side) return a.side === 'sell' ? -1 : 1;
+      return a.side === 'sell' ? a.price - b.price : b.price - a.price;
+    })
+    .slice(0, 40);
 
-  const sig = rows.map((l) => `${l.id}${l.qty}${l.price}`).join('|') + `#${state.countries[state.home].cash > 0}`;
+  for (const btn of refs.bookFilter.children) {
+    setAttr(btn, 'data-active', btn.dataset.filter === ui.bookFilter ? 'true' : null);
+  }
+
+  const sig = rows.map((l) => `${l.id}${l.qty}${l.price}`).join('|')
+    + `#${state.countries[state.home].cash > 0}#${ui.bookFilter}`;
   if (refs.listingBook.dataset.sig === sig) return;
   refs.listingBook.dataset.sig = sig;
 
   if (!rows.length) {
-    refs.listingBook.replaceChildren(html('<p class="muted hint--tight">The book is empty. Governments post what they cannot place at home and bid for what they cannot dig up — give it a few ticks, or post the first terms yourself.</p>'));
+    refs.listingBook.replaceChildren(html(onlyMine
+      ? '<p class="muted hint--tight">You have nothing on the book. Post an ask or a bid above and it will appear here, where you can withdraw it again.</p>'
+      : '<p class="muted hint--tight">The book is empty. Governments post what they cannot place at home and bid for what they cannot dig up — give it a few ticks, or post the first terms yourself.</p>'));
     return;
   }
 

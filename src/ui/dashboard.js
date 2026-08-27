@@ -4,11 +4,9 @@ import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { distanceBetween, MAX_DISTANCE } from '../data/geography.js';
 import { TECHS } from '../data/technology.js';
-import { projectedWages, warehouseStock, appetite, ownerName, ownFlows,
-  knowsTech } from '../core/state.js';
-import { supplyRatio } from '../systems/domestic.js';
+import { projectedWages, ownerName, ownFlows, knowsTech } from '../core/state.js';
 import { updateContracts } from './contracts.js';
-import { money, moneyShort, num, price, priceShort, qtyShort, pct, setAttr, setText, setToggle, html } from './format.js';
+import { money, moneyShort, num, qtyShort, pct, setAttr, setText, setToggle, html } from './format.js';
 
 export function mountDashboard(refs, ctx) {
   refs.speeds.replaceChildren(...CONFIG.speeds.map((speed) => {
@@ -46,40 +44,13 @@ export function mountDashboard(refs, ctx) {
     return row;
   }));
 
-  const countryOptions = () => COUNTRY_IDS.map((id) => {
+  refs.homeSelect.replaceChildren(...COUNTRY_IDS.map((id) => {
     const opt = document.createElement('option');
     opt.value = id;
     opt.textContent = COUNTRIES[id].name;
     return opt;
-  });
-
-  refs.homeSelect.replaceChildren(...countryOptions());
-  refs.homeSelect.value = ctx.state.home;
-
-  // Prices are per nation, so the market panel is always a view of ONE market.
-  refs.marketCountry.replaceChildren(...countryOptions());
-  refs.marketCountry.value = ctx.ui.marketCountry;
-  refs.marketCountry.addEventListener('change', () => ctx.onMarketCountry(refs.marketCountry.value));
-
-  refs.market.replaceChildren(...COMMODITY_IDS.map((id) => {
-    const def = COMMODITIES[id];
-    const row = html(`
-      <tr data-commodity="${id}">
-        <th scope="row"><i class="swatch" style="--swatch:${def.color}"></i>${def.name}</th>
-        <td class="market__price"></td>
-        <td class="market__drift"></td>
-        <td class="market__demand"></td>
-        <td class="market__consume"></td>
-        <td class="market__usage"></td>
-        <td class="market__met"></td>
-        <td class="market__stock"></td>
-        <td><button type="button" class="flag flag--out" title="Offer the surplus abroad">↗</button></td>
-        <td><button type="button" class="flag flag--in" title="Buy from abroad — what your people are short of, and what your factories need">↙</button></td>
-      </tr>`);
-    row.querySelector('.flag--out').addEventListener('click', () => ctx.onToggleExport(id));
-    row.querySelector('.flag--in').addEventListener('click', () => ctx.onToggleImport(id));
-    return row;
   }));
+  refs.homeSelect.value = ctx.state.home;
 
   refs.pause.addEventListener('click', ctx.onTogglePause);
   refs.save.addEventListener('click', ctx.onSave);
@@ -136,12 +107,6 @@ export function updateDashboard(refs, ctx) {
     setAttr(btn, 'data-affordable', !locked && me.cash >= def.cost ? 'true' : 'false');
   }
 
-}
-
-// The panes below are driven by whichever tab is on screen rather than by every
-// render: a hidden pane cannot be read, so repainting it is work nobody sees.
-export function updateResources(refs, ctx) {
-  updateMarket(refs, ctx);
 }
 
 export function updateTrade(refs, ctx) {
@@ -296,55 +261,6 @@ export function tradeBalance(country) {
 
 function haul(a, b) {
   return MAX_DISTANCE ? distanceBetween(a, b) / MAX_DISTANCE : 0;
-}
-
-function updateMarket(refs, ctx) {
-  const { state, ui } = ctx;
-  const where = ui.marketCountry;
-  const market = state.markets[where];
-  const mine = where === state.home;
-  const usage = factoryUsage(state, where);
-
-  setText(refs.marketNote, mine
-    ? 'Your own market: prices fall as you supply your people, and rise when you do not.'
-    : `${COUNTRIES[where].name} — what its people pay. Post terms it will take on the exchange, or take its own.`);
-
-  for (const row of refs.market.children) {
-    const id = row.dataset.commodity;
-    const def = COMMODITIES[id];
-    const line = market[id];
-    const drift = Math.round(((line.price - def.basePrice) / def.basePrice) * 100);
-    setText(row.querySelector('.market__price'), priceShort(line.price));
-    setText(row.querySelector('.market__drift'), `${drift > 0 ? '▲' : drift < 0 ? '▼' : '·'}${Math.abs(drift)}%`);
-    setAttr(row.querySelector('.market__drift'), 'data-dir', drift > 0 ? 'up' : drift < 0 ? 'down' : 'flat');
-    setText(row.querySelector('.market__demand'), appetite(state, where, id).toFixed(1));
-    setText(row.querySelector('.market__consume'), qtyShort(line.soldLastTick));
-    setText(row.querySelector('.market__usage'), qtyShort(usage[id] ?? 0));
-
-    const met = supplyRatio(state, where, id);
-    setText(row.querySelector('.market__met'), pct(met));
-    setAttr(row.querySelector('.market__met'), 'data-short', met < 1 ? 'true' : 'false');
-    setText(row.querySelector('.market__stock'), qtyShort(warehouseStock(state, id, where)));
-
-    // The flags are always YOUR policy, whichever market is on screen.
-    const out = row.querySelector('.flag--out');
-    const inn = row.querySelector('.flag--in');
-    setAttr(out, 'data-on', state.exports[id] ? 'true' : 'false');
-    setAttr(inn, 'data-on', state.imports[id] ? 'true' : 'false');
-  }
-}
-
-function factoryUsage(state, countryId) {
-  const usage = {};
-  for (const b of state.buildings) {
-    if (b.owner !== countryId) continue;
-    const recipe = BUILDINGS[b.type].recipe;
-    if (!recipe) continue;
-    for (const [id, qty] of Object.entries(recipe.in)) {
-      usage[id] = (usage[id] ?? 0) + qty / recipe.ticks;
-    }
-  }
-  return usage;
 }
 
 function updateFlows(refs, ctx) {

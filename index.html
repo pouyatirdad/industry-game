@@ -80,26 +80,52 @@
         <div id="summary-card" class="summary"></div>
       </section>
 
+      <!-- ONE table, not two. Prices and Goods were two tabs, then two tables
+           stacked in one pane, which meant reading what a commodity fetches in
+           one place and what you are actually doing with it in another. The
+           first group of columns is the market named in the header; the rest is
+           your own book. A commodity is one line, and the line answers both. -->
       <section class="pane" data-pane="resources" role="tabpanel" aria-labelledby="tab-resources">
-        <label class="home">Prices in <select id="market-country"></select></label>
-        <table class="market">
+        <div class="prices__head">
+          <label class="home">Market <select id="prices-country"></select></label>
+          <div class="speeds" id="prices-view"></div>
+          <div class="policy-all" aria-label="Bulk exchange policy">
+            <button type="button" id="all-sell-on" title="Offer every commodity on the exchange">All &#8599;</button>
+            <button type="button" id="all-sell-off" title="Offer nothing on the exchange">No &#8599;</button>
+            <button type="button" id="all-buy-on" title="Bid for every commodity on the exchange">All &#8601;</button>
+            <button type="button" id="all-buy-off" title="Bid for nothing on the exchange">No &#8601;</button>
+          </div>
+        </div>
+        <table class="market prices">
           <thead>
+            <tr class="prices__groups">
+              <td></td>
+              <th colspan="5" id="prices-where">That market</th>
+              <th colspan="6">Your nation</th>
+              <th></th>
+            </tr>
             <tr>
-              <th>Commodity</th><th>Price</th><th title="Against the commodity's base price">±</th>
-              <th title="What this nation's people need per tick">Need</th>
-              <th title="What this nation's domestic market consumed last tick">Consume</th>
-              <th title="What this nation's factories use per tick">Usage</th>
-              <th title="How much of that domestic need is actually reaching people">Met</th>
-              <th title="What this nation's warehouses hold">Held</th>
-              <th title="Willing to post asks for this on the exchange">↗</th><th title="Willing to post bids for this on the exchange">↙</th>
+              <th>Commodity</th>
+              <th title="What a unit fetches in the market named above">Price</th>
+              <th title="Against the commodity's base price">&plusmn;</th>
+              <th title="What that nation's people want per tick">Need</th>
+              <th title="How much of that need is actually reaching them">Met</th>
+              <th title="What that nation's warehouses hold">Held</th>
+              <th title="Units your industry turned out">Made</th>
+              <th title="Units your own factories burned as inputs">Used</th>
+              <th title="Units your own people bought">Sold</th>
+              <th title="What you make a tick less what your factories burn and your people want">Bal</th>
+              <th title="Units shipped abroad">Out</th>
+              <th title="Units bought from abroad &mdash; the bracket is the share that went to your factories rather than your people">In</th>
+              <th title="Whether your government may post this commodity on the exchange">Trade</th>
             </tr>
           </thead>
-          <tbody id="market-body"></tbody>
+          <tbody id="prices-body"></tbody>
         </table>
-        <p class="hint" id="market-note"></p>
+        <p class="hint" id="prices-note"></p>
         <details class="hint">
           <summary>What am I reading?</summary>
-          <b>Want/t</b> is what that nation's people consume per tick and <b>Met</b> how much of it is actually reaching them. Your warehouses feed your own people first, up to <b>Want/t</b>; whatever is left over is what you have to find a contract for. The <b>↗</b> and <b>↙</b> flags say which commodities you are willing to post on the exchange at all.
+          One line a commodity. The first five figures are the market named above &mdash; what its people pay, what they want a tick, how much of that is reaching them and what its warehouses hold. The rest is your own book, per tick or for the whole game: what you made, what your factories burned, what your people bought, and what crossed your border. <b>Bal</b> is the rate you have spare once your own factories and people are served, which is the figure a contract has to cover. <b>&#8599;</b> and <b>&#8601;</b> say whether your government may post that commodity on the exchange at all &mdash; turn one off and that commodity is yours to place by hand.
         </details>
       </section>
 
@@ -121,7 +147,12 @@
         <h2>Post terms</h2>
         <div id="listing-draft" class="draft"></div>
 
-        <h2>The book</h2>
+        <div class="book__head">
+          <h2>The book</h2>
+          <!-- Your own terms are four listings in a book of forty, sorted by
+               price among everybody else's. This is how you find them again. -->
+          <div class="speeds" id="book-filter"></div>
+        </div>
         <div id="listing-book" class="book"></div>
 
         <h2>Clearing fund</h2>
@@ -168,31 +199,6 @@
         <h2>Nations</h2>
         <div id="country-list" class="countries"></div>
         <p class="hint hint--tight">Every market on earth is open to you. Click a nation to see what its people pay and what it is sitting on.</p>
-      </section>
-
-      <section class="pane" data-pane="goods" role="tabpanel" aria-labelledby="tab-goods">
-        <div class="goods__head">
-          <div class="speeds" id="goods-view"></div>
-        </div>
-        <table class="market goods">
-          <thead>
-            <tr>
-              <th>Commodity</th>
-              <th title="Units your industry turned out">Made</th>
-              <th title="Units your own factories burned as inputs">Used</th>
-              <th title="Units your own people bought">Sold</th>
-              <th title="Units shipped abroad">Out</th>
-              <th title="Units bought from abroad — the bracket is what went to your factories rather than your people">In</th>
-              <th title="What your warehouses hold right now">Held</th>
-            </tr>
-          </thead>
-          <tbody id="goods-body"></tbody>
-        </table>
-        <p class="hint" id="goods-note"></p>
-        <details class="hint">
-          <summary>What am I reading?</summary>
-          Every commodity your nation touched. <b>Made</b> and <b>Used</b> are your own factories; <b>Sold</b> is what your people bought over the counter. <b>In</b> counts everything bought abroad, and the figure in brackets is the part that went to your <em>factories</em> rather than your people — a country with no coalfield can still run a steel mill this way. <b>Held</b> is warehouse stock right now.
-        </details>
       </section>
 
       <section class="pane" data-pane="ranks" role="tabpanel" aria-labelledby="tab-ranks">

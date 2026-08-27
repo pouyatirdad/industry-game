@@ -113,14 +113,17 @@ export const FEATURED_COUNTRIES = {
         deposits: { coalfield: 3, farmland: 4, rareearth: 1, hills: 2, quarry: 1, copperbelt: 1 } },
 
   // --- Middle East ---------------------------------------------------------
-  // Iran runs right up against MAX_DEPOSIT_SHARE, so its coalfields (Tabas and
-  // Kerman are real, and modest) are paid for out of its land oil rather than
-  // added on top: it keeps the largest offshore gas in the game and a hundred
-  // oil tiles, and can now feed a steel mill or a cement works without buying
-  // the coal in.
+  // Iran keeps the largest offshore gas in the game and its coalfields (Tabas
+  // and Kerman are real, and modest), so it can feed a steel mill or a cement
+  // works without buying the coal in. The last three entries are deliberately
+  // token rather than absent: the Caspian forest is a narrow strip, the
+  // limestone quarries feed its own cement, and Saghand is one small uranium
+  // body — a country that really has a little of something should not read as
+  // having none of it.
   IR: { name: 'Iran', char: 'I', color: '#2f8f5f', wageMul: 0.40, demand: 3.5, pop: 92,
         waters: { offshoreGas: 0.26, offshoreOil: 0.20, fishery: 0.12 },
-        deposits: { oilfield: 4, gasfield: 5, coalfield: 2, hills: 2, copperbelt: 1, farmland: 1, desert: 0.5 } },
+        deposits: { oilfield: 4, gasfield: 5, coalfield: 2, hills: 2, copperbelt: 1, farmland: 1,
+                    forest: 1, quarry: 1, uraniumore: 0.5, desert: 0.5 } },
   IQ: { name: 'Iraq', char: 'q', color: '#9e8f3f', wageMul: 0.42, demand: 2.4, pop: 46,
         waters: { offshoreOil: 0.30, fishery: 0.10 },
         deposits: { oilfield: 2, gasfield: 1 } },
@@ -205,7 +208,20 @@ function colorFor(id) {
   let hash = 0;
   for (let i = 0; i < id.length; i++) hash = Math.imul(hash ^ id.charCodeAt(i), 2654435761) >>> 0;
   const hue = hash % 360;
-  return `hsl(${hue} 46% 56%)`;
+  return hslToHex(hue, 0.46, 0.56);
+}
+
+function hslToHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r1, g1, b1] = h < 60 ? [c, x, 0]
+    : h < 120 ? [x, c, 0]
+      : h < 180 ? [0, c, x]
+        : h < 240 ? [0, x, c]
+          : h < 300 ? [x, 0, c] : [c, 0, x];
+  const hex = (n) => Math.round((n + m) * 255).toString(16).padStart(2, '0');
+  return `#${hex(r1)}${hex(g1)}${hex(b1)}`;
 }
 
 function defaultCountry(info) {

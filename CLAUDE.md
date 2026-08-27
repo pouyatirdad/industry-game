@@ -257,9 +257,10 @@ storage from production.
   reserves flat ground, and once the budget runs out, generation drops whatever comes last in
   `DEPOSIT_ORDER`. `DEPOSIT_ORDER` therefore puts scarce and strategic resources first and ubiquitous
   filler (quarry, farmland, desert) last, so a cramped country keeps what it is known for. A test
-  fails if any country over-subscribes. Iran and Saudi Arabia sit right on the cap, so anything added
-  to either has to be paid for out of what it already has — Iran's coalfields came out of its land
-  oil, not out of thin air.
+  fails if any country over-subscribes. Countries authored before the grid grew to 720×360 can look
+  tighter than they are — Iran and Saudi Arabia read as capped and in fact use well under a fifth of
+  their budget — so **check the actual counts before paying for one deposit with another**: generate
+  a state and count the tiles rather than trusting a comment.
 
 **`wageMul` is UNIT labour cost, not the hourly wage.** A German hour costs fifteen times an
 Ethiopian one but buys far more output, so the spread here is about six to one. This matters because
@@ -345,9 +346,17 @@ follow, and each is load-bearing:
   settlement builds `state.exchange.fund`, which is what nations borrow against — so the clearing
   fee is the thing that stops a bad decade from being permanent.
 - **A listing is public.** You can take a government's ask before another government does, which is
-  the whole reason to keep the book on screen.
+  the whole reason to keep the book on screen. Yours are public too, and a handful of them sorted by
+  price among everybody else's is unfindable — hence the **Everybody / Yours** filter above the book
+  (`ui.bookFilter`), which is how you get back to a listing to withdraw it.
+- **The form fills itself in from the same arithmetic the governments use.**
+  `suggestListing(state, id, side, commodityId)` in `systems/exchange.js` returns the quantity and
+  price `topAsks`/`topBids` would have posted for one commodity, and the Market pane's "Fill from my
+  books" button drops it into the draft. It lives in the system, not in the panel, because a second
+  copy of that reasoning in the UI would drift from this one the first time either was tuned — and
+  it decides nothing: nothing is posted until you press Post.
 
-Your own government posts through the same code, and the `↗`/`↙` flags in Prices are the switch:
+Your own government posts through the same code, and the `↗`/`↙` flags in Goods are the switch:
 `exportsFrom`/`importsTo` are already true for every other nation, so one call covers both. Leave a
 flag on and your surplus finds a buyer without you; turn it off and that commodity is yours to place
 by hand.
@@ -406,7 +415,7 @@ that has not been dug yet.
 - Either side can fail, and failing costs (see *How money actually moves*).
 - Everything left in the warehouses afterwards is what that nation's own people get to buy, which
   is the whole reason contracts are settled first: a promise outranks a shopkeeper. Turning a
-  commodity's `↗`/`↙` flag off in Prices stops your government posting it on the exchange at all
+  commodity's `↗`/`↙` flag off in Goods stops your government posting it on the exchange at all
   and leaves it entirely to contracts you write by hand.
 
 `signContract` is the only way one comes into being — your button, an accepted offer, and the
@@ -430,27 +439,31 @@ Consequences worth knowing:
 - **Both panels fold away**, and both keep a handle: the left one leaves the `☰ Build` rail
   (`ui.leftOpen`, `B`), the right one leaves its tab strip (`ui.panelOpen`, or clicking the tab you
   are already on).
-- **Every pane is meant to fit its panel without scrolling.** That is why the build menu is two
-  columns of one-line rows, why the market table's rows are single-line (`.market td` is `nowrap`,
-  the name truncates, and figures use `priceShort`/`qtyShort` so a four-digit price cannot wrap a row
-  into two lines), and why the standing explanations are `<details>`. If you add a column or a line,
-  check the panes still fit. Three are allowed to outgrow the panel, each for a reason: the factory
-  list (a nation can hold hundreds of sites), the Trade pane (all countries sit at the bottom of
-  it) and Ranks (one row per country). **Sideways is a different matter** — a pane that overflows
-  horizontally puts a scrollbar across the whole panel, which is why the nine-column Ranks table
-  lives in its own `.scroller` and why a summary card's `.facts` is one column rather than two.
-- **Scrollbars are hairlines** — 6px, styled once in `base.css` for every scroller including the map.
+- **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
+  `overflow-y: hidden` on the principle that a table is read whole — which was true of the pane it
+  was written for and false of every pane that grew since: the bottom of the Trade list, the Ranks
+  table and the tech tree were simply unreachable on a short window. The aim is unchanged, so the
+  build menu is still two columns of one-line rows, the tables' rows are still single-line
+  (`.market td` is `nowrap`, the name truncates, and figures use `priceShort`/`qtyShort` so a
+  four-digit price cannot wrap a row into two), and the standing explanations are still `<details>`.
+  **Sideways is a different matter** — a pane that overflows horizontally is a bug, not a scroll,
+  which is why the nine-column Ranks table lives in its own `.scroller` and why a summary card's
+  `.facts` is one column rather than two.
+- **Scrollbars are INVISIBLE** — `scrollbar-width: none` once in `base.css`, for every scroller
+  including the map. They cost more width than the figures beside them. Everything still scrolls by
+  wheel, drag, trackpad and keyboard, so a box that can overflow must say `overflow: auto`;
+  `hidden` now means "this genuinely cannot be reached", which is almost never what you want.
 
 ### The side panel is one column with eight views
 
 `index.html` declares a `<section class="pane" data-pane="…">` per view; `src/ui/tabs.js` owns the
 strip and the `TABS` list that names them. `ui.tab` says which is on screen, `ui.panelOpen` whether
 the panel is unfolded at all, `ui.leftOpen` whether the build panel is, `ui.openFactoryId` which site
-has its numbers unfolded, `ui.goodsView` whether the commodity book reads the tick or the game, and
-`ui.rankSort` which column the nation table is ranked by, and `ui.draft` the contract you are
-writing but have not signed — all on `ui`, so none of it
-reaches the save file. Eight tabs do not fit one row of a 352px panel, so **the strip wraps**: a tab
-you cannot read is not a tab you will click.
+has its numbers unfolded, `ui.goodsView` whether the commodity book reads the tick or the game,
+`ui.rankSort` which column the nation table is ranked by, `ui.bookFilter` whether the exchange shows
+everybody's terms or only yours, and `ui.draft` the contract you are writing but have not signed —
+all on `ui`, so none of it reaches the save file. Eight tabs do not fit one row of the panel, so
+**the strip wraps**: a tab you cannot read is not a tab you will click.
 
 **Only the visible pane is repainted.** `src/ui/render.js` dispatches through `PANES` and returns
 early when the panel is folded away; the topbar, build menu, map and alerts are outside that, because
@@ -466,10 +479,18 @@ Five things earn their own view rather than sharing one:
   is how full it is instead.
 - **Summary** is derived from the other four and owns nothing. It exists so the answer to "how is the
   nation doing" is not four tabs of reading.
-- **Goods** is the commodity book: made, burned, sold at home, shipped out, bought in — per tick or
-  for the whole game — read from `state.ledger`. The treasury only ever shows money and Prices only
-  ever shows one market, so this is the only place that shows *goods*. The bracket in the `In` column
-  is the feedstock share, which is how you see the industrial import channel working at all.
+- **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book, and it is ONE table.
+  Prices and Goods were two tabs, then two tables stacked in one pane — which meant the price of coal
+  was in one place and what you were doing with coal was in another, though both were the same
+  thirty-four rows in the same order. They are now the same row: the first group of columns is the
+  market named in the header (price, drift, need, met, held — any nation on earth, chosen in the
+  select), the second is your own book (made, burned, sold, balance, shipped out, bought in, per tick
+  or for the whole game from `state.ledger`), and the `↗`/`↙` flags at the end are your policy.
+  **The two halves are different nations whenever the select is not you**, which is the point — what
+  Germany pays and how short it is, beside what you can actually spare — so the group header row is
+  load-bearing and says whose figures each half is. The bracket in the `In` column is the feedstock
+  share, which is how you see the industrial import channel working at all. The treasury only ever
+  shows money and the exchange only ever shows listings, so this is the only place that shows *goods*.
 - **Ranks** scores all countries against each other. The scoring rule (`scoreNations` in
   `src/ui/ranks.js`) is the one piece of UI with a rule rather than a layout in it, so it is covered
   by the suite — which means it must stay free of the DOM, like a system. Its measures are
@@ -505,9 +526,9 @@ affordable rather than the cash figure, so the tree does not rebuild on every ti
 **The factory list diffs on two levels, and the outer one is a list of ids** (`dataset.ids`). Rows are
 rebuilt only when the set of your sites changes; every tick after that writes the numbers into the
 existing rows. Rebuilding the list each tick would throw away the unfolded row and the scroll
-position — which is exactly the state you are using while you read it. The Goods table and the Ranks
-table work the same way for the same reason: their rows are built once at mount (all commodities and
-all countries — both fixed lists) and only their figures are written per tick. Ranks
+position — which is exactly the state you are using while you read it. The commodity book and the
+Ranks table work the same way for the same reason: their rows are built once at mount (all
+commodities and all countries — both fixed lists) and only their figures are written per tick. Ranks
 additionally re-orders its existing rows, and only when `dataset.order` actually changes.
 
 **Your own deals live in `state.ownFlows`, not in `state.flows`.** The world list is capped at

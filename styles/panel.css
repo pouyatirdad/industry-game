@@ -43,10 +43,13 @@
 }
 .tab__badge[data-alarm="true"] { background: var(--bad); color: #2a0b08; font-weight: 700; }
 
-/* The pane takes whatever height the panel has and scrolls only if its own
-   content genuinely outruns the window — the point is that a table is read in
-   one look, not hunted for. */
-.panes { flex: 1; min-height: 0; padding: 10px 12px 12px; overflow-y: hidden; display: flex; flex-direction: column; }
+/* The pane takes whatever height the panel has and SCROLLS when its content
+   outruns the window. It used to say `hidden`, on the principle that a table is
+   read in one look — which was true of the pane it was written for and false of
+   every pane that grew since: the bottom of the trade list, the ranks table and
+   the tech tree were simply unreachable. The scrollbar itself is invisible
+   (base.css), so this costs no width. */
+.panes { flex: 1; min-height: 0; padding: 10px 12px 12px; overflow-y: auto; display: flex; flex-direction: column; }
 .pane { display: none; }
 .pane[data-active="true"] { display: block; }
 /* The factory list is the one pane that can outgrow any window — a nation can
@@ -206,14 +209,45 @@
 }
 .flow__tick { font-size: 10px; opacity: .7; }
 
-/* ---- goods ---- */
+/* ---- the commodity book ---- */
 
-.goods__head { display: flex; justify-content: flex-end; margin-bottom: 6px; }
-.goods td { text-align: right; }
-.goods th[scope="row"] { max-width: 74px; }
+/* ONE table: the market half and your own half of every commodity on the same
+   line. Thirteen columns is more than the panel used to carry, so the figures
+   are short (`priceShort`/`qtyShort`), the name truncates, and the padding is
+   the tightest that still leaves the columns apart. */
+.prices__head {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+  gap: 6px; margin-bottom: 6px;
+}
+.policy-all { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 3px; }
+.policy-all button { padding: 2px 6px; font-size: 10px; border-radius: 4px; }
+
+.prices th, .prices td { padding: 0 3px; }
+.prices td { text-align: right; }
+.prices th[scope="row"] { max-width: 76px; }
+/* Two header rows, so the columns say WHOSE figures they are — the market you
+   picked, or your own nation. Both rows stay put while the rows scroll under
+   them, which means the second one has to sit below the first rather than on
+   top of it. */
+.prices__groups th {
+  text-align: center; color: var(--ink); opacity: .75;
+  border-bottom: 1px solid var(--line); height: 15px;
+}
+.prices thead tr:last-child th { top: 15px; }
+.prices__groups + tr th { border-bottom: 1px solid #ffffff1a; }
+/* The two halves are told apart by a rule down the middle rather than by
+   colour, which the swatches and the drift arrows are already using. */
+.prices tr > :nth-child(2), .prices tr > :nth-child(7), .prices tr > :nth-child(13) {
+  border-left: 1px solid #ffffff14;
+}
+.prices__flags { white-space: nowrap; text-align: center; }
+.prices__flags .flag:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.prices__flags .flag:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
 /* A commodity you have never touched keeps its row and its place in the table —
    it just stops competing for your attention. */
-.goods tr[data-idle="true"] { opacity: .35; }
+.prices tr[data-idle="true"] { opacity: .4; }
+.goods__balance[data-dir="up"] { color: var(--good); }
+.goods__balance[data-dir="down"] { color: var(--bad); }
 .goods__in[data-feed="true"] { color: #7fb0e0; }
 
 /* ---- ranks ---- */
@@ -352,10 +386,10 @@
 .build[data-locked="true"] { opacity: .42; }
 .build[data-locked="true"]:hover { border-color: var(--line); }
 
-/* Thirty-four commodities no longer fit a panel the way twenty-one did, so
-   these two tables scroll inside themselves rather than pushing their own
-   explanation off the bottom of the screen. */
-.pane[data-pane="goods"] .goods, .pane[data-pane="resources"] .market { font-size: 11px; }
+/* Thirty-four commodities against thirteen columns: a size smaller than the
+   rest of the panel, so the widest row still fits without a sideways scroll. */
+.pane[data-pane="resources"] .prices { font-size: 10px; }
+.pane[data-pane="resources"] .prices thead th { font-size: 8px; letter-spacing: .02em; }
 
 /* ---- the exchange ---- */
 
@@ -363,6 +397,9 @@
 .market__head .facts--four { grid-template-columns: 1fr 1fr; }
 .draft__act { display: flex; gap: 4px; }
 .draft__act button { flex: 1; padding: 4px 8px; font-size: 11px; }
+
+.book__head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.book__head h2 { margin-bottom: 6px; }
 
 /* The book. Asks first, then bids, each side cheapest-best at the top — so the
    row you want is always near the fold. */

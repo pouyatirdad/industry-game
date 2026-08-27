@@ -553,8 +553,10 @@ export function createUiState(home = DEFAULT_HOME) {
     // which column the nation table is ranked by. View preferences both.
     goodsView: 'tick',
     rankSort: 'score',
-    // The ask or bid you are writing for the open book, before you post it.
+    // The ask or bid you are writing for the open book, before you post it,
+    // and whether the book below it is showing everybody's terms or only yours.
     listing: { side: 'sell', commodity: 'coal', qty: 5, price: 0, every: 1, term: 90 },
+    bookFilter: 'all',
     // The contract you are drafting. It is view state, not a promise anybody has
     // made yet, so it lives here and never reaches the save file.
     draft: { partner: null, commodity: 'coal', dir: 'buy', qty: 10, every: 1, term: 60 },

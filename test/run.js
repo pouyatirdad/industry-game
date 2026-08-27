@@ -12,7 +12,8 @@ import { BUILDINGS } from '../src/data/buildings.js';
 import { CONFIG } from '../src/core/config.js';
 import { build, canBuild, demolish,
   setResearch, setResearchShare, buyTech, canBuyTech, proposeContract, cancelContract,
-  acceptContractOffer, postListing, take, takeLoan, repayLoan } from '../src/actions.js';
+  acceptContractOffer, postListing, take, takeLoan, repayLoan, toggleExport, toggleImport,
+  setAllExports, setAllImports } from '../src/actions.js';
 import { runTick } from '../src/systems/index.js';
 import { produce } from '../src/systems/production.js';
 import { payWages } from '../src/systems/economy.js';
@@ -22,7 +23,8 @@ import { warehousesServing, spoil } from '../src/systems/logistics.js';
 import { runStateIndustry } from '../src/systems/stateIndustry.js';
 import { runResearch, runTechTrade, licenceCost } from '../src/systems/research.js';
 import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice } from '../src/systems/contracts.js';
-import { runExchange, runLending, post, takeListing, borrow, repay, borrowLimit } from '../src/systems/exchange.js';
+import { runExchange, runLending, post, takeListing, borrow, repay, borrowLimit,
+  suggestListing } from '../src/systems/exchange.js';
 import { createLoop } from '../src/core/loop.js';
 // The nation table's scoring is the one piece of UI with a rule in it rather
 // than a layout, and it reads only `state` — so it is tested here like anything
@@ -133,6 +135,12 @@ test('small central Asian and Caucasus nations are present on the map', () => {
   for (const id of COUNTRY_IDS) {
     const owned = state.tiles.filter((tile) => tile.countryId === id);
     assert(owned.length >= 9, `${id} should own a visible cluster of map tiles`);
+  }
+});
+
+test('every country uses a canvas-safe hex colour', () => {
+  for (const id of COUNTRY_IDS) {
+    assert(/^#[0-9a-f]{6}$/i.test(COUNTRIES[id].color), `${id} has a non-hex map colour: ${COUNTRIES[id].color}`);
   }
 });
 
@@ -278,6 +286,20 @@ test('deposits keep their proportion of a country when the grid scales', () => {
       assert(found > authored, `${id} ${terrain}: did not scale up — authored ${authored}, found ${found}`);
       assert(found <= wanted, `${id} ${terrain}: overshot — wanted at most ${wanted}, found ${found}`);
     }
+  }
+});
+
+// A country that really has a little of something must not read as having none
+// of it: Iran's Caspian forest, its limestone and the one uranium body at
+// Saghand are all authored at a cell or half a cell, which is small enough to be
+// dropped silently if DEPOSIT_ORDER or the budget ever moves.
+test('Iran keeps its token forest, limestone and uranium', () => {
+  const state = createInitialState();
+  const tiles = state.tiles.filter((t) => t.countryId === 'IR');
+  for (const terrain of ['forest', 'quarry', 'uraniumore']) {
+    const found = tiles.filter((t) => t.terrain === terrain).length;
+    assert(found > 0, `Iran lost its ${terrain}`);
+    assert(found < 10, `Iran's ${terrain} is meant to be token, found ${found}`);
   }
 });
 
@@ -1611,6 +1633,75 @@ test('the ↗ and ↙ flags decide whether your government posts at all', () => 
   runExchange(state);
   assert(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'sell' && l.commodity === 'steel'),
     'and with the flag on it is offered for you');
+});
+
+// The Market pane's "Fill from my books" button is this function and nothing
+// else, so what it hands you has to be a listing you could actually stand
+// behind: stock you really have spare, at a price your own government would ask.
+test('a suggested ask is what you have spare, at the price your government would ask', () => {
+  const state = fixture();
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  depot.store.steel = 4000;
+
+  const ask = suggestListing(state, state.home, 'sell', 'steel');
+  assert(ask.qty > 1, `an ask for a full warehouse should be worth posting, got ${ask.qty}`);
+  assert(ask.price >= state.markets[state.home].steel.price,
+    'and it asks at least what its own people pay');
+
+  // ...and with the shelf empty there is nothing to promise, so it collapses to
+  // the smallest quantity the form will take rather than to a blank field.
+  depot.store.steel = 0;
+  equal(suggestListing(state, state.home, 'sell', 'steel').qty, 0.1, 'an empty depot offers a token');
+});
+
+test('a suggested bid is what you are actually short of', () => {
+  const state = fixture();
+  place(state, 'warehouse', 20, 20, 'plain');
+  place(state, 'steelMill', 21, 20, 'plain');
+
+  const bid = suggestListing(state, state.home, 'buy', 'coal');
+  assert(bid.qty > 0, 'a mill with no coal is short of coal');
+  assert(bid.price > 0, 'and it bids a real price');
+
+  // A bid already covered by a standing listing is not a shortage any more.
+  post(state, { from: state.home, side: 'buy', commodity: 'coal', qty: 500, price: 40 });
+  equal(suggestListing(state, state.home, 'buy', 'coal').qty, 0.1,
+    'what is already on the book is not asked for twice');
+});
+
+test('turning off an export or import flag withdraws your matching listing', () => {
+  const state = fixture();
+  post(state, { from: state.home, side: 'sell', commodity: 'steel', qty: 10, price: 100 });
+  post(state, { from: state.home, side: 'buy', commodity: 'coal', qty: 10, price: 100 });
+  post(state, { from: state.home, side: 'sell', commodity: 'coal', qty: 10, price: 100 });
+
+  toggleExport(state, 'steel');
+  equal(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'sell' && l.commodity === 'steel'), false,
+    'disabled exports pull your ask');
+  equal(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'buy' && l.commodity === 'coal'), true,
+    'other sides stay');
+
+  toggleImport(state, 'coal');
+  equal(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'buy' && l.commodity === 'coal'), false,
+    'disabled imports pull your bid');
+});
+
+test('bulk export and import policy clears the matching side of your book', () => {
+  const state = fixture();
+  post(state, { from: state.home, side: 'sell', commodity: 'steel', qty: 10, price: 100 });
+  post(state, { from: state.home, side: 'buy', commodity: 'coal', qty: 10, price: 100 });
+  post(state, { from: 'DE', side: 'sell', commodity: 'steel', qty: 10, price: 100 });
+
+  setAllExports(state, false);
+  equal(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'sell'), false,
+    'all disabled exports withdraw your asks');
+  equal(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'buy'), true,
+    'your bids remain');
+  equal(exchangeOf(state).listings.some((l) => l.from === 'DE'), true, 'other nations keep their listings');
+
+  setAllImports(state, false);
+  equal(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'buy'), false,
+    'all disabled imports withdraw your bids');
 });
 
 // ---- the clearing fund and lending ----------------------------------------

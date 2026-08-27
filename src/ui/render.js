@@ -1,9 +1,9 @@
 import { mountMap, updateMap, centerMapOn } from './map.js';
-import { mountDashboard, updateDashboard, updateResources, updateTrade, updateAlerts } from './dashboard.js';
+import { mountDashboard, updateDashboard, updateTrade, updateAlerts } from './dashboard.js';
 import { mountTabs, updatePanels } from './tabs.js';
 import { updateSummary } from './summary.js';
 import { updateFactories } from './factories.js';
-import { mountGoods, updateGoods } from './goods.js';
+import { mountResources, updateResources } from './resources.js';
 import { mountRanks, updateRanks } from './ranks.js';
 import { mountTech, updateTech } from './tech.js';
 import { mountContracts, updateContracts } from './contracts.js';
@@ -14,16 +14,18 @@ import { updateInspector } from './inspector.js';
 const ID_MAP = {
   map: 'map', alerts: 'alerts', inspector: 'inspector', buildMenu: 'build-menu',
   countries: 'country-list', homeSelect: 'home-select',
-  marketCountry: 'market-country', marketNote: 'market-note', flows: 'trade-flows',
+  flows: 'trade-flows',
   tradeHead: 'trade-head', tradeGoods: 'trade-goods',
   marketHead: 'market-head', listingDraft: 'listing-draft', listingBook: 'listing-book',
-  fundCard: 'fund-card', inbox: 'inbox', zoomLabel: 'zoom-label',
-  goodsView: 'goods-view', goodsBody: 'goods-body', goodsNote: 'goods-note',
+  fundCard: 'fund-card', bookFilter: 'book-filter', inbox: 'inbox', zoomLabel: 'zoom-label',
+  allSellOn: 'all-sell-on', allSellOff: 'all-sell-off', allBuyOn: 'all-buy-on', allBuyOff: 'all-buy-off',
+  pricesCountry: 'prices-country', pricesWhere: 'prices-where', pricesView: 'prices-view',
+  pricesBody: 'prices-body', pricesNote: 'prices-note',
   ranksHead: 'ranks-head', ranksCols: 'ranks-cols', ranksBody: 'ranks-body',
   techHead: 'tech-head', techOffers: 'tech-offers', techTree: 'tech-tree',
   contractOffers: 'contract-offers', contractDraft: 'contract-draft', contractList: 'contract-list',
   nationName: 'nation-name', nationCard: 'nation-card',
-  market: 'market-body', speeds: 'speed-buttons', cash: 'stat-cash', net: 'stat-net',
+  speeds: 'speed-buttons', cash: 'stat-cash', net: 'stat-net',
   wages: 'stat-wages', trade: 'stat-trade', supply: 'stat-supply', demand: 'stat-demand',
   tick: 'stat-tick', pause: 'btn-pause', save: 'btn-save',
   load: 'btn-load', reset: 'btn-reset',
@@ -39,7 +41,6 @@ const PANES = {
   summary: (refs, ctx) => updateSummary(refs.summary, ctx),
   resources: updateResources,
   factories: updateFactories,
-  goods: updateGoods,
   trade: updateTrade,
   market: updateMarket,
   ranks: updateRanks,
@@ -58,10 +59,10 @@ export function createRenderer(ctx) {
   let mapView = mountMap(refs.map, ctx);
   mountDashboard(refs, ctx);
   mountTabs(refs, ctx);
-  // Both of these are fixed lists — thirty-four commodities, forty-six nations —
-  // so their rows are built once here and only their figures are written each
-  // tick, exactly as the market table and the factory list work.
-  mountGoods(refs, ctx);
+  // Both of these are fixed lists — thirty-four commodities, every nation on
+  // earth — so their rows are built once here and only their figures are
+  // written each tick, exactly as the factory list works.
+  mountResources(refs, ctx);
   mountRanks(refs, ctx);
   // The tech tree is twenty fixed entries and the contract form is a form you
   // are in the middle of using — both are mounted once for the same reason.
