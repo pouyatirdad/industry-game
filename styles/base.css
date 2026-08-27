@@ -1,0 +1,283 @@
+:root {
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --panel-2: #22262f;
+  --line: #2e3440;
+  --ink: #e6e9ef;
+  --muted: #8d96a8;
+  --accent: #f0a04b;
+  --good: #5fbf7f;
+  --bad: #e2685f;
+  --radius: 8px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+/* The window IS the app: a fixed topbar, and everything below it is the map.
+   Nothing here scrolls except the map and the insides of the two panels, so
+   there is never a page scrollbar hiding half the game. */
+body {
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+}
+
+/* Scrollbars are hairlines. There are a lot of scrollable boxes on this screen
+   and a default-weight bar in each one costs more width than the numbers it
+   sits beside. */
+* { scrollbar-width: thin; scrollbar-color: #ffffff2e transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #ffffff2e; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #ffffff4d; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin-bottom: 6px; }
+h3 { font-size: 15px; }
+h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 2px; }
+
+.muted { color: var(--muted); }
+.hint { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
+.hint--tight { margin-top: 6px; }
+/* Standing explanations fold away: they are longer than the tables they
+   explain, and the table is what you came to read. */
+details.hint > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+details.hint > summary:hover { color: var(--ink); }
+details.hint[open] { padding-bottom: 4px; }
+kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 11px; }
+
+.topbar {
+  flex: none;
+  display: flex; align-items: center; gap: 28px;
+  padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { font-size: 16px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+.stats { display: flex; gap: 26px; }
+.stat { display: flex; flex-direction: column; }
+.stat span { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.stat b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.stat b.is-negative { color: var(--bad); }
+.controls { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.speeds { display: flex; gap: 2px; }
+
+button {
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 6px 11px; cursor: pointer; font: inherit;
+}
+button:hover { border-color: #47506180; background: #2a2f3a; }
+button.primary { background: var(--accent); color: #221606; border-color: transparent; font-weight: 600; }
+.speed[data-active="true"] { background: var(--accent); color: #221606; border-color: transparent; }
+
+/* One layer: the map fills it, and everything else floats above. */
+.layout { position: relative; flex: 1; min-height: 0; }
+
+/* Both panels are sticky modals over the map — same chrome, opposite edges. */
+.panel {
+  position: absolute; top: 10px; bottom: 10px; z-index: 5;
+  display: flex; flex-direction: column; min-height: 0;
+  width: 290px; max-width: calc(100vw - 20px);
+  background: #1c1f26f2; border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 14px 40px #00000073;
+  backdrop-filter: blur(8px);
+}
+.panel--left { left: 10px; }
+.panel--tabs { right: 10px; width: 352px; }
+.layout[data-left="false"] .panel--left { display: none; }
+.layout[data-left="true"] .rail { display: none; }
+
+.panel__head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 8px 8px 14px; border-bottom: 1px solid var(--line);
+}
+.panel__head h2 { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel__close, .rail {
+  flex: none; padding: 2px 8px; font-size: 15px; line-height: 1.3;
+  background: transparent; border: 0; color: var(--muted); border-radius: 6px;
+}
+.panel__close:hover { background: var(--panel-2); color: var(--ink); border: 0; }
+.panel__body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 14px; }
+
+/* The handle that brings the left panel back. */
+.rail {
+  position: absolute; top: 10px; left: 10px; z-index: 6;
+  font-size: 12px; padding: 6px 10px;
+  background: #1c1f26f2; border: 1px solid var(--line); color: var(--ink);
+  backdrop-filter: blur(8px); box-shadow: 0 8px 24px #00000059;
+}
+.rail:hover { border-color: var(--accent); background: #22262fF2; }
+
+/* Anything floating over the map wears the same glass. */
+.floating {
+  background: #1c1f26f2; border: 1px solid var(--line); border-radius: var(--radius);
+  backdrop-filter: blur(8px); box-shadow: 0 8px 24px #00000059;
+}
+
+/* Twenty-two industries have to fit a column you can see all of, so a row is
+   ONE line — glyph, name, price. What it makes and what it costs to run are on
+   the tooltip, and on the row itself once it is the tool in your hand. */
+/* Two columns of one-line rows: twenty-six industries have to be pickable
+   without scrolling for one. The name truncates rather than wrapping — the
+   tooltip carries the recipe, the wages and the blurb — and the row you have
+   actually picked unfolds its recipe underneath. */
+.build-menu { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+.build {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center; gap: 4px; text-align: left;
+  padding: 1px 5px; border-color: transparent; background: #ffffff06;
+}
+.build[data-active="true"] { grid-column: 1 / -1; }
+.build[data-active="true"] { border-color: var(--accent); background: #2b2418; }
+.build[data-affordable="false"] { opacity: .45; }
+.build__glyph { font-size: 12px; text-align: center; }
+.build__name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.build__cost { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.build[data-active="true"] .build__cost { color: var(--ink); }
+/* The recipe unfolds for the tool you are actually holding. */
+.build__recipe { display: none; grid-column: 2 / -1; font-size: 10px; color: var(--muted); white-space: normal; }
+.build[data-active="true"] .build__recipe { display: block; }
+
+.market { width: 100%; border-collapse: collapse; font-size: 11px; }
+.market th, .market td { text-align: left; padding: 0 3px; border-bottom: 1px solid #ffffff0d; line-height: 1.65; }
+.market thead th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.market tbody th {
+  font-weight: 500; max-width: 88px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.market td { white-space: nowrap; }
+.market td { font-variant-numeric: tabular-nums; }
+.market__drift[data-dir="up"] { color: var(--good); }
+.market__drift[data-dir="down"] { color: var(--bad); }
+.swatch { display: inline-block; width: 7px; height: 7px; border-radius: 2px; background: var(--swatch); margin-right: 5px; }
+.sell { padding: 2px 8px; font-size: 11px; }
+.sell[data-on="true"] { background: var(--good); color: #08210f; border-color: transparent; }
+
+/* Messages are interruptions, not a log. Each one slides in, runs a hairline
+   countdown for exactly CONFIG.alertTtlMs (passed down as --ttl), and is swept
+   off by main.js when that elapses — so this strip is empty unless something
+   has just happened. Clicking x drops one early. */
+/* Messages hover over the bottom of the map rather than taking a row of layout
+   away from it, so the world never shifts when one arrives. */
+.alerts {
+  position: absolute; z-index: 4; left: 50%; transform: translateX(-50%); bottom: 12px;
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column-reverse; gap: 4px;
+  width: min(560px, calc(100vw - 760px)); min-width: 320px; pointer-events: none;
+}
+.alert { pointer-events: auto; }
+.alert {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; padding: 5px 9px; border-radius: 6px;
+  background: #1c1f26f2; border-left: 3px solid var(--line);
+  backdrop-filter: blur(8px); box-shadow: 0 6px 18px #00000059;
+  position: relative; overflow: hidden;
+  animation: alert-in .18s ease-out;
+}
+.alert::after {
+  content: ""; position: absolute; left: 0; bottom: 0; height: 2px;
+  background: var(--line); width: 100%;
+  animation: alert-countdown var(--ttl, 9000ms) linear forwards;
+}
+.alert__text { flex: 1; min-width: 0; }
+.alert__close {
+  flex: none; border: 0; background: transparent; color: var(--muted);
+  padding: 0 2px; font-size: 14px; line-height: 1; border-radius: 4px;
+}
+.alert__close:hover { background: transparent; color: var(--ink); border: 0; }
+.alert[data-kind="warn"] { border-left-color: var(--accent); }
+.alert[data-kind="warn"]::after { background: var(--accent); }
+.alert[data-kind="danger"] { border-left-color: var(--bad); }
+.alert[data-kind="danger"]::after { background: var(--bad); }
+.alert[data-kind="good"] { border-left-color: var(--good); }
+.alert[data-kind="good"]::after { background: var(--good); }
+
+@keyframes alert-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes alert-countdown {
+  from { width: 100%; }
+  to { width: 0; }
+}
+
+.inspect { display: flex; flex-direction: column; gap: 8px; }
+.inspect p { margin: 0; font-size: 12px; }
+.status { font-weight: 600; }
+.status[data-status="starved"], .status[data-status="unstaffed"] { color: var(--bad); }
+.status[data-status="blocked"] { color: var(--accent); }
+.status[data-status="running"] { color: var(--good); }
+.bag ul { list-style: none; margin: 0; padding: 0; }
+.bag li { display: flex; justify-content: space-between; font-size: 12px; padding: 1px 0; }
+.bag b { font-variant-numeric: tabular-nums; }
+
+/* On a narrow window the panels stay modals; they just take the width they need
+   and the map runs on underneath. */
+@media (max-width: 1100px) {
+  .panel--tabs { width: min(352px, calc(100vw - 20px)); }
+  .alerts { width: min(560px, calc(100vw - 40px)); }
+}
+
+/* ---- world-map additions ---- */
+.home { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+/* One line, never two: this note sits between the table and its heading. */
+#market-note { margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.home select {
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 5px 6px; font: inherit; font-size: 12px;
+}
+.panel__body h2, .pane h2 { margin-top: 12px; }
+.panel__body > h2:first-child, .pane > h2:first-child, .panel__head h2 { margin-top: 0; }
+.good-text { color: var(--good); font-weight: 600; }
+.pact { width: 100%; padding: 7px 10px; font-size: 12px; }
+.pact:disabled { opacity: .4; cursor: not-allowed; }
+/* Each panel is a full-height modal now, so neither list needs a viewport cap
+   of its own: it gets the height its panel has. The market header stays put
+   while the twenty-one rows scroll under it. */
+.market thead th { position: sticky; top: 0; background: #1c1f26; z-index: 1; }
+.market .flag { padding: 0 5px; font-size: 10px; }
+
+/* ---- running a nation ---- */
+
+/* The one number that matters most: how much of what your people want is
+   actually reaching them. Everything else on the card is context for it. */
+.nation-card { display: flex; flex-direction: column; gap: 10px; }
+.meter { display: flex; flex-direction: column; gap: 4px; }
+.meter__bar {
+  height: 6px; border-radius: 3px; background: var(--panel-2);
+  border: 1px solid var(--line); overflow: hidden; position: relative;
+}
+.meter__bar::after {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: var(--fill);
+  background: var(--bad); transition: width .3s ease;
+}
+.meter__bar[data-good="true"]::after { background: var(--good); }
+.meter__label { font-size: 11px; color: var(--muted); }
+
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin: 0; }
+.facts div { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+/* Export and import are per commodity and always YOUR policy, whichever
+   market the panel happens to be showing. */
+.flag { padding: 1px 6px; font-size: 11px; line-height: 1.4; }
+.flag[data-on="true"] { border-color: transparent; font-weight: 700; }
+.flag--out[data-on="true"] { background: var(--good); color: #08210f; }
+.flag--in[data-on="true"] { background: #5f8fbf; color: #061626; }
+.market__met[data-short="true"] { color: var(--accent); }
+
+.flows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.flows .muted { font-size: 12px; }
+.flow { display: flex; align-items: baseline; gap: 6px; font-size: 12px; padding: 2px 0; border-bottom: 1px solid var(--line); }
+.flow__arrow { flex: none; font-weight: 700; }
+.flow[data-dir="out"] .flow__arrow, .flow[data-dir="out"] .flow__value { color: var(--good); }
+.flow[data-dir="in"] .flow__arrow, .flow[data-dir="in"] .flow__value { color: #7fb0e0; }
+.flow__what { flex: none; }
+.flow__who { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow__value { font-variant-numeric: tabular-nums; }

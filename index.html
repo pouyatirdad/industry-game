@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Statecraft — run a nation's economy</title>
+<link rel="stylesheet" href="styles/base.css">
+<link rel="stylesheet" href="styles/map.css">
+<link rel="stylesheet" href="styles/panel.css">
+</head>
+<body>
+<header class="topbar">
+  <h1 class="brand">Statecraft</h1>
+  <div class="stats">
+    <div class="stat"><span>Treasury</span><b id="stat-cash">—</b></div>
+    <div class="stat"><span>Net / tick</span><b id="stat-net">—</b></div>
+    <div class="stat"><span>Payroll</span><b id="stat-wages">—</b></div>
+    <div class="stat"><span>Trade balance</span><b id="stat-trade">—</b></div>
+    <div class="stat"><span>Supply</span><b id="stat-supply">—</b></div>
+    <div class="stat"><span>Economy</span><b id="stat-demand">—</b></div>
+    <div class="stat"><span>Tick</span><b id="stat-tick">0</b></div>
+  </div>
+  <div class="controls">
+    <button type="button" id="btn-pause" class="primary">▶ Run</button>
+    <div class="speeds" id="speed-buttons"></div>
+    <button type="button" id="btn-save">Save</button>
+    <button type="button" id="btn-load">Load</button>
+    <label class="home">Nation <select id="home-select"></select></label>
+    <button type="button" id="btn-reset">New game</button>
+  </div>
+</header>
+
+<!-- The map is the page. Both panels float ON TOP of it rather than taking a
+     column out of it, so the world is never squeezed into a third of the
+     window, and either one can be folded away when you want the whole planet. -->
+<main class="layout" id="layout" data-left="true">
+  <div id="map" class="map" role="img" aria-label="World map"></div>
+
+  <div class="maptools floating">
+    <span class="maptools__label">Zoom</span>
+    <div class="speeds" id="zoom-buttons"></div>
+  </div>
+
+  <ul id="alerts" class="alerts"></ul>
+
+  <button type="button" id="btn-left" class="rail" title="Show the build panel (B)">☰ Build</button>
+
+  <aside class="panel panel--left" id="left-panel">
+    <header class="panel__head">
+      <h2 id="nation-name">Your nation</h2>
+      <button type="button" class="panel__close" id="btn-left-close" title="Hide this panel (B)">&times;</button>
+    </header>
+    <div class="panel__body">
+      <div id="nation-card" class="nation-card"></div>
+
+      <h2>Build</h2>
+      <div id="build-menu" class="build-menu"></div>
+      <details class="hint">
+        <summary>How building works</summary>
+        Pick a tool, then click a highlighted tile on <em>your own soil</em> — a government licenses industry at home and nowhere else. Right-click a building to demolish it for half its cost. <kbd>Space</kbd> runs/pauses, <kbd>Esc</kbd> clears the tool, <kbd>B</kbd> folds this panel away.
+      </details>
+    </div>
+  </aside>
+
+  <!-- One panel, five views. Everything used to be stacked in a single column,
+       which put the market table, the trade list, forty-six nations and the
+       inspector on screen at once and made all four hard to read. The tab strip
+       is the only thing that is always visible. -->
+  <aside class="panel panel--tabs" id="side-panel">
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Panels"></nav>
+
+    <div class="panes" id="panes">
+      <section class="pane" data-pane="summary" role="tabpanel" aria-labelledby="tab-summary">
+        <div id="summary-card" class="summary"></div>
+      </section>
+
+      <section class="pane" data-pane="resources" role="tabpanel" aria-labelledby="tab-resources">
+        <label class="home">Prices in <select id="market-country"></select></label>
+        <table class="market">
+          <thead>
+            <tr>
+              <th>Commodity</th><th>Price</th><th title="Against the commodity's base price">±</th>
+              <th title="What this nation's people consume per tick">Want</th>
+              <th title="How much of that is actually reaching them">Met</th>
+              <th title="What your warehouses hold">Held</th>
+              <th title="Offer the surplus abroad">↗</th><th title="Buy in what your people and your factories are short of">↙</th>
+            </tr>
+          </thead>
+          <tbody id="market-body"></tbody>
+        </table>
+        <p class="hint" id="market-note"></p>
+        <details class="hint">
+          <summary>What am I reading?</summary>
+          <b>Want/t</b> is what that nation's people consume per tick and <b>Met</b> how much of it is actually reaching them. Your warehouses feed your own market first, up to <b>Want/t</b>; whatever is left over is offered abroad if <b>Out</b> is on. <b>In</b> lets the treasury buy what your people are short of.
+        </details>
+      </section>
+
+      <section class="pane" data-pane="factories" role="tabpanel" aria-labelledby="tab-factories">
+        <div id="factory-head" class="factories__head"></div>
+        <div id="factory-list" class="factories"></div>
+        <details class="hint">
+          <summary>What am I reading?</summary>
+          Click a site to unfold what it takes in, what it needs per job, what it turns out and how much of the time it is actually working. <b>×</b> demolishes it for half its cost.
+        </details>
+      </section>
+
+      <section class="pane" data-pane="trade" role="tabpanel" aria-labelledby="tab-trade">
+        <div id="trade-head" class="trade-head"></div>
+
+        <h2>Offered to you</h2>
+        <div id="pact-offers" class="offers"></div>
+
+        <h2>Recent deals</h2>
+        <ul id="trade-flows" class="flows"></ul>
+
+        <h2>What you are trading</h2>
+        <table class="market">
+          <thead>
+            <tr>
+              <th>Commodity</th>
+              <th title="Units you have sold abroad, this game">Out</th>
+              <th title="What those exports earned">Earned</th>
+              <th title="Units you have bought from abroad, this game">In</th>
+              <th title="What those imports cost">Paid</th>
+              <th title="Earned on exports less paid on imports">Net</th>
+            </tr>
+          </thead>
+          <tbody id="trade-goods"></tbody>
+        </table>
+        <p class="hint hint--tight">Deals settle between the two local prices, so both sides gain — freight scales with distance, so your neighbours are your natural customers.</p>
+
+        <h2>Nations</h2>
+        <div id="country-list" class="countries"></div>
+        <p class="hint hint--tight">You trade only with nations you hold a pact with. Click one to see its terms and sign — or wait, and one may come to you.</p>
+      </section>
+
+      <section class="pane" data-pane="goods" role="tabpanel" aria-labelledby="tab-goods">
+        <div class="goods__head">
+          <div class="speeds" id="goods-view"></div>
+        </div>
+        <table class="market goods">
+          <thead>
+            <tr>
+              <th>Commodity</th>
+              <th title="Units your industry turned out">Made</th>
+              <th title="Units your own factories burned as inputs">Used</th>
+              <th title="Units your own people bought">Sold</th>
+              <th title="Units shipped abroad">Out</th>
+              <th title="Units bought from abroad — the bracket is what went to your factories rather than your people">In</th>
+              <th title="What your warehouses hold right now">Held</th>
+            </tr>
+          </thead>
+          <tbody id="goods-body"></tbody>
+        </table>
+        <p class="hint" id="goods-note"></p>
+        <details class="hint">
+          <summary>What am I reading?</summary>
+          Every commodity your nation touched. <b>Made</b> and <b>Used</b> are your own factories; <b>Sold</b> is what your people bought over the counter. <b>In</b> counts everything bought abroad, and the figure in brackets is the part that went to your <em>factories</em> rather than your people — a country with no coalfield can still run a steel mill this way. <b>Held</b> is warehouse stock right now.
+        </details>
+      </section>
+
+      <section class="pane" data-pane="ranks" role="tabpanel" aria-labelledby="tab-ranks">
+        <div id="ranks-head" class="ranks__head"></div>
+        <!-- Nine columns of a league table will not fit a 352px panel, and
+             dropping columns would leave the score unexplained. This is the one
+             table allowed to scroll sideways, inside its own box, so the panel
+             itself never does. -->
+        <div class="scroller">
+          <table class="market ranks">
+            <thead>
+              <tr id="ranks-cols"></tr>
+            </thead>
+            <tbody id="ranks-body"></tbody>
+          </table>
+        </div>
+        <details class="hint">
+          <summary>How the score is worked out</summary>
+          Every nation is measured against the best in the world on six counts and the score is the weighted total out of 100: the size of its economy (30), the industry it has built (20), what that industry turns out per tick (20), how well its own people are supplied (15), its treasury (10) and its trade balance (5). Click a column to rank by it.
+        </details>
+      </section>
+
+      <section class="pane" data-pane="selected" role="tabpanel" aria-labelledby="tab-selected">
+        <div id="inspector"></div>
+      </section>
+    </div>
+  </aside>
+</main>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

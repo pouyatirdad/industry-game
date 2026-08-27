@@ -1,0 +1,245 @@
+/* The side panel: one column, seven views.
+
+   Everything used to be stacked — market table, trade list, forty-six nations,
+   inspector — which made all four hard to read and put the one you wanted
+   below the fold. The tab strip is the only part always on screen; the pane
+   below it is whatever `ui.tab` says, and clicking the active tab folds the
+   panel away entirely. */
+
+.panel--tabs { padding: 0; }
+
+/* Seven views no longer fit one row of a 352px panel, so the strip wraps rather
+   than shrinking every label to an ellipsis: a tab you cannot read is not a tab
+   you will click. */
+.tabs {
+  flex: none;
+  display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 8px 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.tab {
+  display: flex; align-items: center; gap: 5px;
+  flex: 1 1 auto; justify-content: center;
+  padding: 6px 6px; font-size: 11px; letter-spacing: .03em;
+  border-radius: 6px 6px 0 0; border-bottom-color: transparent;
+  background: transparent; color: var(--muted); min-width: 0;
+}
+.tab:hover { color: var(--ink); background: var(--panel-2); }
+.tab[data-active="true"] {
+  background: var(--panel-2); color: var(--ink); font-weight: 600;
+  border-color: var(--line); border-bottom-color: var(--panel-2);
+  margin-bottom: -1px;
+}
+.tab__label { overflow: hidden; text-overflow: ellipsis; }
+.tab--collapse { flex: 0 0 auto; padding: 6px 8px; }
+
+/* How many sites you own, and whether any of them wants looking at. */
+.tab__badge:empty { display: none; }
+.tab__badge {
+  font-size: 10px; font-variant-numeric: tabular-nums;
+  padding: 0 5px; border-radius: 999px;
+  background: var(--line); color: var(--ink);
+}
+.tab__badge[data-alarm="true"] { background: var(--bad); color: #2a0b08; font-weight: 700; }
+
+/* The pane takes whatever height the panel has and scrolls only if its own
+   content genuinely outruns the window — the point is that a table is read in
+   one look, not hunted for. */
+.panes { flex: 1; min-height: 0; padding: 12px 14px 14px; overflow-y: auto; display: flex; flex-direction: column; }
+.pane { display: none; }
+.pane[data-active="true"] { display: block; }
+/* The factory list is the one pane that can outgrow any window — a nation can
+   hold hundreds of sites — so it alone scrolls inside itself, keeping its
+   header and its note in view. Every other pane is meant to be read whole. */
+.pane[data-active="true"][data-pane="factories"] {
+  display: flex; flex-direction: column; min-height: 0; flex: 1;
+}
+/* Folded away, the panel shrinks to the strip that unfolds it again. */
+.panel--tabs[data-open="false"] { bottom: auto; }
+.panel--tabs[data-open="false"] .panes { display: none; }
+.panel--tabs[data-open="false"] .tabs { border-bottom: 0; border-radius: var(--radius); }
+
+/* ---- summary ---- */
+
+/* Two columns, so the whole nation is one screenful rather than a scroll. The
+   cards that carry a list run the full width; the two that are only a figure
+   sit side by side. */
+.summary__inner { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.card {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 6px 9px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.card--wide { grid-column: 1 / -1; }
+.card h4 { margin: 0; }
+.card__big { margin: 0; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card__big.is-negative { color: var(--bad); }
+.card__unit { font-size: 12px; font-weight: 400; color: var(--muted); }
+.card__sub { margin: 0; font-size: 11px; color: var(--muted); }
+.card__sub.is-negative { color: var(--bad); }
+
+.ledger { list-style: none; margin: 0; padding: 0; }
+.ledger li {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 11px; padding: 1px 0; border-bottom: 1px solid #ffffff08;
+}
+.ledger li:last-child { border-bottom: 0; }
+.ledger__total { border-top: 1px solid var(--line); margin-top: 2px; padding-top: 3px; }
+.ledger__total span { color: var(--ink); }
+.ledger b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.ledger .is-negative { color: var(--bad); }
+
+.chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  font-size: 10px; padding: 1px 7px; border-radius: 999px;
+  background: #ffffff10; color: var(--muted); white-space: nowrap;
+}
+.chip[data-status="running"] { color: var(--good); background: #5fbf7f1c; }
+.chip[data-status="starved"], .chip[data-status="unstaffed"] { color: var(--bad); background: #e2685f1c; }
+.chip[data-status="blocked"] { color: var(--accent); background: #f0a04b1c; }
+
+.bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.bars li { display: grid; grid-template-columns: 82px 1fr 38px; align-items: center; gap: 7px; font-size: 11px; }
+.bars b { text-align: right; font-variant-numeric: tabular-nums; }
+.bars__track { display: block; height: 5px; border-radius: 3px; background: #ffffff12; overflow: hidden; }
+.bars__fill { display: block; height: 100%; width: var(--fill); background: var(--bad); }
+.bars__fill[data-good="true"] { background: var(--good); }
+
+/* ---- factories ---- */
+
+.factories__head { margin-bottom: 10px; }
+.factories__head .facts { grid-template-columns: 1fr 1fr; }
+.factories__head .is-negative { color: var(--bad); }
+
+.factories { display: flex; flex-direction: column; gap: 3px; }
+.factory { border: 1px solid var(--line); border-radius: 6px; background: #ffffff06; }
+.factory[data-open="true"] { border-color: var(--accent); background: var(--panel-2); }
+.factory[data-status="starved"], .factory[data-status="unstaffed"] { border-left: 3px solid var(--bad); }
+.factory[data-status="blocked"] { border-left: 3px solid var(--accent); }
+.factory[data-status="running"] { border-left: 3px solid var(--good); }
+.factory[data-status="store"] { border-left: 3px solid #5f8fbf; }
+
+.factory__row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; }
+.factory__main {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) 62px 62px;
+  align-items: center; gap: 7px; text-align: left;
+  background: transparent; border: 0; border-radius: 0; padding: 6px 4px 6px 7px; min-width: 0;
+}
+.factory__main:hover { background: #ffffff08; border: 0; }
+.factory__glyph { font-size: 15px; text-align: center; }
+.factory__id { display: flex; flex-direction: column; min-width: 0; }
+.factory__name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.factory__where { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.factory__work { display: flex; flex-direction: column; gap: 3px; }
+.factory__pct { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.workbar { display: block; height: 4px; border-radius: 2px; background: #ffffff12; overflow: hidden; }
+.workbar__fill { display: block; height: 100%; width: var(--fill, 0%); background: var(--muted); transition: width .3s ease; }
+.factory[data-status="running"] .workbar__fill { background: var(--good); }
+.factory[data-status="starved"] .workbar__fill, .factory[data-status="unstaffed"] .workbar__fill { background: var(--bad); }
+.factory[data-status="blocked"] .workbar__fill { background: var(--accent); }
+.factory[data-status="store"] .workbar__fill { background: #5f8fbf; }
+.factory__status { font-size: 10px; color: var(--muted); text-align: right; }
+.factory[data-status="starved"] .factory__status, .factory[data-status="unstaffed"] .factory__status { color: var(--bad); }
+.factory[data-status="blocked"] .factory__status { color: var(--accent); }
+.factory[data-status="running"] .factory__status { color: var(--good); }
+
+.factory__kill {
+  border: 0; border-radius: 0; background: transparent; color: var(--muted);
+  padding: 0 10px; font-size: 15px; line-height: 1;
+}
+.factory__kill:hover { background: var(--bad); color: #2a0b08; border: 0; }
+
+.factory__detail:empty { display: none; }
+.detail {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 10px 10px; border-top: 1px solid var(--line);
+}
+.detail p { margin: 0; font-size: 11px; }
+.detail .is-negative { color: var(--bad); }
+.needs { list-style: none; margin: 0; padding: 0; }
+.needs li { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; padding: 1px 0; }
+.needs b { font-variant-numeric: tabular-nums; }
+.needs li[data-short="true"] b { color: var(--bad); }
+.needs__note { font-size: 10px; padding-bottom: 4px; }
+
+/* The factory list is the one thing that can genuinely outgrow a screen — a
+   nation can hold hundreds of sites — so it scrolls inside the pane while the
+   header above it and the note below it stay put. */
+.pane[data-pane="factories"] .factories {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px;
+}
+
+/* The pane is the top of its column now, so the panel-wide h2 spacing that
+   map.css sets for a stacked column must not push the first heading down. */
+.pane h2:first-child { margin-top: 0; }
+
+/* ---- trade ---- */
+
+/* The deal list answers "what just happened". These two answer "what am I in
+   the business of", which is the question the tab was missing. */
+.trade-head { margin-bottom: 10px; }
+.facts--four { grid-template-columns: 1fr 1fr; }
+.trade-head dd .muted { font-size: 10px; }
+
+/* A pact somebody else asked for. It pays you, so it is a card rather than a
+   line: there is a decision in it. */
+.offers { display: flex; flex-direction: column; gap: 5px; }
+.offers .muted { font-size: 11px; margin: 0; }
+.offer {
+  border: 1px solid var(--accent); border-radius: 6px;
+  background: #2b241866; padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.offer__who { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.offer__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.offer__fee { color: var(--good); font-variant-numeric: tabular-nums; }
+.offer__note { font-size: 10px; margin: 0; }
+.offer__act { display: flex; gap: 4px; }
+.offer__act button { flex: 1; padding: 3px 8px; font-size: 11px; }
+
+/* Which way a cargo went, and whether it was bought for your people or for your
+   factory floor — the second import channel is invisible without this. */
+.flow__tag {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 0 4px; border-radius: 999px; background: #5f8fbf33; color: #7fb0e0;
+}
+.flow__tick { font-size: 10px; opacity: .7; }
+
+/* ---- goods ---- */
+
+.goods__head { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.goods td { text-align: right; }
+.goods th[scope="row"] { max-width: 74px; }
+/* A commodity you have never touched keeps its row and its place in the table —
+   it just stops competing for your attention. */
+.goods tr[data-idle="true"] { opacity: .35; }
+.goods__in[data-feed="true"] { color: #7fb0e0; }
+
+/* ---- ranks ---- */
+
+.ranks__head { margin-bottom: 10px; }
+.ranks td { text-align: right; }
+.ranks th[scope="row"] { max-width: 78px; }
+.ranks__place { color: var(--muted); font-size: 10px; text-align: right; }
+.ranks__col { cursor: pointer; user-select: none; }
+.ranks__col:hover { color: var(--ink); }
+.ranks__col[data-active="true"] { color: var(--accent); }
+/* The three relationships you can have with a nation, painted the same way the
+   map paints them: yours, a partner, everybody else. */
+.ranks tr[data-home="true"] { background: #f0a04b1c; }
+.ranks tr[data-home="true"] th[scope="row"] { color: var(--accent); font-weight: 700; }
+.ranks tr[data-pact="true"] th[scope="row"] { color: var(--ink); }
+.ranks tbody th[scope="row"] { color: var(--muted); }
+.ranks__trade[data-dir="up"] { color: var(--good); }
+.ranks__trade[data-dir="down"] { color: var(--bad); }
+
+/* The one table wide enough to need it. Scrollbars are already hairlines, so a
+   sideways scroll here costs 6px rather than a row of columns. */
+.scroller { overflow-x: auto; max-width: 100%; }
+.scroller .ranks { font-size: 10px; min-width: 340px; }
+.scroller .ranks th, .scroller .ranks td { padding: 0 4px; }
+
+/* In a half-width summary card two facts side by side never had the room, and
+   a wide one ("$1,505/t") pushed the whole panel sideways. */
+.card .facts { grid-template-columns: 1fr; }

@@ -1,0 +1,14 @@
+# The repo deliberately has NO package.json: without one, Node reads test/run.js
+# as CommonJS and chokes on its imports, so `tools/test.js` writes the one-line
+# ESM marker for the length of a run and removes it again in a `finally`. This
+# line is here so a run that dies between those two steps cannot leave a stray
+# marker in a commit.
+/package.json
+
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Editor and tool state that is personal rather than part of the game.
+.vscode/
+.claude/settings.local.json

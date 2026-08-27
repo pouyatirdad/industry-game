@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Statecraft — tests</title>
+<link rel="stylesheet" href="styles/base.css">
+<style>
+  body { padding: 24px; }
+  #summary { font-size: 18px; margin: 0 0 14px; }
+  ul { list-style: none; padding: 0; max-width: 900px; }
+  li { padding: 7px 10px; border-left: 3px solid var(--line); background: var(--panel); margin-bottom: 4px; border-radius: 5px; }
+  li[data-ok="true"]  { border-left-color: var(--good); }
+  li[data-ok="false"] { border-left-color: var(--bad); }
+  .err { color: var(--bad); font-size: 12px; display: block; margin-top: 3px; }
+</style>
+</head>
+<body>
+<h1 class="brand">Statecraft — test suite</h1>
+<p id="summary">running…</p>
+<ul id="results"></ul>
+<script type="module">
+  import { runTests } from './test/run.js';
+  const only = new URLSearchParams(location.search).get('only') ?? '';
+  const results = runTests(only);
+  const failed = results.filter((r) => !r.ok);
+  const summary = document.getElementById('summary');
+  summary.textContent = `${results.length - failed.length}/${results.length} passing`
+    + (results.skipped ? ` (${results.skipped} filtered out by ?only=${only})` : '');
+  summary.style.color = failed.length ? 'var(--bad)' : 'var(--good)';
+  document.title = failed.length ? `FAIL ${failed.length}` : 'PASS';
+  document.getElementById('results').replaceChildren(...results.map((r) => {
+    const li = document.createElement('li');
+    li.dataset.ok = String(r.ok);
+    li.textContent = `${r.ok ? 'PASS' : 'FAIL'}  ${r.name}`;
+    if (!r.ok) {
+      const err = document.createElement('span');
+      err.className = 'err';
+      err.textContent = r.error;
+      li.append(err);
+    }
+    return li;
+  }));
+  globalThis.__testResults = results;
+</script>
+</body>
+</html>
