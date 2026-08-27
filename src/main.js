@@ -214,13 +214,18 @@ document.addEventListener('keydown', (event) => {
 // Alerts expire in real time rather than in ticks, so the sweep is a timer of
 // its own: a message you have read clears itself whether the game is running at
 // 4x or sitting paused.
-// ...and so do offers: an unanswered proposal is a declined one. The sweep is
-// held while the pointer is over the inbox, because an offer that vanishes as
-// you reach for it is worse than one that lingers.
+//
+// Offers are different. An unanswered proposal still means "no", but its five
+// seconds are active game time: a stopped or paused game should not quietly
+// decline a decision the player has not had running time to answer.
+let offerClock = 0;
+let lastOfferWall = Date.now();
 setInterval(() => {
   const now = Date.now();
   const swept = pruneAlerts(ctx.state, now);
-  const answered = pruneOffers(ctx.state, now, ctx.ui.inboxHeld);
+  if (!ctx.state.paused) offerClock += now - lastOfferWall;
+  lastOfferWall = now;
+  const answered = ctx.state.paused ? false : pruneOffers(ctx.state, offerClock, ctx.ui.inboxHeld);
   if (swept || answered) render();
 }, 500);
 

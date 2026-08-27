@@ -25,8 +25,8 @@ export function updateInbox(host, ctx) {
   // `at` is in the signature so a card that was replaced by a fresh proposal
   // restarts its countdown rather than inheriting the old one's.
   const sig = [
-    ...contracts.map((o) => `c${o.from}${o.dir}${o.commodity}${o.qty}${o.at ?? 0}`),
-    ...techs.map((o) => `t${o.from}${o.tech}${o.at ?? 0}`),
+    ...contracts.map((o) => `c${o.from}${o.dir}${o.commodity}${o.qty}${o.activeAt ?? o.at ?? 0}`),
+    ...techs.map((o) => `t${o.from}${o.tech}${o.activeAt ?? o.at ?? 0}`),
   ].join('|');
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;

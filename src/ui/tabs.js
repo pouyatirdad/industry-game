@@ -81,6 +81,7 @@ export function updatePanels(refs, ctx) {
 
   setAttr(refs.panel, 'data-open', String(ui.panelOpen));
   setAttr(refs.layout, 'data-left', String(ui.leftOpen));
+  setAttr(refs.layout, 'data-paused', String(state.paused));
   for (const pane of refs.panes.children) {
     setAttr(pane, 'data-active', String(pane.dataset.pane === ui.tab));
   }

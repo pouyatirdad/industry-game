@@ -48,6 +48,7 @@ export const WATER_TERRAINS = WATER_DEPOSIT_ORDER;
 // A country whose every tile is a mine can extract but never manufacture, which
 // is a dead end rather than a hard choice. This reserves flat ground.
 const MAX_DEPOSIT_SHARE = 0.68;
+const MIN_VISIBLE_LAND_CELLS = 9;
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -103,6 +104,7 @@ export function generateWorld(seed) {
     tiles[index].terrain = 'plain';
     owned[info.id].push(index);
   }
+  ensureVisibleCountries(tiles, owned);
 
   claimTerritorialWaters(tiles, owned);
 
@@ -127,6 +129,52 @@ export function generateWorld(seed) {
 
   layOffshoreDeposits(tiles, seed);
   return tiles;
+}
+
+function ensureVisibleCountries(tiles, owned) {
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = false;
+    for (const info of WORLD_COUNTRY_INFO) {
+      if (!COUNTRIES[info.id] || (owned[info.id]?.length ?? 0) >= MIN_VISIBLE_LAND_CELLS) continue;
+      const cx = Math.max(0, Math.min(WORLD_W - 1, Math.floor((info.centre.lon + 180) * WORLD_W / 360)));
+      const cy = Math.max(0, Math.min(WORLD_H - 1, Math.floor((90 - info.centre.lat) * WORLD_H / 180)));
+      const candidates = nearestCells(cx, cy);
+      for (const index of candidates) {
+        if (owned[info.id].length >= MIN_VISIBLE_LAND_CELLS) break;
+        if (claimLandCell(tiles, owned, index, info.id)) changed = true;
+      }
+    }
+    if (!changed) return;
+  }
+}
+
+function nearestCells(x, y) {
+  const cells = [];
+  for (let radius = 0; radius < 12; radius++) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= WORLD_W || ny >= WORLD_H) continue;
+        cells.push(ny * WORLD_W + nx);
+      }
+    }
+  }
+  return cells;
+}
+
+function claimLandCell(tiles, owned, index, countryId) {
+  const tile = tiles[index];
+  if (tile.countryId === countryId) return false;
+  const old = tile.countryId;
+  if (old && owned[old] && owned[old].length <= MIN_VISIBLE_LAND_CELLS) return false;
+  if (old && owned[old]) owned[old] = owned[old].filter((id) => id !== index);
+  tile.countryId = countryId;
+  tile.terrain = 'plain';
+  tile.buildingId = null;
+  owned[countryId].push(index);
+  return true;
 }
 
 function nearestOpenCell(tiles, x, y) {
@@ -629,7 +677,11 @@ export function pruneAlerts(state, now = Date.now()) {
 // you are actually looking at it.
 export function pruneOffers(state, now = Date.now(), hold = false) {
   if (hold) return false;
-  const alive = (offer) => now - (offer.at ?? now) < CONFIG.offerTtlMs;
+  const stamp = (offer) => {
+    if (offer.activeAt == null) offer.activeAt = now;
+    return offer.activeAt;
+  };
+  const alive = (offer) => now - stamp(offer) < CONFIG.offerTtlMs;
   const contracts = state.contractOffers ?? [];
   const techs = state.techOffers ?? [];
   const keptContracts = contracts.filter(alive);

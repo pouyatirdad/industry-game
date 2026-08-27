@@ -31,6 +31,10 @@ repo deliberately has no `package.json`** — without one Node reads `test/run.j
 chokes on its `import`s, so the wrapper writes `{"type":"module"}` for the length of the run and
 removes it again in a `finally`. Do not "simplify" that away by committing a package.json.
 
+When the user asks you to commit and push, update this file in the same change if the work teaches a
+new repo rule, run the relevant tests first, commit only the files you intentionally changed, and
+push the current branch. Do not leave a requested push as a reminder.
+
 The same suite also runs in the browser at `test.html` (add `?only=<substring>` to filter), which
 is the path to use when you need a DOM.
 
@@ -222,6 +226,13 @@ hardcoded quantity inside `src/systems/` is a bug, and so is a system that reads
 than one-character paint. The projection is plain equirectangular: column 0 is 180°W, row 0 is 90°N.
 Russia and Canada are stretched near the poles exactly as on a Plate Carrée wall map, and their tile
 counts reflect that.
+
+The opening zoom is `CONFIG.defaultZoom = 2` (3px/tile), because labels only appear from 3px upward
+and tiny countries otherwise look absent even when the ISO grid gives them land.
+
+`generateWorld()` also expands any country below nine land cells into a tiny cluster at its GeoJSON
+centroid. This intentionally spends a little ocean or neighbour space on legibility: all countries
+must be visible and buildable without turning the map into an abstract rectangle.
 
 **Longitude wraps.** `geography.js` measures the short way round the globe, so Japan is nearer the
 United States across the Pacific than the United Kingdom is overland. A flat measure would route that
@@ -466,7 +477,7 @@ Five things earn their own view rather than sharing one:
 - **Selected** is the old inspector. Clicking the map lands there only when no build tool is in hand:
   laying out a chain must not yank the panel away from the list you were reading.
 
-### Messages expire in real time
+### Messages and offers expire differently
 
 `pushAlert` stamps a wall-clock `at`, and `main.js` sweeps expired alerts on a 500ms timer rather than
 on a tick — a message you have read clears itself whether the game is running at 4x or sitting
@@ -476,6 +487,11 @@ bumps `count` instead of stacking a duplicate.
 
 Building and demolishing announce themselves from `src/actions.js`, guarded by `isPlayer` — the other
 governments call the same `build()` every few ticks and none of that is your news.
+
+Contract and tech offers use `CONFIG.offerTtlMs`, but that countdown is active game time, not wall
+clock time. `main.js` advances the offer clock only while `state.paused === false`; `pruneOffers`
+stamps `offer.activeAt` on the first active sweep and compares against that. A paused or freshly
+loaded game must not auto-decline an inbox decision.
 
 ## Footguns
 

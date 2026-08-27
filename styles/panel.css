@@ -46,7 +46,7 @@
 /* The pane takes whatever height the panel has and scrolls only if its own
    content genuinely outruns the window — the point is that a table is read in
    one look, not hunted for. */
-.panes { flex: 1; min-height: 0; padding: 12px 14px 14px; overflow-y: auto; display: flex; flex-direction: column; }
+.panes { flex: 1; min-height: 0; padding: 10px 12px 12px; overflow-y: hidden; display: flex; flex-direction: column; }
 .pane { display: none; }
 .pane[data-active="true"] { display: block; }
 /* The factory list is the one pane that can outgrow any window — a nation can
@@ -366,7 +366,7 @@
 
 /* The book. Asks first, then bids, each side cheapest-best at the top — so the
    row you want is always near the fold. */
-.book { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow-y: auto; }
+.book { display: flex; flex-direction: column; gap: 2px; max-height: none; overflow-y: visible; }
 .book .muted { font-size: 11px; margin: 0; }
 .listing {
   border: 1px solid var(--line); border-radius: 6px;

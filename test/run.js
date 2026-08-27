@@ -1,7 +1,7 @@
 import { createInitialState, warehouseStock, siteWages, DEPOSIT_TERRAINS, WATER_TERRAINS, rehydrate,
   appetite, buildingsOf, canTrade, isPlayer, projectedWages, packState,
   pushAlert, pruneAlerts, dismissAlert, recordFlow, ownFlows,
-  knowsTech, learnTech, techCount, contractsOf, exchangeOf } from '../src/core/state.js';
+  pruneOffers, knowsTech, learnTech, techCount, contractsOf, exchangeOf } from '../src/core/state.js';
 import { TECHS, TECH_IDS, STARTING_TECHS, canResearch, availableTechs, techChain } from '../src/data/technology.js';
 import { COMMODITIES, COMMODITY_IDS } from '../src/data/commodities.js';
 import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR } from '../src/data/countries.js';
@@ -126,6 +126,14 @@ test('every nation owns land on the map', () => {
   for (const tile of createInitialState().tiles) if (tile.countryId) seen.add(tile.countryId);
   const missing = COUNTRY_IDS.filter((id) => !seen.has(id));
   equal(missing.length, 0, `nations with no tiles: ${missing.join(', ')}`);
+});
+
+test('small central Asian and Caucasus nations are present on the map', () => {
+  const state = createInitialState();
+  for (const id of COUNTRY_IDS) {
+    const owned = state.tiles.filter((tile) => tile.countryId === id);
+    assert(owned.length >= 9, `${id} should own a visible cluster of map tiles`);
+  }
 });
 
 test('the ISO country grid is exactly the declared source grid', () => {
@@ -861,6 +869,18 @@ test('a message can be dismissed by hand', () => {
   equal(dismissAlert(state, 0), true, 'dismissed');
   equal(state.alerts.length, 1, 'one left');
   equal(dismissAlert(state, 5), false, 'and nothing else to dismiss');
+});
+
+test('unanswered offers expire against active game time', () => {
+  const state = fixture();
+  state.contractOffers = [{ from: 'DE', dir: 'sell', commodity: 'coal', qty: 10, every: 1, term: 20, price: 40, tick: state.tick }];
+
+  equal(pruneOffers(state, 0), false, 'the active-time clock starts when the offer is first swept');
+  equal(pruneOffers(state, CONFIG.offerTtlMs - 1), false, 'it does not expire early');
+  equal(state.contractOffers.length, 1, 'the proposal is still waiting');
+
+  equal(pruneOffers(state, CONFIG.offerTtlMs + 1), true, 'it expires after five active seconds');
+  equal(state.contractOffers.length, 0, 'and is declined');
 });
 
 // ---- chains ----------------------------------------------------------------

@@ -29,26 +29,26 @@
   image-rendering: pixelated;
 }
 
-/* Zoom floats over the top of the map, clear of both panels. */
+/* Zoom floats at the left-bottom edge, clear of messages and decisions. */
 .maptools {
-  position: absolute; z-index: 4; top: 10px; left: 50%; transform: translateX(-50%);
+  position: absolute; z-index: 4; left: 12px; bottom: 12px;
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
 }
+.layout[data-left="true"] .maptools { left: 312px; }
 .maptools__label {
   font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
 }
 
 /* ---- country panel ---- */
 .countries {
-  max-height: 46vh; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 2px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px;
 }
 
 .country {
   display: grid;
   grid-template-columns: 10px 1fr auto;
-  align-items: center; gap: 7px;
-  padding: 4px 6px; border-radius: 4px;
+  align-items: center; gap: 5px;
+  padding: 2px 4px; border-radius: 4px;
   background: #ffffff08; border: 1px solid transparent;
   cursor: pointer; text-align: left; font: inherit; color: inherit;
 }
@@ -57,8 +57,8 @@
 .country[data-home="true"] { background: #5fbf7f1f; }
 
 .country__swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--swatch); }
-.country__name { font-size: 12px; }
-.country__meta { font-size: 10px; color: var(--muted); text-align: right; white-space: nowrap; }
+.country__name { font-size: 10px; }
+.country__meta { font-size: 9px; color: var(--muted); text-align: right; white-space: nowrap; }
 
 /* ---- ownership ---- */
 .owner { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
@@ -85,13 +85,14 @@
    deliberately not a modal that blocks: you can ignore it, and the same offers
    are in their tabs either way. */
 .inbox {
-  position: absolute; z-index: 6; right: 374px; bottom: 12px;
+  position: absolute; z-index: 6; right: 542px; top: 12px;
   display: flex; flex-direction: column; gap: 6px;
   width: 262px; max-height: 62vh; overflow-y: auto;
   pointer-events: none;
 }
-.layout:not([data-left="true"]) .inbox { right: 374px; }
+.layout:not([data-left="true"]) .inbox { right: 542px; }
 .panel--tabs[data-open="false"] ~ .inbox { right: 12px; }
+.layout[data-paused="true"] .post__ttl { animation-play-state: paused; }
 
 .post {
   pointer-events: auto;

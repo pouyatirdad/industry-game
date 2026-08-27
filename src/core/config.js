@@ -33,7 +33,7 @@ export const CONFIG = {
   // Tile sizes in px. The world is far wider than a screen, so zoom is a
   // first-class control rather than a nicety.
   zoomLevels: [1, 2, 3, 5, 8, 14],
-  defaultZoom: 1,
+  defaultZoom: 2,
   // Weight of the current tick in a site's rolling 'working %'. Uptime has to
   // answer 'is this plant earning its wages lately', so it is an exponential
   // average rather than a lifetime one: a factory starved for fifty ticks and
