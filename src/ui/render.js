@@ -5,15 +5,23 @@ import { updateSummary } from './summary.js';
 import { updateFactories } from './factories.js';
 import { mountGoods, updateGoods } from './goods.js';
 import { mountRanks, updateRanks } from './ranks.js';
+import { mountTech, updateTech } from './tech.js';
+import { mountContracts, updateContracts } from './contracts.js';
+import { mountMarket, updateMarket } from './market.js';
+import { updateInbox } from './inbox.js';
 import { updateInspector } from './inspector.js';
 
 const ID_MAP = {
   map: 'map', alerts: 'alerts', inspector: 'inspector', buildMenu: 'build-menu',
-  countries: 'country-list', homeSelect: 'home-select', zoom: 'zoom-buttons',
+  countries: 'country-list', homeSelect: 'home-select',
   marketCountry: 'market-country', marketNote: 'market-note', flows: 'trade-flows',
-  tradeHead: 'trade-head', offers: 'pact-offers', tradeGoods: 'trade-goods',
+  tradeHead: 'trade-head', tradeGoods: 'trade-goods',
+  marketHead: 'market-head', listingDraft: 'listing-draft', listingBook: 'listing-book',
+  fundCard: 'fund-card', inbox: 'inbox', zoomLabel: 'zoom-label',
   goodsView: 'goods-view', goodsBody: 'goods-body', goodsNote: 'goods-note',
   ranksHead: 'ranks-head', ranksCols: 'ranks-cols', ranksBody: 'ranks-body',
+  techHead: 'tech-head', techOffers: 'tech-offers', techTree: 'tech-tree',
+  contractOffers: 'contract-offers', contractDraft: 'contract-draft', contractList: 'contract-list',
   nationName: 'nation-name', nationCard: 'nation-card',
   market: 'market-body', speeds: 'speed-buttons', cash: 'stat-cash', net: 'stat-net',
   wages: 'stat-wages', trade: 'stat-trade', supply: 'stat-supply', demand: 'stat-demand',
@@ -33,7 +41,9 @@ const PANES = {
   factories: updateFactories,
   goods: updateGoods,
   trade: updateTrade,
+  market: updateMarket,
   ranks: updateRanks,
+  tech: updateTech,
   selected: (refs, ctx) => updateInspector(refs.inspector, ctx),
 };
 
@@ -48,11 +58,16 @@ export function createRenderer(ctx) {
   let mapView = mountMap(refs.map, ctx);
   mountDashboard(refs, ctx);
   mountTabs(refs, ctx);
-  // Both of these are fixed lists — twenty-one commodities, forty-six nations —
+  // Both of these are fixed lists — thirty-four commodities, forty-six nations —
   // so their rows are built once here and only their figures are written each
   // tick, exactly as the market table and the factory list work.
   mountGoods(refs, ctx);
   mountRanks(refs, ctx);
+  // The tech tree is twenty fixed entries and the contract form is a form you
+  // are in the middle of using — both are mounted once for the same reason.
+  mountTech(refs, ctx);
+  mountContracts(refs, ctx);
+  mountMarket(refs, ctx);
 
   return {
     refs,
@@ -63,6 +78,9 @@ export function createRenderer(ctx) {
       updatePanels(refs, ctx);
       updateMap(refs.map, mapView, ctx);
       updateAlerts(refs.alerts, ctx);
+      // The inbox floats over the map, so it is outside the pane dispatch below
+      // for the same reason the alerts are: it is always visible.
+      updateInbox(refs.inbox, ctx);
       if (!ctx.ui.panelOpen) return;
       (PANES[ctx.ui.tab] ?? PANES.summary)(refs, ctx);
     },

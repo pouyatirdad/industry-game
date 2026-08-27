@@ -1,9 +1,8 @@
 import { BUILDINGS } from '../data/buildings.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
-import { hasPact } from '../core/state.js';
 import { moneyShort, num, pct, setAttr, setText, html } from './format.js';
 
-// Forty-six nations, scored against each other on the six things a government
+// Forty-six nations, scored against each other on the seven things a government
 // can actually be judged on. Every nation in the game is run by the same code
 // out of its own treasury, so "how am I doing" only means anything relative to
 // them — and the map cannot answer it, because a nation's industry is invisible
@@ -13,11 +12,15 @@ import { moneyShort, num, pct, setAttr, setText, html } from './format.js';
 // standing rather than a unit: 100 would be a nation that led every column at
 // once, which nothing ever does.
 const WEIGHTS = [
-  { id: 'economy', label: 'Econ', weight: 30, title: 'The size of its home market — the one country figure that moves during a game.' },
-  { id: 'sites', label: 'Sites', weight: 20, title: 'How much industry it has actually built.' },
-  { id: 'output', label: 'Out/t', weight: 20, title: 'What that industry turns out per tick, valued at its own local prices.' },
-  { id: 'supply', label: 'Fed', weight: 15, title: 'How much of what its people want is reaching them.' },
-  { id: 'cash', label: 'Cash', weight: 10, title: 'Treasury.' },
+  { id: 'economy', label: 'Econ', weight: 26, title: 'The size of its home market — the one country figure that moves during a game.' },
+  { id: 'sites', label: 'Sites', weight: 17, title: 'How much industry it has actually built.' },
+  { id: 'output', label: 'Out/t', weight: 18, title: 'What that industry turns out per tick, valued at its own local prices.' },
+  { id: 'supply', label: 'Fed', weight: 14, title: 'How much of what its people want is reaching them.' },
+  // What it may build at all. A nation's tree is invisible from the map and
+  // from every other column here, and it is the one lead that compounds: the
+  // industries at the top of it are worth several times the ones at the bottom.
+  { id: 'tech', label: 'Tech', weight: 12, title: 'How many technologies it holds, out of the whole tree.' },
+  { id: 'cash', label: 'Cash', weight: 8, title: 'Treasury.' },
   { id: 'trade', label: 'Trade', weight: 5, title: 'Exports less imports, per tick.' },
 ];
 
@@ -70,13 +73,14 @@ export function updateRanks(refs, ctx) {
     const node = byId.get(row.id);
     if (!node) return;
     setAttr(node, 'data-home', row.id === state.home ? 'true' : null);
-    setAttr(node, 'data-pact', row.id !== state.home && hasPact(state, row.id) ? 'true' : null);
+    setAttr(node, 'data-pact', row.id !== state.home && row.partner ? 'true' : null);
     setText(node.querySelector('.ranks__place'), String(index + 1));
     setText(node.querySelector('.ranks__score'), row.score.toFixed(1));
     setText(node.querySelector('.ranks__economy'), row.economy.toFixed(1));
     setText(node.querySelector('.ranks__sites'), num(row.sites));
     setText(node.querySelector('.ranks__output'), moneyShort(row.output));
     setText(node.querySelector('.ranks__supply'), pct(row.supply));
+    setText(node.querySelector('.ranks__tech'), num(row.tech));
     setText(node.querySelector('.ranks__cash'), moneyShort(row.cash));
     const trade = node.querySelector('.ranks__trade');
     setText(trade, `${row.trade >= 0 ? '+' : '-'}${moneyShort(Math.abs(row.trade))}`);
@@ -119,6 +123,12 @@ export function scoreNations(state) {
     output.set(b.owner, (output.get(b.owner) ?? 0) + value * Math.min(1, Math.max(0, b.uptime ?? 0)));
   }
 
+  const partners = new Set();
+  for (const c of state.contracts ?? []) {
+    if (c.seller === state.home) partners.add(c.buyer);
+    if (c.buyer === state.home) partners.add(c.seller);
+  }
+
   const rows = COUNTRY_IDS.map((id) => {
     const gov = state.countries[id];
     return {
@@ -127,8 +137,12 @@ export function scoreNations(state) {
       sites: sites.get(id) ?? 0,
       output: output.get(id) ?? 0,
       supply: gov.supply,
+      tech: Object.keys(gov.techs ?? {}).length,
       cash: gov.cash,
       trade: gov.report.exports - gov.report.imports,
+      // Whether you are actually dealing with it right now, which is the only
+      // relationship left that the table can paint.
+      partner: partners.has(id),
       score: 0,
     };
   });

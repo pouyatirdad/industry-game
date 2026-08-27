@@ -1,8 +1,13 @@
 import { CONFIG } from './core/config.js';
 import { BUILDINGS } from './data/buildings.js';
-import { COMMODITY_IDS } from './data/commodities.js';
-import { COUNTRIES, pactCost } from './data/countries.js';
-import { buildingOnTile, pushAlert, isOwnSoil, isPlayer, ownerById, ownerName } from './core/state.js';
+import { COMMODITIES, COMMODITY_IDS } from './data/commodities.js';
+import { COUNTRIES } from './data/countries.js';
+import { TECHS, canResearch, techChain } from './data/technology.js';
+import { buildingOnTile, pushAlert, isOwnSoil, isPlayer, ownerById, ownerName,
+  knowsTech, learnTech, contractById, contractLeft, declineTech } from './core/state.js';
+import { licenceCost, clampShare } from './systems/research.js';
+import { canSignContract, signContract, quotePrice, describe as describeContract } from './systems/contracts.js';
+import { post, withdraw, takeListing, borrow, repay } from './systems/exchange.js';
 
 // Money in an alert, spelled the way the panels spell it. Actions cannot import
 // the UI's formatter — src/ui is the layer above this one — and a bare 18000 in
@@ -34,6 +39,12 @@ export function canBuild(state, type, tile, owner = state.home) {
   if (tile.buildingId != null) return { ok: false, reason: 'Tile is already occupied.' };
   if (!def.terrain.includes(tile.terrain)) {
     return { ok: false, reason: `${def.name} cannot be built on ${tile.terrain}.` };
+  }
+  // Technology gates every industry past the basics, for the forty-five
+  // governments exactly as for you — `runStateIndustry` calls this same
+  // function, so none of them can build what it has not learned either.
+  if (def.tech && !knowsTech(state, owner, def.tech)) {
+    return { ok: false, reason: `${TECHS[def.tech].name} has not been researched yet.` };
   }
   if ((ownerById(state, owner)?.cash ?? 0) < def.cost) return { ok: false, reason: 'Treasury is short.' };
   return { ok: true };
@@ -96,62 +107,226 @@ export function demolish(state, tile, owner = state.home) {
   return { ok: true, refund };
 }
 
-export function canOpenPact(state, countryId) {
-  const country = COUNTRIES[countryId];
-  if (!country) return { ok: false, reason: 'No such country.' };
-  if (countryId === state.home) return { ok: false, reason: 'That is your own country.' };
-  if (state.countries[countryId].pact) return { ok: false, reason: `Already trading with ${country.name}.` };
-  const cost = pactCost(countryId);
-  if (state.countries[state.home].cash < cost) {
-    return { ok: false, reason: `A pact with ${country.name} costs more than the treasury holds.` };
+// --- the exchange ---------------------------------------------------------
+
+// Your own ask or bid on the open book. Everything else about it is the same as
+// a government's: it stands for `CONFIG.exchange.ttl` ticks, anybody may take
+// it, and the matcher will pair it the moment somebody's terms cross yours.
+export function postListing(state, draft) {
+  const result = post(state, {
+    from: state.home,
+    side: draft.side,
+    commodity: draft.commodity,
+    qty: Number(draft.qty) || 0,
+    price: Number(draft.price) || 0,
+    every: Math.max(1, Math.round(Number(draft.every) || 1)),
+    term: Math.max(1, Math.round(Number(draft.term) || CONFIG.exchange.term)),
+  });
+  if (!result.ok) { pushAlert(state, result.reason, 'warn'); return result; }
+  pushAlert(state, `Posted: ${draft.side === 'sell' ? 'selling' : 'buying'} ${result.listing.qty} ${COMMODITIES[draft.commodity].name}/${result.listing.every}t at ${cash(result.listing.price)}.`, 'good');
+  return result;
+}
+
+export function cancelListing(state, listingId) {
+  const result = withdraw(state, listingId);
+  if (result.ok) pushAlert(state, 'Listing withdrawn.', 'info');
+  return result;
+}
+
+// Taking somebody else's terms off the book, at their price.
+export function take(state, listingId) {
+  const result = takeListing(state, listingId, state.home);
+  if (!result.ok) { pushAlert(state, result.reason, 'warn'); return result; }
+  pushAlert(state, `${describeContract(state, result.contract)} taken off the book.`, 'good');
+  return result;
+}
+
+// Borrowing against the clearing fund, and paying it back. The fund is the fee
+// every settlement on the exchange has paid in, so this is the world's own trade
+// lending to the nation that needs it.
+export function takeLoan(state, amount) {
+  const result = borrow(state, state.home, amount);
+  if (!result.ok) pushAlert(state, result.reason, 'warn');
+  return result;
+}
+
+export function repayLoan(state, amount) {
+  const result = repay(state, state.home, amount);
+  if (!result.ok) pushAlert(state, result.reason, 'warn');
+  return result;
+}
+
+// --- technology -----------------------------------------------------------
+
+// What the laboratories are working on. Switching subject keeps the points
+// already banked, because they are a budget line rather than progress on one
+// particular idea — a nation that changes its mind loses time, not money.
+export function setResearch(state, techId) {
+  const home = state.countries[state.home];
+  if (techId && !canResearch(home.techs ?? {}, techId)) {
+    return { ok: false, reason: 'That needs something you have not learned yet.' };
   }
+  home.researching = techId ?? null;
+  return { ok: true };
+}
+
+export function setResearchShare(state, share) {
+  state.countries[state.home].researchShare = clampShare(share);
+  return { ok: true, share: state.countries[state.home].researchShare };
+}
+
+export function canBuyTech(state, techId, fromId) {
+  const home = state.countries[state.home];
+  if (!TECHS[techId]) return { ok: false, reason: 'No such technology.' };
+  if (knowsTech(state, state.home, techId)) return { ok: false, reason: 'You already have it.' };
+  if (!knowsTech(state, fromId, techId)) {
+    return { ok: false, reason: `${ownerName(fromId)} does not have it either.` };
+  }
+  const cost = licenceCost(state, state.home, techId);
+  if (home.cash < cost) return { ok: false, reason: 'A licence costs more than the treasury holds.' };
   return { ok: true, cost };
 }
 
-// A pact is permanent and paid up front: there is no refund for closing one,
-// which is what makes opening a distant market a decision rather than a free
-// upgrade. The fee lands in that nation's treasury, so buying your way into a
-// market also funds the industry you will then be competing with.
-export function openPact(state, countryId) {
-  const check = canOpenPact(state, countryId);
-  if (!check.ok) {
-    pushAlert(state, check.reason, 'warn');
-    return check;
-  }
+// Buying knowledge rather than working it out. Everything upstream you still
+// lack comes with it — a fab is no use to a nation that cannot make glass — so
+// one licence can be several techs, and the quote says so.
+export function buyTech(state, techId, fromId) {
+  const check = canBuyTech(state, techId, fromId);
+  if (!check.ok) { pushAlert(state, check.reason, 'warn'); return check; }
+  const chain = techChain(state.countries[state.home].techs ?? {}, techId);
   state.countries[state.home].cash -= check.cost;
-  state.countries[countryId].cash += check.cost;
-  state.countries[countryId].pact = true;
-  pushAlert(state, `Trade pact signed with ${COUNTRIES[countryId].name}.`, 'good');
-  return { ok: true };
+  state.countries[fromId].cash += check.cost;
+  for (const id of chain) learnTech(state, state.home, id);
+  pushAlert(state, `${TECHS[techId].name} licensed from ${ownerName(fromId)} for ${cash(check.cost)}${chain.length > 1 ? ` (${chain.length} technologies)` : ''}.`, 'good');
+  return { ok: true, chain };
 }
 
-// The other half of the pact story: a nation that wants your market comes to
-// you, and accepting is paid rather than paying. The fee is capped at what its
-// treasury actually holds, so an eager government cannot bankrupt itself the
-// moment you say yes — `runDiplomacy` will not make an offer it cannot cover,
-// but ticks pass between the offer and your answer.
-export function acceptOffer(state, countryId) {
-  const offer = (state.offers ?? []).find((o) => o.from === countryId);
+export function acceptTechOffer(state, techId) {
+  const offer = (state.techOffers ?? []).find((o) => o.tech === techId);
   if (!offer) return { ok: false, reason: 'No such offer.' };
-  if (state.countries[countryId].pact) {
-    state.offers = state.offers.filter((o) => o !== offer);
-    return { ok: false, reason: `Already trading with ${COUNTRIES[countryId].name}.` };
-  }
-  const paid = Math.max(0, Math.min(offer.fee, state.countries[countryId].cash));
-  state.countries[countryId].cash -= paid;
-  state.countries[state.home].cash += paid;
-  state.countries[countryId].pact = true;
-  state.offers = state.offers.filter((o) => o !== offer);
-  pushAlert(state, `Pact with ${COUNTRIES[countryId].name} accepted — ${cash(paid)} paid to you.`, 'good');
-  return { ok: true, paid };
+  const result = buyTech(state, techId, offer.from);
+  if (result.ok) state.techOffers = state.techOffers.filter((o) => o !== offer);
+  return result;
 }
 
-export function declineOffer(state, countryId) {
-  const before = (state.offers ?? []).length;
-  state.offers = (state.offers ?? []).filter((o) => o.from !== countryId);
-  if (state.offers.length === before) return { ok: false, reason: 'No such offer.' };
-  pushAlert(state, `Offer from ${COUNTRIES[countryId].name} declined.`, 'info');
+// Turning one down is remembered, so the same government does not come back
+// with it for `CONFIG.offerCooldown` ticks.
+export function declineTechOffer(state, techId) {
+  const before = (state.techOffers ?? []).length;
+  state.techOffers = (state.techOffers ?? []).filter((o) => o.tech !== techId);
+  declineTech(state, techId);
+  return state.techOffers.length === before ? { ok: false, reason: 'No such offer.' } : { ok: true };
+}
+
+// --- contracts ------------------------------------------------------------
+
+// Your side of a contract, drafted in the Trade tab. `dir` is written from YOUR
+// point of view: 'buy' means the cargo comes to you.
+export function proposeContract(state, draft) {
+  const terms = contractTerms(state, draft);
+  const check = canSignContract(state, terms);
+  if (!check.ok) { pushAlert(state, check.reason, 'warn'); return check; }
+  // The other side has to believe it. A government will not promise to sell
+  // what it does not have, nor buy what it cannot pay for.
+  const willing = otherSideAgrees(state, terms);
+  if (!willing.ok) { pushAlert(state, willing.reason, 'warn'); return willing; }
+  const result = signContract(state, terms);
+  if (result.ok) pushAlert(state, `${describeContract(state, result.contract)} signed at ${cash(result.contract.price)}/unit.`, 'good');
+  return result;
+}
+
+export function contractTerms(state, draft) {
+  const other = draft.partner;
+  const buying = draft.dir === 'buy';
+  return {
+    seller: buying ? other : state.home,
+    buyer: buying ? state.home : other,
+    commodity: draft.commodity,
+    qty: Number(draft.qty) || 0,
+    every: Math.max(1, Math.round(Number(draft.every) || 1)),
+    term: Math.max(0, Math.round(Number(draft.term) || 0)),
+  };
+}
+
+// The quote you are being offered, so the panel can show it before you commit.
+export function contractQuote(state, draft) {
+  const terms = contractTerms(state, draft);
+  if (!terms.seller || !terms.buyer || terms.seller === terms.buyer) return null;
+  return quotePrice(state, terms.seller, terms.buyer, terms.commodity);
+}
+
+// A government signs what it can keep. Asking one to promise ten coal a tick
+// when it has never mined any is not a deal, it is a penalty scheme.
+function otherSideAgrees(state, terms) {
+  const themId = isPlayer(state, terms.seller) ? terms.buyer : terms.seller;
+  const them = state.countries[themId];
+  if (!them.solvent) return { ok: false, reason: `${ownerName(themId)} is insolvent and will not sign.` };
+  if (isPlayer(state, terms.buyer)) {
+    // They would be supplying you: they need the goods on the shelf.
+    const held = stockOf(state, themId, terms.commodity);
+    const perDelivery = terms.qty;
+    if (held < perDelivery * 2) {
+      return { ok: false, reason: `${ownerName(themId)} has nowhere near ${perDelivery} ${COMMODITIES[terms.commodity].name} to promise.` };
+    }
+  } else {
+    // They would be buying from you: they need a reason and a treasury.
+    const price = quotePrice(state, terms.seller, terms.buyer, terms.commodity);
+    if (them.cash < price * terms.qty * 4) {
+      return { ok: false, reason: `${ownerName(themId)} cannot underwrite a contract that size.` };
+    }
+  }
   return { ok: true };
+}
+
+function stockOf(state, ownerId, commodityId) {
+  let held = 0;
+  for (const b of state.buildings) {
+    if (b.owner === ownerId && b.store) held += b.store[commodityId] ?? 0;
+  }
+  return held;
+}
+
+export function acceptContractOffer(state, offer) {
+  const found = (state.contractOffers ?? []).find((o) => o.from === offer.from
+    && o.commodity === offer.commodity && o.dir === offer.dir);
+  if (!found) return { ok: false, reason: 'No such offer.' };
+  const seller = found.dir === 'sell' ? found.from : state.home;
+  const buyer = found.dir === 'sell' ? state.home : found.from;
+  const result = signContract(state, {
+    seller, buyer, commodity: found.commodity,
+    qty: found.qty, every: found.every, term: found.term, price: found.price,
+  });
+  if (!result.ok) { pushAlert(state, result.reason, 'warn'); return result; }
+  state.contractOffers = state.contractOffers.filter((o) => o !== found);
+  pushAlert(state, `${describeContract(state, result.contract)} signed.`, 'good');
+  return result;
+}
+
+export function declineContractOffer(state, offer) {
+  const before = (state.contractOffers ?? []).length;
+  state.contractOffers = (state.contractOffers ?? []).filter((o) => !(o.from === offer.from
+    && o.commodity === offer.commodity && o.dir === offer.dir));
+  return state.contractOffers.length === before ? { ok: false, reason: 'No such offer.' } : { ok: true };
+}
+
+// Walking away early. A contract is a promise, so breaking one is not free:
+// the other side is paid the penalty on everything still owed. That is the
+// same rate a missed delivery costs, which is what stops cancelling from being
+// a cheaper way to default.
+export function cancelContract(state, id) {
+  const contract = contractById(state, id);
+  if (!contract) return { ok: false, reason: 'No such contract.' };
+  const mine = isPlayer(state, contract.seller) || isPlayer(state, contract.buyer);
+  if (!mine) return { ok: false, reason: 'That is not your contract.' };
+  const left = contractLeft(state, contract);
+  const owed = (left / contract.every) * contract.qty * contract.price;
+  const fee = Math.round(owed * CONFIG.contracts.penalty);
+  const otherId = isPlayer(state, contract.seller) ? contract.buyer : contract.seller;
+  state.countries[state.home].cash -= fee;
+  state.countries[otherId].cash += fee;
+  state.contracts = state.contracts.filter((c) => c.id !== id);
+  pushAlert(state, `Contract with ${ownerName(otherId)} broken — ${cash(fee)} paid to walk away.`, 'warn');
+  return { ok: true, fee };
 }
 
 export function toggleExport(state, commodityId) {

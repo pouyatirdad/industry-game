@@ -1,8 +1,8 @@
 import { CONFIG } from '../core/config.js';
 import { BUILDINGS, BUILDING_IDS } from '../data/buildings.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
-import { COMMODITIES } from '../data/commodities.js';
-import { projectedWages, buildingsOf, appetite, siteWages, warehouseUsed } from '../core/state.js';
+import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
+import { projectedWages, buildingsOf, appetite, siteWages, warehouseUsed, knowsTech } from '../core/state.js';
 import { build, canBuild, demolish } from '../actions.js';
 import { warehousesServing } from './logistics.js';
 
@@ -35,6 +35,9 @@ export function runStateIndustry(state) {
   // What the world has on offer, so a government can plan a plant around an
   // input it cannot dig up. Indexed once for all forty-five decisions.
   const offered = worldOffer(state);
+  // ...and how much of each commodity the world actually wants, populations and
+  // factory floors together. Indexed once for the same reason.
+  const wants = worldDemand(state);
 
   for (const id of COUNTRY_IDS) {
     // Your own country is yours to run. Nothing builds on your soil but you.
@@ -44,9 +47,40 @@ export function runStateIndustry(state) {
     // spends the game saving it. It still stops the moment nothing is worth
     // building or the reserve is reached, so this is a ceiling, not a quota.
     for (let n = 0; n < CONFIG.stateBuildsPerDecision; n++) {
-      if (!considerBuild(state, id, tiles, offered)) break;
+      if (!considerBuild(state, id, tiles, offered, wants)) break;
     }
   }
+}
+
+// What every commodity is wanted for, worldwide and per nation: people's
+// appetite PLUS what the world's factories burn. Counting only appetite is what
+// left the world permanently short of feedstock — nobody built the coal mine
+// that three coal plants in another country were waiting on, because as far as
+// `hasHeadroom` was concerned nobody wanted any more coal.
+function worldDemand(state) {
+  const world = {};
+  const home = {};
+  for (const commodityId of COMMODITY_IDS) {
+    world[commodityId] = 0;
+    home[commodityId] = {};
+  }
+  for (const countryId of COUNTRY_IDS) {
+    for (const commodityId of COMMODITY_IDS) {
+      const eats = appetite(state, countryId, commodityId);
+      home[commodityId][countryId] = eats;
+      world[commodityId] += eats;
+    }
+  }
+  for (const b of state.buildings) {
+    const recipe = BUILDINGS[b.type].recipe;
+    if (!recipe) continue;
+    for (const [id, qty] of Object.entries(recipe.in)) {
+      const burn = qty / recipe.ticks;
+      world[id] += burn;
+      home[id][b.owner] = (home[id][b.owner] ?? 0) + burn;
+    }
+  }
+  return { world, home };
 }
 
 // Everything sitting in a warehouse anywhere, by commodity. A government reads
@@ -64,7 +98,7 @@ function worldOffer(state) {
   return totals;
 }
 
-function considerBuild(state, countryId, tiles, offered) {
+function considerBuild(state, countryId, tiles, offered, wants) {
   const gov = state.countries[countryId];
   // A broke government closes plants rather than sinking forever. Without this
   // one line an insolvent nation idles every site, keeps paying the payroll on
@@ -85,7 +119,7 @@ function considerBuild(state, countryId, tiles, offered) {
   // thirty sites blocked behind it, which is exactly what used to happen.
   const candidate = needsDepot(state, countryId, own, depots)
     ? bestDepot(state, countryId, spendable, tiles)
-    : bestSite(state, countryId, spendable, own, tiles, offered);
+    : bestSite(state, countryId, spendable, own, tiles, offered, wants);
   if (!candidate) return false;
   return build(state, candidate.type, candidate.tile, countryId).ok;
 }
@@ -149,7 +183,7 @@ function bestDepot(state, countryId, spendable, tiles) {
 // market. A country with no coalfield can run a steel mill on imported coal
 // exactly as you can, so refusing to plan around an input it cannot dig up was
 // what left half the map as pure extraction economies.
-function bestSite(state, countryId, spendable, own, tiles, offered) {
+function bestSite(state, countryId, spendable, own, tiles, offered, wants) {
   const market = state.markets[countryId];
   const produces = new Set();
   const rate = {};
@@ -167,6 +201,8 @@ function bestSite(state, countryId, spendable, own, tiles, offered) {
     const def = BUILDINGS[type];
     if (!def.recipe) continue;   // storage is `needsDepot`'s decision, not this one
     if (def.cost > spendable) continue;
+    // A government builds only what it has learned to build, exactly as you do.
+    if (!knowsTech(state, countryId, def.tech)) continue;
 
     // An input counts as available if the country makes it, or if there is
     // enough of it standing in warehouses somewhere to keep the plant fed for a
@@ -175,7 +211,7 @@ function bestSite(state, countryId, spendable, own, tiles, offered) {
     // price it will not actually be beaten by.
     const inputs = Object.entries(def.recipe.in);
     if (!inputs.every(([id, qty]) => produces.has(id) || (offered?.get(id) ?? 0) >= qty * 4)) continue;
-    if (!hasHeadroom(state, countryId, def, rate)) continue;
+    if (!hasHeadroom(state, countryId, def, rate, wants)) continue;
 
     const wages = Math.round(def.wages * COUNTRIES[countryId].wageMul);
     const score = marginPerTick(def, market) - wages;
@@ -193,12 +229,15 @@ function bestSite(state, countryId, spendable, own, tiles, offered) {
 // everybody eats, which is what lets Norway build a gas industry many times
 // larger than Norway. Without this a resource-rich nation carpets its deposits
 // and then goes broke paying wages on cargo that never leaves the warehouse.
-function hasHeadroom(state, countryId, def, rate) {
+function hasHeadroom(state, countryId, def, rate, wants) {
   const { homeShare, worldShare } = CONFIG.stateCapacity;
   for (const [id, qty] of Object.entries(def.recipe.out)) {
-    const home = appetite(state, countryId, id);
-    let world = 0;
-    for (const other of COUNTRY_IDS) world += appetite(state, other, id);
+    // Demand is people AND factory floors. A commodity is wanted by whoever
+    // burns it, and coal that three foreign power stations are waiting on is
+    // demand exactly as bread on a table is — leaving it out is what made the
+    // world permanently short of every feedstock it did not eat directly.
+    const home = wants.home[id]?.[countryId] ?? 0;
+    const world = wants.world[id] ?? 0;
     const ceiling = home * homeShare + world * worldShare;
     if ((rate[id] ?? 0) + qty / def.recipe.ticks > ceiling) return false;
   }

@@ -1,3 +1,6 @@
+import { SOURCE_COUNTRY_ROWS } from './worldCountries.js';
+export { SOURCE_COUNTRY_ROWS } from './worldCountries.js';
+
 // The world, painted at 3 degrees of longitude per column and 2.35 degrees of
 // latitude per row — 84N at the top edge, 57S at the bottom, 120 x 60 cells.
 //
@@ -78,6 +81,8 @@ export const SOURCE_ROWS = [
 
 export const SOURCE_W = 120;
 export const SOURCE_H = 60;
+export const SOURCE_COUNTRY_W = 360;
+export const SOURCE_COUNTRY_H = 180;
 
 export const OCEAN_CHAR = '.';
 export const NEUTRAL_CHAR = '-';
@@ -97,13 +102,13 @@ export const NEUTRAL_CHAR = '-';
 //   * the map is drawn to a canvas, not to DOM nodes. 180,000 tiles cannot be
 //     elements, and virtualising them does not help because zooming out
 //     legitimately shows every one at once.
-export const WORLD_W = 600;
-export const WORLD_H = 300;
+export const WORLD_W = 720;
+export const WORLD_H = 360;
 
 // Deposit counts in countries.js are authored against the source grid, so they
 // are multiplied by this to keep each country's resource *proportion* intact at
 // any resolution.
-export const AREA_SCALE = (WORLD_W * WORLD_H) / (SOURCE_W * SOURCE_H);
+export const AREA_SCALE = (WORLD_W * WORLD_H) / (SOURCE_COUNTRY_W * SOURCE_COUNTRY_H);
 
 function expand(rows, srcW, srcH, dstW, dstH) {
   const out = [];
@@ -120,3 +125,21 @@ function expand(rows, srcW, srcH, dstW, dstH) {
 }
 
 export const WORLD_ROWS = expand(SOURCE_ROWS, SOURCE_W, SOURCE_H, WORLD_W, WORLD_H);
+
+function expandCells(rows, srcW, srcH, dstW, dstH) {
+  const out = [];
+  for (let y = 0; y < dstH; y++) {
+    const sy = Math.min(srcH - 1, Math.floor((y * srcH) / dstH));
+    const row = rows[sy];
+    const line = [];
+    for (let x = 0; x < dstW; x++) {
+      line.push(row[Math.min(srcW - 1, Math.floor((x * srcW) / dstW))]);
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+export const WORLD_COUNTRY_ROWS = expandCells(
+  SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H, WORLD_W, WORLD_H,
+);

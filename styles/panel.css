@@ -1,4 +1,4 @@
-/* The side panel: one column, seven views.
+/* The side panel: one column, eight views.
 
    Everything used to be stacked — market table, trade list, forty-six nations,
    inspector — which made all four hard to read and put the one you wanted
@@ -243,3 +243,154 @@
 /* In a half-width summary card two facts side by side never had the room, and
    a wide one ("$1,505/t") pushed the whole panel sideways. */
 .card .facts { grid-template-columns: 1fr; }
+
+/* ---- technology ---- */
+
+/* Twenty entries in five eras. The tree is a column rather than a graph: a
+   graph of twenty nodes needs more width than the panel has, and what you
+   actually want to know is "what can I start, what does it cost, and who will
+   sell it to me" — which is a list. Prerequisites are named on the row instead
+   of drawn as edges. */
+.tech__head { margin-bottom: 10px; }
+.tech__head .facts--four { grid-template-columns: 1fr 1fr; }
+
+.slider { display: block; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.slider input { width: 100%; margin-top: 3px; accent-color: var(--accent); }
+
+.tree { display: flex; flex-direction: column; gap: 10px; }
+.tree__era { display: flex; flex-direction: column; gap: 3px; }
+.tree__title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); margin: 0 0 1px;
+}
+
+.tech {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: #ffffff06; padding: 5px 7px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+/* Three states, and they are the three answers to "can I have this": have it,
+   could start it, cannot reach it yet. */
+.tech[data-have="true"] { border-left: 3px solid var(--good); background: #5fbf7f12; }
+.tech[data-open="true"] { border-left: 3px solid var(--accent); }
+.tech[data-active="true"] { border-color: var(--accent); background: var(--panel-2); }
+.tech:not([data-have="true"]):not([data-open="true"]) { opacity: .55; }
+
+.tech__row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.tech__state { color: var(--muted); font-size: 11px; text-align: center; }
+.tech[data-have="true"] .tech__state { color: var(--good); }
+.tech[data-active="true"] .tech__state { color: var(--accent); }
+.tech__name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tech__cost { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.tech__bar { height: 3px; border-radius: 2px; background: #ffffff12; overflow: hidden; }
+.tech__fill { display: block; height: 100%; width: var(--fill, 0%); background: var(--accent); transition: width .3s ease; }
+.tech:not([data-active="true"]) .tech__bar { display: none; }
+
+.tech__unlocks { margin: 0; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tech__act { display: flex; gap: 4px; }
+.tech__act button[hidden] { display: none; }
+.tech__act button { flex: 1; padding: 2px 6px; font-size: 10px; }
+.tech__study[data-active="true"] { background: var(--accent); color: #221606; border-color: transparent; }
+.tech__buy[data-affordable="false"] { opacity: .45; }
+
+/* ---- contracts ---- */
+
+/* The form is the only place in the game you WRITE terms rather than read them,
+   so it gets a box of its own — and it is never rebuilt while you are using it
+   (see src/ui/contracts.js). */
+.draft { margin: 6px 0 8px; }
+.draft__inner {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel-2); padding: 7px 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.draft__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 7px; }
+.draft__field { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--muted); min-width: 0; }
+.draft__field select, .draft__field input {
+  font: inherit; font-size: 11px; color: var(--ink);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  padding: 2px 4px; min-width: 0; width: 100%;
+}
+.draft__quote { margin: 0; font-size: 10px; font-variant-numeric: tabular-nums; }
+.draft__sign { padding: 4px 8px; font-size: 11px; }
+.draft__sign[disabled] { opacity: .45; cursor: not-allowed; }
+
+.contracts { display: flex; flex-direction: column; gap: 3px; }
+.contracts .muted { font-size: 11px; margin: 0; }
+.contract {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: #ffffff06; padding: 5px 7px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.contract[data-dir="out"] { border-left: 3px solid var(--good); }
+.contract[data-dir="in"] { border-left: 3px solid #5f8fbf; }
+/* A contract somebody has already missed on is the one worth looking at. */
+.contract[data-late="true"] { border-color: var(--bad); }
+.contract__row {
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) minmax(0, auto) auto 20px;
+  align-items: center; gap: 5px; font-size: 11px;
+}
+.contract__arrow { color: var(--muted); }
+.contract[data-dir="out"] .contract__arrow { color: var(--good); }
+.contract__what, .contract__who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contract__who { color: var(--muted); font-size: 10px; }
+.contract__value { font-variant-numeric: tabular-nums; }
+.contract__kill {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 0; font-size: 14px; line-height: 1; border-radius: 4px;
+}
+.contract__kill:hover { background: var(--bad); color: #2a0b08; border: 0; }
+.contract__bar { height: 3px; border-radius: 2px; background: #ffffff12; overflow: hidden; }
+.contract__fill { display: block; height: 100%; width: var(--fill, 0%); background: var(--good); }
+.contract[data-late="true"] .contract__fill { background: var(--bad); }
+.contract__note { margin: 0; font-size: 10px; }
+
+/* An industry whose technology you have not reached keeps its place in the
+   build menu — greyed, with a lock where its price would be. Hiding it would
+   mean the menu never told you what research is for. */
+.build[data-locked="true"] { opacity: .42; }
+.build[data-locked="true"]:hover { border-color: var(--line); }
+
+/* Thirty-four commodities no longer fit a panel the way twenty-one did, so
+   these two tables scroll inside themselves rather than pushing their own
+   explanation off the bottom of the screen. */
+.pane[data-pane="goods"] .goods, .pane[data-pane="resources"] .market { font-size: 11px; }
+
+/* ---- the exchange ---- */
+
+.market__head { margin-bottom: 10px; }
+.market__head .facts--four { grid-template-columns: 1fr 1fr; }
+.draft__act { display: flex; gap: 4px; }
+.draft__act button { flex: 1; padding: 4px 8px; font-size: 11px; }
+
+/* The book. Asks first, then bids, each side cheapest-best at the top — so the
+   row you want is always near the fold. */
+.book { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow-y: auto; }
+.book .muted { font-size: 11px; margin: 0; }
+.listing {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: #ffffff06; padding: 4px 6px;
+}
+.listing[data-side="sell"] { border-left: 3px solid #5f8fbf; }
+.listing[data-side="buy"] { border-left: 3px solid var(--good); }
+.listing[data-own="true"] { border-color: var(--accent); background: #f0a04b14; }
+.listing__row {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center; gap: 6px; font-size: 11px;
+}
+.listing__what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listing__price { font-variant-numeric: tabular-nums; }
+.listing__act { padding: 1px 7px; font-size: 10px; border-radius: 4px; }
+.listing__note { margin: 1px 0 0 16px; font-size: 10px; }
+
+.fund__inner {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel-2); padding: 7px 9px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.fund__inner .facts--four { grid-template-columns: 1fr 1fr; }
+.fund__act { display: flex; gap: 4px; }
+.fund__act button { flex: 1; padding: 4px 8px; font-size: 11px; }
+.fund__act button[disabled] { opacity: .4; cursor: not-allowed; }
+.fund .hint { margin: 0; }

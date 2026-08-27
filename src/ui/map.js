@@ -1,7 +1,9 @@
 import { CONFIG } from '../core/config.js';
 import { BUILDINGS } from '../data/buildings.js';
-import { COUNTRIES } from '../data/countries.js';
-import { hasPact, ownerColor, ownerName, isPlayer } from '../core/state.js';
+import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
+import { CENTROIDS } from '../data/geography.js';
+import { SOURCE_W, SOURCE_H } from '../data/world.js';
+import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
 
 // The map is drawn to a CANVAS, not to DOM nodes.
@@ -30,6 +32,9 @@ const TERRAIN_COLOR = {
   farmland: '#9d8c46',
   forest: '#24501f',
   desert: '#b08d4d',
+  uraniumore: '#3f7a3a',
+  lithiumflat: '#8f8a68',
+  rareearth: '#6b3f80',
   offshoreOil: '#2b2350',
   offshoreGas: '#2f6f88',
   fishery: '#1f5a6b',
@@ -40,10 +45,30 @@ const TERRAIN_LABEL = {
   hills: 'hills (iron ore)', coalfield: 'coalfield', oilfield: 'oilfield',
   gasfield: 'gasfield', copperbelt: 'copperbelt', bauxite: 'bauxite',
   quarry: 'limestone quarry', farmland: 'farmland', forest: 'forest',
+  uraniumore: 'uranium ore', lithiumflat: 'lithium salt flat', rareearth: 'rare earth deposit',
   offshoreOil: 'offshore oil', offshoreGas: 'offshore gas', fishery: 'fishing grounds',
 };
 
 const NEUTRAL_TINT = '#4a4f57';
+
+// Cartography. The map is a Plate Carree wall map of the real world, so it is
+// drawn like one: a graticule every fifteen degrees, a heavier line on the
+// equator and the meridian, and a stroke along every national frontier.
+//
+// Borders are drawn from the tiles themselves rather than from any authored
+// outline. A frontier is simply an edge where two neighbouring tiles belong to
+// different countries — which means it can never disagree with who owns what,
+// and it costs one extra comparison per tile rather than a second data set.
+const BORDER_COLOR = '#0b0d12b3';
+const COAST_COLOR = '#0a1620cc';
+const GRATICULE = '#ffffff12';
+const MERIDIAN = '#ffffff26';
+
+// Degrees per source column and row, from world.js: column 0 is 180W at 3 deg
+// per column, row 0 is 84N at 2.35 deg per row.
+const LON_PER_COL = 3;
+const LAT_PER_ROW = 2.35;
+const GRID_DEGREES = 15;
 
 export function mountMap(host, ctx) {
   const { state } = ctx;
@@ -74,6 +99,9 @@ export function mountMap(host, ctx) {
   };
 
   host.addEventListener('click', (event) => {
+    // A drag that ended on a tile is a pan, not a click. Without this, moving
+    // the map with the mouse would build a mine wherever you let go.
+    if (view.dragged) { view.dragged = false; return; }
     const id = toTile(event);
     if (id != null) ctx.onTileClick(id);
   });
@@ -92,6 +120,9 @@ export function mountMap(host, ctx) {
   // Redrawing on scroll is the whole point of a viewport-sized canvas.
   host.addEventListener('scroll', () => draw(host, view, ctx), { passive: true });
 
+  attachZoom(host, view, ctx);
+  attachPan(host, view);
+
   // The map fills the window, so its size is not something a render can assume.
   // It is zero on the very first layout pass, and it changes whenever the window
   // does — and renders happen on a TICK, so a paused game would otherwise sit
@@ -107,6 +138,72 @@ export function mountMap(host, ctx) {
 
 export function updateMap(host, view, ctx) {
   draw(host, view, ctx);
+}
+
+// Zoom is the wheel and the trackpad, and nothing else. There are no buttons any
+// more, so this has to cover every gesture a pointing device makes:
+//
+//   * a mouse wheel notch          -> one zoom level
+//   * a trackpad pinch             -> arrives as `wheel` with ctrlKey set, which
+//                                     is how every browser reports it
+//   * a two-finger swipe           -> also `wheel`, and treated as zoom too,
+//                                     because the map has no scrollbars left for
+//                                     it to drive
+//
+// The tile under the cursor stays under the cursor: zooming toward a point and
+// then having to hunt for it again is the whole reason wheel zoom feels wrong
+// when it is implemented as a plain level change.
+function attachZoom(host, view, ctx) {
+  host.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const step = event.deltaY < 0 ? 1 : -1;
+    const next = Math.min(CONFIG.zoomLevels.length - 1, Math.max(0, ctx.ui.zoom + step));
+    if (next === ctx.ui.zoom) return;
+
+    // Where the pointer is in WORLD coordinates, before and after.
+    const rect = host.getBoundingClientRect();
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    const was = CONFIG.zoomLevels[ctx.ui.zoom];
+    const to = CONFIG.zoomLevels[next];
+    const worldX = (host.scrollLeft + px) / was;
+    const worldY = (host.scrollTop + py) / was;
+
+    ctx.ui.zoom = next;
+    // The spacer has to grow before the scroll offset can be set against it.
+    view.spacer.style.width = `${ctx.state.grid.w * to}px`;
+    view.spacer.style.height = `${ctx.state.grid.h * to}px`;
+    host.scrollLeft = Math.max(0, worldX * to - px);
+    host.scrollTop = Math.max(0, worldY * to - py);
+    ctx.onZoom(next);
+  }, { passive: false });
+}
+
+// ...and panning is dragging, since the scrollbars are gone. `dragged` is what
+// tells the click handler above that the pointer went down to move the map
+// rather than to put a building on it.
+function attachPan(host, view) {
+  let from = null;
+  host.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    from = { x: event.clientX, y: event.clientY, left: host.scrollLeft, top: host.scrollTop, moved: 0 };
+  });
+  const end = () => { from = null; };
+  host.addEventListener('pointerup', end);
+  host.addEventListener('pointerleave', end);
+  host.addEventListener('pointercancel', end);
+  host.addEventListener('pointermove', (event) => {
+    if (!from) return;
+    const dx = event.clientX - from.x;
+    const dy = event.clientY - from.y;
+    from.moved = Math.max(from.moved, Math.abs(dx) + Math.abs(dy));
+    // A few pixels of wobble while clicking is not a drag. Past that it is, and
+    // the click that follows is swallowed.
+    if (from.moved < 4) return;
+    view.dragged = true;
+    host.scrollLeft = from.left - dx;
+    host.scrollTop = from.top - dy;
+  });
 }
 
 // Puts a tile in the middle of the viewport. Picking a site out of the factory
@@ -159,6 +256,12 @@ function draw(host, view, ctx) {
 
   const tool = ui.tool;
   const glyphs = tilePx >= 10;
+  // Frontier segments, gathered as the tiles are painted and stroked once at
+  // the end. Flat arrays of x1,y1,x2,y2 rather than objects: at one pixel a tile
+  // this can run to thousands of edges on one draw.
+  const borders = ui.borders !== false;
+  const frontiers = [];
+  const coasts = [];
   if (glyphs) {
     g.font = `${Math.floor(tilePx * 0.74)}px system-ui, sans-serif`;
     g.textAlign = 'center';
@@ -199,7 +302,114 @@ function draw(host, view, ctx) {
         g.lineWidth = 2;
         g.strokeRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
       }
+
+      if (!borders) continue;
+      // Only the right and bottom edges of each tile are considered, so a
+      // frontier is recorded once rather than twice from either side.
+      const right = x + 1 < w ? state.tiles[y * w + x + 1] : null;
+      const below = y + 1 < h ? state.tiles[(y + 1) * w + x] : null;
+      edge(frontiers, coasts, tile, right, px + tilePx, py, px + tilePx, py + tilePx);
+      edge(frontiers, coasts, tile, below, px, py + tilePx, px + tilePx, py + tilePx);
     }
+  }
+
+  // Frontiers and the graticule go on TOP of the terrain, so a border is never
+  // painted over by the next tile along. The edges were COLLECTED in the tile
+  // loop above rather than found in a second sweep of their own: at one pixel a
+  // tile the visible window is the whole planet, and a second pass over 180,000
+  // tiles would double the worst-case draw.
+  if (borders) {
+    strokeEdges(g, frontiers, BORDER_COLOR, tilePx >= 5 ? 1.5 : 1);
+    strokeEdges(g, coasts, COAST_COLOR, tilePx >= 5 ? 1.5 : 1);
+    drawGraticule(g, state, tilePx, left, top, cssW, cssH);
+    drawLabels(g, state, tilePx, left, top, cssW, cssH);
+  }
+}
+
+// Country names, once there is room to read one. Placed at the centroid the
+// freight matrix already uses (data/geography.js), so a label sits exactly where
+// the game thinks the country IS — a name drawn anywhere else would quietly
+// disagree with what every haul costs.
+function drawLabels(g, state, tilePx, left, top, cssW, cssH) {
+  if (tilePx < 3) return;
+  const scaleX = state.grid.w / SOURCE_W;
+  const scaleY = state.grid.h / SOURCE_H;
+  g.font = `600 ${Math.min(15, Math.max(9, Math.round(tilePx * 1.3)))}px system-ui, sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineWidth = 3;
+  g.strokeStyle = '#0b0d12cc';
+  for (const id of COUNTRY_IDS) {
+    const centre = CENTROIDS[id];
+    const px = (centre.x + 0.5) * scaleX * tilePx - left;
+    const py = (centre.y + 0.5) * scaleY * tilePx - top;
+    if (px < -60 || py < -20 || px > cssW + 60 || py > cssH + 20) continue;
+    const name = COUNTRIES[id].name;
+    // A halo rather than a box: a filled label would hide the terrain it names.
+    g.strokeText(name, px, py);
+    g.fillStyle = isPlayer(state, id) ? '#ffd9a8' : '#e6e9efbb';
+    g.fillText(name, px, py);
+  }
+}
+
+// One edge between two tiles, or nothing. A shore is queued separately from an
+// inland frontier because the two want different colours, and switching
+// strokeStyle per segment would mean a path per edge instead of two paths.
+function edge(frontiers, coasts, tile, other, x1, y1, x2, y2) {
+  if (!other || tile.countryId === other.countryId) return;
+  const wet = isSea(tile) || isSea(other);
+  // Open ocean is nobody's, so the line between two stretches of it is not a
+  // frontier — only a shore or a border between two claims is.
+  if (wet && (!tile.countryId || !other.countryId)) return;
+  const into = wet ? coasts : frontiers;
+  into.push(x1, y1, x2, y2);
+}
+
+function strokeEdges(g, segments, colour, width) {
+  if (!segments.length) return;
+  g.beginPath();
+  for (let i = 0; i < segments.length; i += 4) {
+    g.moveTo(segments[i], segments[i + 1]);
+    g.lineTo(segments[i + 2], segments[i + 3]);
+  }
+  g.strokeStyle = colour;
+  g.lineWidth = width;
+  g.stroke();
+}
+
+function isSea(tile) {
+  return tile.terrain === 'water' || tile.terrain === 'offshoreOil'
+    || tile.terrain === 'offshoreGas' || tile.terrain === 'fishery';
+}
+
+// Parallels and meridians every fifteen degrees, with the equator and the prime
+// meridian picked out. The projection is plain equirectangular, so both are
+// straight lines and the grid says so honestly — Greenland really is that size
+// here, exactly as on the wall map this was traced from.
+function drawGraticule(g, state, tilePx, left, top, cssW, cssH) {
+  if (tilePx < 2) return;
+  const { w, h } = state.grid;
+  const colsPerDegree = w / (LON_PER_COL * 120);
+  const rowsPerDegree = h / (LAT_PER_ROW * 60);
+
+  g.lineWidth = 1;
+  for (let lon = -180; lon <= 180; lon += GRID_DEGREES) {
+    const x = Math.floor((lon + 180) * colsPerDegree * tilePx - left) + 0.5;
+    if (x < 0 || x > cssW) continue;
+    g.strokeStyle = lon === 0 ? MERIDIAN : GRATICULE;
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.lineTo(x, cssH);
+    g.stroke();
+  }
+  for (let lat = 75; lat >= -60; lat -= GRID_DEGREES) {
+    const y = Math.floor((84 - lat) * rowsPerDegree * tilePx - top) + 0.5;
+    if (y < 0 || y > cssH) continue;
+    g.strokeStyle = lat === 0 ? MERIDIAN : GRATICULE;
+    g.beginPath();
+    g.moveTo(0, y);
+    g.lineTo(cssW, y);
+    g.stroke();
   }
 }
 
@@ -213,13 +423,12 @@ function fillFor(state, tile, building) {
     return tile.terrain === 'water' && tile.countryId ? '#1b3348' : terrain;
   }
   if (!tile.countryId) return NEUTRAL_TINT;
-  // Three tiers, because there are exactly three relationships you can have with
-  // a nation: your own soil at full strength, a trade partner clearly readable,
-  // and everyone else pushed back — so the map answers "where can I sell" at a
-  // glance, at any zoom.
+  // Two tiers now, because there are exactly two relationships left: your own
+  // soil, and everybody else's. Every market on earth is open, so the map no
+  // longer has to answer "where may I sell" — only "what is mine".
   const colour = COUNTRIES[tile.countryId].color;
   if (isPlayer(state, tile.countryId)) return colour;
-  return dim(colour, hasPact(state, tile.countryId) ? 0.6 : 0.28);
+  return dim(colour, 0.5);
 }
 
 const dimCache = new Map();
@@ -259,10 +468,7 @@ function tooltip(state, tile) {
   }
   const label = TERRAIN_LABEL[tile.terrain] ?? tile.terrain;
   const sea = tile.countryId && tile.terrain === 'water' ? ' · territorial waters' : '';
-  const standing = !tile.countryId || isPlayer(state, tile.countryId)
-    ? ''
-    : hasPact(state, tile.countryId) ? ' · trade pact' : ' · no pact';
-  return `${where} · ${label}${sea}${standing}`;
+  return `${where} · ${label}${sea}`;
 }
 
 function describe(building, def) {

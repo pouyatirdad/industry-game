@@ -1,12 +1,13 @@
 import { CONFIG } from './config.js';
 import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
 import { BUILDINGS } from '../data/buildings.js';
-import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR, DEFAULT_HOME, TREASURY_PER_DEMAND, TREASURY_FLOOR, STARTING_PACTS } from '../data/countries.js';
-import { WORLD_ROWS, WORLD_W, WORLD_H, AREA_SCALE, OCEAN_CHAR } from '../data/world.js';
-import { neighboursOf } from '../data/geography.js';
+import { COUNTRIES, COUNTRY_IDS, DEFAULT_HOME, TREASURY_PER_DEMAND, TREASURY_FLOOR } from '../data/countries.js';
+import { WORLD_COUNTRY_ROWS, WORLD_W, WORLD_H, AREA_SCALE } from '../data/world.js';
+import { WORLD_COUNTRY_INFO } from '../data/worldCountries.js';
+import { STARTING_TECHS } from '../data/technology.js';
 
-const SAVE_KEY = 'industry-game.save.v7';
-const SAVE_VERSION = 7;
+const SAVE_KEY = 'industry-game.save.v9';
+const SAVE_VERSION = 9;
 
 // You are a NATION, not a firm. There is no separate player object: the country
 // you picked is an entry in `state.countries` exactly like the other forty-five,
@@ -23,6 +24,7 @@ const SAVE_VERSION = 7;
 // and strategic first; ubiquitous (quarry, farmland) and barren (desert) last.
 // Order is load-bearing for balance, and it makes generation reproducible.
 const DEPOSIT_ORDER = [
+  'uraniumore', 'lithiumflat', 'rareearth',
   'oilfield', 'gasfield', 'copperbelt', 'bauxite', 'hills', 'coalfield',
   'forest', 'farmland', 'quarry', 'desert',
 ];
@@ -74,21 +76,32 @@ export function generateWorld(seed) {
   for (const id of COUNTRY_IDS) owned[id] = [];
 
   for (let y = 0; y < WORLD_H; y++) {
-    const row = WORLD_ROWS[y];
+    const row = WORLD_COUNTRY_ROWS[y];
     for (let x = 0; x < WORLD_W; x++) {
-      const char = row[x];
-      const countryId = COUNTRY_BY_CHAR[char] ?? null;
+      const countryId = row[x] && COUNTRIES[row[x]] ? row[x] : null;
       const index = y * WORLD_W + x;
       tiles.push({
         id: index,
         x,
         y,
-        terrain: char === OCEAN_CHAR ? 'water' : 'plain',
+        terrain: countryId ? 'plain' : 'water',
         countryId,
         buildingId: null,
       });
       if (countryId) owned[countryId].push(index);
     }
+  }
+
+  for (const info of WORLD_COUNTRY_INFO) {
+    if (!COUNTRIES[info.id] || owned[info.id]?.length) continue;
+    const x = Math.max(0, Math.min(WORLD_W - 1, Math.floor((info.centre.lon + 180) * WORLD_W / 360)));
+    const y = Math.max(0, Math.min(WORLD_H - 1, Math.floor((90 - info.centre.lat) * WORLD_H / 180)));
+    const index = nearestOpenCell(tiles, x, y);
+    const old = tiles[index].countryId;
+    if (old && owned[old]) owned[old] = owned[old].filter((id) => id !== index);
+    tiles[index].countryId = info.id;
+    tiles[index].terrain = 'plain';
+    owned[info.id].push(index);
   }
 
   claimTerritorialWaters(tiles, owned);
@@ -114,6 +127,24 @@ export function generateWorld(seed) {
 
   layOffshoreDeposits(tiles, seed);
   return tiles;
+}
+
+function nearestOpenCell(tiles, x, y) {
+  const first = y * WORLD_W + x;
+  if (!tiles[first].countryId) return first;
+  for (let radius = 1; radius < 8; radius++) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= WORLD_W || ny >= WORLD_H) continue;
+        const index = ny * WORLD_W + nx;
+        if (!tiles[index].countryId) return index;
+      }
+    }
+  }
+  return first;
 }
 
 // Ocean within TERRITORIAL_RANGE of a coast belongs to the nearest country. A
@@ -181,23 +212,53 @@ function layOffshoreDeposits(tiles, seed) {
 // own people paid it, `exports` what foreigners paid it, `imports` what it paid
 // abroad. `net` is the bottom line the treasury actually moved by.
 function emptyReport() {
-  return { wages: 0, tax: 0, domestic: 0, exports: 0, imports: 0, net: 0 };
+  return {
+    wages: 0, tax: 0, domestic: 0, exports: 0, imports: 0, net: 0,
+    // What the treasury spent on laboratories, and the net of any contract
+    // penalties either side paid. `exports` and `imports` above are contract
+    // settlements — there is no other way for goods to cross a border.
+    research: 0, penalties: 0,
+    // What the clearing house took on the tick's settlements, what a loan cost
+    // in interest, and what was paid back against the balance.
+    fees: 0, interest: 0, repaid: 0,
+  };
 }
 
-// Forty-six nations, one of which is you. The only field that distinguishes
-// yours is `pact`, which records the trade agreements YOU have opened — the
-// other forty-five already trade with each other and do not need one.
+// Forty-six nations, one of which is you. Nothing on this object says which:
+// `state.home` is the only thing that does, and every system asks `isPlayer`.
+//
+// There is no trade permission here any more. Every nation may deal with every
+// other, and the thing that decides whether a deal HAPPENS is whether anybody
+// posted terms the other side would take — see systems/exchange.js.
 export function createCountryState(home) {
   const countries = {};
-  const open = new Set([home, ...neighboursOf(home).slice(0, STARTING_PACTS)]);
   for (const id of COUNTRY_IDS) {
     countries[id] = {
       id,
       cash: Math.max(TREASURY_FLOOR, Math.round(COUNTRIES[id].demand * TREASURY_PER_DEMAND)),
       solvent: true,
-      pact: open.has(id),
       demand: COUNTRIES[id].demand,
+      // People, and they MOVE during a game like demand does. A nation that is
+      // well supplied and comfortably solvent grows, and a bigger population is
+      // a bigger market — which is the whole reason prosperity compounds.
+      pop: COUNTRIES[id].pop,
       supply: CONFIG.selfSufficiency,
+      // What it owes the clearing fund. A government that cannot make payroll
+      // borrows rather than closing its industry, and repays out of its taxes.
+      debt: 0,
+      // What this nation knows how to build. A plain object rather than a Set,
+      // because everything on `state` has to survive a JSON round trip.
+      //
+      // Every nation opens holding EXACTLY the same set (`STARTING_TECHS`), so
+      // nobody begins a step ahead of anybody else. Everything past era 1 has to
+      // be researched or bought.
+      techs: Object.fromEntries(STARTING_TECHS.map((tech) => [tech, true])),
+      // Points banked toward `researching`, and the share of the tax base being
+      // spent to earn them. The share is a policy, so it is on the country and
+      // not on `ui`: the other forty-five have one too.
+      research: 0,
+      researching: null,
+      researchShare: CONFIG.research.share,
       report: emptyReport(),
     };
   }
@@ -277,9 +338,21 @@ export function createInitialState(seed = CONFIG.seed, home = DEFAULT_HOME) {
     // Your own deals, kept apart from the world list so forty-five governments
     // trading among themselves cannot push yours off the end of it.
     ownFlows: [],
-    // Pacts the other nations have offered YOU. They pay for these; you only
-    // pay for the ones you go and ask for.
-    offers: [],
+    // Standing supply contracts, everybody's. A contract is a promise to move a
+    // fixed quantity at a fixed price for a fixed term, and it is settled before
+    // either side goes to the spot market — see systems/contracts.js.
+    contracts: [],
+    nextContractId: 1,
+    // Contracts and technology licences other governments are offering YOU.
+    // Both lapse if you never answer.
+    contractOffers: [],
+    techOffers: [],
+    // Technologies you have turned down, and the tick you did it on, so the
+    // same government does not come straight back with the same question.
+    techDeclined: {},
+    // The global exchange: an open book of asks and bids that anybody may take,
+    // and the clearing fund its fee builds up. See systems/exchange.js.
+    exchange: { listings: [], nextListingId: 1, fund: 0, lent: 0, fees: 0 },
     ledger: createLedger(),
     warnedHungry: false,
     history,
@@ -324,18 +397,82 @@ export function appetite(state, countryId, commodityId) {
   return country.demand * COMMODITIES[commodityId].demandShare * CONFIG.demandScale;
 }
 
-// You may only trade with a nation you have a pact with. The other forty-five
-// are assumed to trade freely among themselves — they have had embassies for a
-// century; you are the newcomer buying your way in.
+// Every nation may deal with every other. There is no permission to buy and no
+// market that is closed to you: what limits a deal is whether anybody has terms
+// on the book you would take, and what the freight costs to get it there.
+//
+// This is still asked through a function rather than inlined, because "may these
+// two deal" is a real question the systems ask and the answer could change again.
 export function canTrade(state, a, b) {
-  if (a === b) return false;
-  if (isPlayer(state, a)) return Boolean(state.countries[b]?.pact);
-  if (isPlayer(state, b)) return Boolean(state.countries[a]?.pact);
+  return a !== b && Boolean(state.countries[a]) && Boolean(state.countries[b]);
+}
+
+// --- technology -----------------------------------------------------------
+//
+// What a nation knows is a plain object of tech id -> true, so it round-trips
+// through the save like everything else on `state`. `techId` may be null, which
+// is the answer for the industries every government starts with — asking about
+// nothing is always yes, so no caller has to special-case the basics.
+
+export function knowsTech(state, countryId, techId) {
+  if (!techId) return true;
+  return Boolean(state.countries[countryId]?.techs?.[techId]);
+}
+
+// Records a tech as learned however it was come by — researched, licensed, or
+// handed over as part of a chain. Clears the research bench when it lands, so a
+// nation that buys what it was studying does not pay for it twice.
+export function learnTech(state, countryId, techId) {
+  const gov = state.countries[countryId];
+  if (!gov || !techId) return false;
+  if (!gov.techs) gov.techs = {};
+  if (gov.techs[techId]) return false;
+  gov.techs[techId] = true;
+  if (gov.researching === techId) { gov.researching = null; gov.research = 0; }
   return true;
 }
 
-export function hasPact(state, countryId) {
-  return Boolean(state.countries[countryId]?.pact);
+export function techsKnown(state, countryId) {
+  return state.countries[countryId]?.techs ?? {};
+}
+
+export function techCount(state, countryId) {
+  return Object.keys(techsKnown(state, countryId)).length;
+}
+
+// --- contracts ------------------------------------------------------------
+
+// Every standing contract one nation is a party to, whichever side it is on.
+export function contractsOf(state, countryId) {
+  return (state.contracts ?? []).filter((c) => c.seller === countryId || c.buyer === countryId);
+}
+
+export function contractById(state, id) {
+  return (state.contracts ?? []).find((c) => c.id === id) ?? null;
+}
+
+// How many ticks a contract still has to run. Zero means it settles for the
+// last time this tick.
+export function contractLeft(state, contract) {
+  return Math.max(0, contract.started + contract.term - state.tick);
+}
+
+// --- the exchange ---------------------------------------------------------
+
+// The book, the clearing fund and what is out on loan. Tolerates a state built
+// before the exchange existed rather than making every caller check.
+export function exchangeOf(state) {
+  if (!state.exchange) state.exchange = { listings: [], nextListingId: 1, fund: 0, lent: 0, fees: 0 };
+  return state.exchange;
+}
+
+export function listingsOf(state, countryId) {
+  return exchangeOf(state).listings.filter((l) => l.from === countryId);
+}
+
+// How much a nation still owes the fund, and whether it is carrying anything.
+export function debtOf(state, countryId) {
+  return state.countries[countryId]?.debt ?? 0;
 }
 
 // Whether a commodity leaves or enters the country, per owner. Only you choose;
@@ -368,6 +505,18 @@ export function createUiState(home = DEFAULT_HOME) {
     // which column the nation table is ranked by. View preferences both.
     goodsView: 'tick',
     rankSort: 'score',
+    // The ask or bid you are writing for the open book, before you post it.
+    listing: { side: 'sell', commodity: 'coal', qty: 5, price: 0, every: 1, term: 90 },
+    // The contract you are drafting. It is view state, not a promise anybody has
+    // made yet, so it lives here and never reaches the save file.
+    draft: { partner: null, commodity: 'coal', dir: 'buy', qty: 10, every: 1, term: 60 },
+    // Which era of the tech tree is unfolded, and whether the map paints
+    // national borders. Both view preferences.
+    techEra: null,
+    borders: true,
+    // True while the pointer is over the inbox, which holds the countdown on
+    // every offer in it. View state, so it never reaches the save.
+    inboxHeld: false,
   };
 }
 
@@ -468,6 +617,47 @@ export function pruneAlerts(state, now = Date.now()) {
   return state.alerts.length !== before;
 }
 
+// An offer nobody answered is an offer declined.
+//
+// Both kinds carry a wall-clock `at` exactly as an alert does, and are swept on
+// the same 500ms timer rather than on a tick — so a proposal you have read and
+// ignored clears itself whether the game is running at 4x or sitting paused.
+// Saying nothing is an answer, and the answer is no.
+//
+// `hold` is true while the pointer is over the inbox: an offer that vanishes as
+// you reach for it is worse than one that lingers, so the countdown stops while
+// you are actually looking at it.
+export function pruneOffers(state, now = Date.now(), hold = false) {
+  if (hold) return false;
+  const alive = (offer) => now - (offer.at ?? now) < CONFIG.offerTtlMs;
+  const contracts = state.contractOffers ?? [];
+  const techs = state.techOffers ?? [];
+  const keptContracts = contracts.filter(alive);
+  const keptTechs = techs.filter(alive);
+  if (keptContracts.length === contracts.length && keptTechs.length === techs.length) return false;
+
+  // A technology you let lapse counts as one you turned down, so the same
+  // government does not come straight back with it.
+  for (const offer of techs) {
+    if (!keptTechs.includes(offer)) declineTech(state, offer.tech);
+  }
+  state.contractOffers = keptContracts;
+  state.techOffers = keptTechs;
+  return true;
+}
+
+// What you have said no to, and when. Kept on `state` so it rides along in the
+// save with everything else, and read by `research.js` before it offers.
+export function declineTech(state, techId) {
+  if (!state.techDeclined) state.techDeclined = {};
+  state.techDeclined[techId] = state.tick;
+}
+
+export function techDeclinedRecently(state, techId) {
+  const at = state.techDeclined?.[techId];
+  return at != null && state.tick - at < CONFIG.offerCooldown;
+}
+
 export function dismissAlert(state, index) {
   if (index < 0 || index >= state.alerts.length) return false;
   state.alerts.splice(index, 1);
@@ -498,7 +688,7 @@ export function ownFlows(state) {
 // its own `tileId`, so the link is rebuilt on load.
 // Every commodity bag carries a key per commodity, and quantities are fractional
 // once spoilage and part-filled orders touch them — so a bag serialises as
-// twenty-one entries, most of them zero, several of them seventeen significant
+// thirty-four entries, most of them zero, several of them seventeen significant
 // digits long. Compacting them is worth roughly ten times the save size at a
 // thousand sites.
 //

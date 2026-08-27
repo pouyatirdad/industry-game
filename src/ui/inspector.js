@@ -1,10 +1,9 @@
 import { BUILDINGS } from '../data/buildings.js';
 import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
-import { COUNTRIES, pactCost } from '../data/countries.js';
+import { COUNTRIES } from '../data/countries.js';
 import { haulShare } from '../data/geography.js';
-import { buildingOnTile, warehouseUsed, siteWages, countryDeposits, hasPact, WATER_TERRAINS,
+import { buildingOnTile, warehouseUsed, siteWages, countryDeposits, WATER_TERRAINS,
   ownerName, ownerColor, isPlayer } from '../core/state.js';
-import { canOpenPact } from '../actions.js';
 import { warehousesServing } from '../systems/logistics.js';
 import { money, num, price, pct, html } from './format.js';
 
@@ -38,13 +37,9 @@ export function updateInspector(host, ctx) {
   const tile = ui.selectedTileId == null ? null : state.tiles[ui.selectedTileId];
   const building = tile ? buildingOnTile(state, tile) : null;
   const mine = tile ? isPlayer(state, tile.countryId) : false;
-  const pact = tile?.countryId ? hasPact(state, tile.countryId) : false;
-  // `affordable` is a boolean rather than the cash figure, so a selected foreign
-  // country does not force a full inspector rebuild on every tick.
-  const affordable = tile?.countryId && !mine && !pact ? canOpenPact(state, tile.countryId).ok : false;
 
   const sig = tile
-    ? [tile.id, tile.countryId ?? '', mine ? 'm' : '', pact ? 'p' : '', affordable ? 'a' : '',
+    ? [tile.id, tile.countryId ?? '', mine ? 'm' : '',
        building?.owner ?? '', building?.status, building?.progress,
        JSON.stringify(building?.input), JSON.stringify(building?.output),
        JSON.stringify(building?.store)].join('|')
@@ -57,16 +52,12 @@ export function updateInspector(host, ctx) {
     return;
   }
 
-  const node = building
+  host.replaceChildren(building
     ? renderBuilding(state, tile, building)
-    : renderLand(state, tile, mine, pact, affordable);
-  host.replaceChildren(node);
-
-  const sign = node.querySelector('.pact');
-  if (sign) sign.addEventListener('click', () => ctx.onOpenPact(tile.countryId));
+    : renderLand(state, tile, mine));
 }
 
-function renderLand(state, tile, mine, pact, affordable) {
+function renderLand(state, tile, mine) {
   // Open sea belongs to nobody; sea within reach of a coast is somebody's, and
   // that is what makes offshore deposits licensable. An offshore deposit is
   // still sea, so it comes through here rather than being called somebody's
@@ -119,17 +110,13 @@ function renderLand(state, tile, mine, pact, affordable) {
       <dl class="facts">
         <div><dt>Economy</dt><dd>${gov.demand.toFixed(1)}</dd></div>
         <div><dt>Demand met</dt><dd>${pct(gov.supply)}</dd></div>
-        <div><dt>Population</dt><dd>${c.pop >= 10 ? Math.round(c.pop) : c.pop}m</dd></div>
+        <div><dt>Population</dt><dd>${gov.pop >= 10 ? Math.round(gov.pop) : (gov.pop ?? c.pop).toFixed(1)}m</dd></div>
         <div><dt>Freight</dt><dd>${pct(haulShare(state.home, tile.countryId))} of a world haul</dd></div>
       </dl>
       <p class="muted">National deposits: ${found || 'none'}</p>
-      ${pact
-        ? '<p class="good-text">You hold a trade pact here — its market is open to you.</p>'
-        : `<p>No pact. You cannot build here and cannot trade here.</p>
-           <button type="button" class="pact primary" ${affordable ? '' : 'disabled'}>
-             Sign pact with ${c.name} &middot; ${money(pactCost(tile.countryId))}
-           </button>`}
-      ${pact ? topPrices(state, tile.countryId) : ''}
+      <p class="muted">Foreign soil, so nothing of yours can stand here — but its
+        market is open like every other. Post terms it will take, or take its own.</p>
+      ${topPrices(state, tile.countryId)}
     </div>`);
 }
 

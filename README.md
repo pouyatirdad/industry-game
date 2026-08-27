@@ -53,19 +53,24 @@ different games.
 4. **Watch the Supply figure.** It is the share of what your people want that is actually reaching
    them. Above the pivot your economy compounds and your tax base compounds with it; below it, the
    country shrinks — and a shrinking country is a smaller market and a smaller treasury.
-5. **Export the surplus.** Your warehouses feed your own market first, up to what your population
-   actually eats in a tick. Past that there is no buyer at home, and the **Out** flag offers the rest
-   abroad. The **In** flag lets the treasury buy what your people — and your factories — are short
-   of: an input your ground does not hold arrives in your warehouses, so a country with no coalfield
-   can still run a steel mill. The **Goods** tab is where you watch that happen.
-6. **Open new markets.** Click a nation on the map or in the **Nations** list to see its terms and
-   sign a trade pact. The fee goes into its treasury, so buying your way into a market funds the
-   industry you will then be competing with. Nations also come to *you*: one with goods it cannot
-   place at home will offer a pact and pay you for it — the offers sit at the top of the **Trade**
-   tab and lapse if you leave them there.
-7. **Watch where you stand.** The **Ranks** tab scores all forty-six nations against each other on
+5. **Place the surplus.** Your warehouses feed your own market first, up to what your population
+   actually eats in a tick. Past that there is no buyer at home. Nothing crosses a border on its
+   own: goods move only under a **contract**, and the **Market** tab is the open book where a
+   surplus and a shortage find each other. Your government posts on your behalf for any commodity
+   whose **↗**/**↙** flag is on; turn one off and that commodity is yours to place by hand.
+6. **Deal.** Take any listing on the book at the price posted, post your own ask or bid, or write a
+   contract with a named nation in the **Trade** tab. Every market on earth is open to you — what
+   limits a deal is whether the other side will agree to the terms. Either side that falls short
+   pays the other half of what it failed to deliver or take.
+7. **Borrow, if you must.** The exchange charges both sides a small clearing fee, and it goes into a
+   fund. A government that cannot make payroll can borrow against it rather than closing plants —
+   with interest, repaid out of the tax base.
+8. **Research, and licence.** The **Tech** tab is the tree: every industry past the basics is behind
+   a technology, for all forty-six nations alike. Fund your own laboratories, or buy a licence from
+   somebody who got there first.
+9. **Watch where you stand.** The **Ranks** tab scores all forty-six nations against each other on
    the size of their economy, the industry they have built, what it turns out, how well their people
-   are fed, their treasury and their trade balance.
+   are fed, the technology they hold, their treasury and their trade balance.
 
 ### The chains
 
@@ -137,21 +142,25 @@ implementation detail:
 1. `ledger` — fold the finished tick's commodity figures into the total and start the next one empty
 2. `collect` — finished output → warehouses in range
 3. `produce` — consume inputs, advance jobs, set status
-4. `distribute` — warehouses → input buffers, for next tick
-5. `wages` — debit payroll at each site's local wage multiplier, unstaff everyone if it bounces
-6. `domestic` — sell to your own population, up to what they actually eat
-7. `trade` — offer the surplus abroad; buy what your people are short of, and what your factories
-   cannot dig up
+4. `wages` — debit payroll at each site's local wage multiplier, unstaff everyone if it bounces
+5. `contracts` — settle every promise due this tick, and charge whoever fell short
+6. `distribute` — warehouses → input buffers, before the counter opens
+7. `domestic` — sell to your own population, up to what they actually eat
 8. `carry` — warehouse stock loses a little to handling
 9. `prices` — move on the whole tick's supply, mean-revert toward base
-10. `growth` — economies compound or contract on how well their people were supplied
-11. `state` — the other forty-five governments decide what to build
-12. `diplomacy` — and whether to come and ask you for a pact
+10. `growth` — economies compound or contract on how well their people were supplied; population
+    follows, far more slowly
+11. `research` — laboratories are paid for; a finished subject lands
+12. `lending` — interest and repayment on anything owed to the clearing fund
+13. `state` — the other forty-five governments decide what to build
+14. `exchange` — everybody posts what they cannot place and bids for what they cannot dig up, and
+    the book is matched into contracts
 
 Collecting *before* producing makes a site's throughput independent of its position in the
-`buildings` array, which keeps ticks deterministic. Selling at home *before* trading is the rule that
-a nation feeds its own people before it feeds anyone else's — reverse those two and exporting would
-starve your own population for a better price.
+`buildings` array, which keeps ticks deterministic. Settling contracts *before* anything else is the
+rule that a promise outranks a shopkeeper — over-commit your own supply and you really will starve
+your own people for it. Distributing *before* selling at home is what stops a nation's own population
+outbidding its own industry for free.
 
 ### Where the balance lives
 
@@ -159,7 +168,8 @@ All of it is data in `src/data/`, with the cross-cutting economic constants in `
 Adding an industry or a nation is a new object literal — no new file, no new class, no changes to any
 system.
 
-- `buildings.js`, `commodities.js` — twenty-two industries, twenty-one commodities.
+- `buildings.js`, `commodities.js` — thirty-four industries, thirty-four commodities.
+- `technology.js` — nineteen technologies in five eras; every industry past the basics is behind one.
 - `countries.js` — labour multiplier, market size, population and resource endowments per nation.
 - `world.js` — the map, as sixty 120-character rows. One character per cell: `.` ocean, `-` land
   belonging to none of the forty-six, anything else a nation.
@@ -177,7 +187,7 @@ deposits, never the coastlines.
 
 ## Tests
 
-108 tests in `test/run.js`, covering the parts most likely to break silently: the map data itself
+127 tests in `test/run.js`, covering the parts most likely to break silently: the map data itself
 (every row the right width, every nation actually on it, no two sharing a character, countries in the
 right hemispheres, distance wrapping the globe rather than the map, no deposit outside its owner or
 dropped for want of room, regeneration deterministic for a seed), territorial waters and offshore
@@ -186,17 +196,25 @@ seed, buildings reattached, payload small enough for localStorage, nothing on th
 round trip would eat), the industry tables (no recipe naming an unknown commodity, no building on a
 terrain the map never makes, nothing unproduced or unmineable, every recipe clearing a margin at base
 price, and the dearest labour on earth still able to profit on the deepest chain), sovereignty (you
-build only at home, and so does every government), trade pacts, the home market and its appetite cap,
-world trade (both sides gaining, freight scaling with distance, no shipping without a pact, payroll
-reserved against imports), local prices, economic growth and collapse and their bounds, spoilage,
+build only at home, and so does every government), the home market and its appetite cap,
+the exchange (a bid and an ask that cross becoming exactly one contract at a price between them, a
+bid below an ask never crossing, two commodities never matched with each other, a listing taken by
+hand at the price posted, a listing lapsing unanswered, and the `↗`/`↙` flags deciding whether your
+government posts at all), the clearing fund (both sides charged, a hand-written contract charged
+nothing, borrowing bounded by the tax base and by the fund, interest accruing and repayment coming
+out of taxes), local prices, economic growth and collapse and their bounds, population and its three
+bands, spoilage,
 terrain gating, atomic multi-input consumption up to three inputs, warehouse radius boundaries,
 owner-scoped logistics, independent payroll, a broke government closing plants, six production chains
-end to end, output blocking with no warehouse in range, the feedstock channel (a nation with no coal
-buying coal for its factories, feedstock never counting as a fed population, the buffer and depot-
-space caps, and a chain running end to end on an import), the commodity ledger (what it books, that
-it folds one tick at a time, and that it books only your nation), your own deals surviving a full
-world flow list, pacts offered to you and accepted, declined or left to lapse, a government planning
-a plant around an input it has to import, and the fixed-timestep loop maths.
+end to end, output blocking with no warehouse in range, the feedstock channel (a rich nation with no
+coalfield feeding three coal plants at once, a chain running end to end on an import, and governments
+counting factory floors as demand rather than only dinner tables), contracts (priced once and never
+moving, settled before a nation feeds its own people, both kinds of default charged, terms running
+out, and breaking one costing what defaulting on the rest would), technology (the tree acyclic and
+every tech unlocking something, the basics free and everything else gated for all forty-six alike,
+research completing, and a licence carrying the whole missing branch), the commodity ledger, your own
+deals surviving a full world flow list, a government planning a plant around an input it has to
+import, and the fixed-timestep loop maths.
 
 The suite is deliberately DOM-free — it builds a state and calls systems directly, so it runs without
 a browser. The loop takes an injectable scheduler so its timing can be driven by a fake clock rather
@@ -209,17 +227,16 @@ than `requestAnimationFrame`.
   time on return.
 - Freight is charged between nations but is free inside one, so distance costs you tiles at home and
   money abroad. Internal logistics cost is the obvious next lever.
-- Governments trade, build, close plants and offer you a pact when they want your market — but they
-  never subsidise, never embargo and never go to war. They are economic competitors with one
-  diplomatic move, not diplomats.
-- A trade pact is permanent — there is no way to close one and recover anything.
-- Imports bought for your *population* satisfy it directly rather than passing through your
-  warehouses; only imports bought for your *factories* land in a depot, capped at a few ticks of what
-  those factories actually burn. That split is what lets a country with no coalfield run a steel mill
-  without turning the game into "buy low abroad, sell high abroad". You are a country, not a trading
-  house.
-- Only your own nation needs pacts. The other forty-five are assumed to trade freely with each other,
-  which is a simplification in your favour early and against you later.
+- Governments post, take, contract, build, close plants, research, licence and borrow — but they
+  never subsidise, never embargo and never go to war. They are economic competitors, not diplomats.
+- Every market is open to everybody. There is no tariff, no embargo and no bloc, so geography and
+  freight are the only things that make one partner better than another.
+- A contract is priced when it is signed and never moves, so a long term is a bet on the market
+  staying where it was. There is no way to renegotiate one — only to break it and pay for that.
+- All trade is a rate over a term. Nobody ships a single one-off cargo except by writing a contract
+  with a term of zero, which the exchange itself never does.
+- The clearing fund is the only lender, and it only ever holds what trade has paid into it. A world
+  that trades very little cannot bail anybody out.
 - Coastline detail comes from the 120×60 source. Borders are blocky up close; sharper outlines mean
   repainting the source art at a higher resolution, not changing the scale.
 - Countries near the poles are stretched by the equirectangular projection, so Russia and Canada own

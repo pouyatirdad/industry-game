@@ -13,11 +13,10 @@ import { appetite, allOwners, isPlayer, noteLedger } from '../core/state.js';
 // flag, is what makes exporting necessary: build past what your own people
 // consume and you MUST find someone else to sell to.
 export function sellDomestic(state) {
-  for (const owner of allOwners(state)) {
-    owner.report.domestic = 0;
-    owner.report.exports = 0;
-    owner.report.imports = 0;
-  }
+  // Only the home line is reset here. `exports` and `imports` belong to
+  // `runContracts`, which has already run this tick and put its figures in
+  // them — a contract IS this game's import and export.
+  for (const owner of allOwners(state)) owner.report.domestic = 0;
   for (const country of COUNTRY_IDS) {
     const market = state.markets[country];
     for (const id of COMMODITY_IDS) {

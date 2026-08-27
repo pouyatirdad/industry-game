@@ -1,10 +1,13 @@
 import { createInitialState, createUiState, saveState, loadState, clearSave, pushAlert,
-  pruneAlerts, dismissAlert, buildingById } from './core/state.js';
+  pruneAlerts, pruneOffers, dismissAlert, buildingById } from './core/state.js';
 import { createLoop } from './core/loop.js';
 import { CONFIG } from './core/config.js';
 import { runTick } from './systems/index.js';
-import { build, canBuild, demolish, openPact, acceptOffer, declineOffer, toggleExport, toggleImport,
-  setSpeed, togglePause } from './actions.js';
+import { build, canBuild, demolish, toggleExport, toggleImport,
+  setSpeed, togglePause, setResearch, setResearchShare, buyTech, acceptTechOffer, declineTechOffer,
+  proposeContract, acceptContractOffer, declineContractOffer, cancelContract,
+  postListing, cancelListing, take, takeLoan, repayLoan } from './actions.js';
+import { sellersOf } from './systems/research.js';
 import { COUNTRIES } from './data/countries.js';
 import { createRenderer } from './ui/render.js';
 import { TABS } from './ui/tabs.js';
@@ -46,12 +49,11 @@ const ctx = {
   },
 
   // Clicking a nation in the list selects one of its tiles, which is what puts
-  // its terms and its pact button in the inspector. It also swings the market
-  // panel over, since "what does this country pay" is the next question.
+  // its figures in the inspector. It also swings the price panel over, since
+  // "what does this country pay" is the next question.
   onFocusCountry(countryId) {
-    // Empty ground on purpose: land in the inspector for a nation, so you get
-    // its terms and its pact button rather than whatever happens to be built on
-    // the first tile it owns.
+    // Empty ground on purpose: land in the inspector for the NATION rather than
+    // for whatever happens to be built on the first tile it owns.
     const tile = ctx.state.tiles.find((t) => t.countryId === countryId
       && t.terrain === 'plain' && t.buildingId == null)
       ?? ctx.state.tiles.find((t) => t.countryId === countryId && t.buildingId == null);
@@ -61,18 +63,43 @@ const ctx = {
     render();
   },
 
-  onOpenPact(countryId) {
-    openPact(ctx.state, countryId);
-    render();
-  },
+  // --- the exchange -------------------------------------------------------
 
-  // A pact somebody else asked for. Accepting pays you, so the answer is worth
-  // thinking about rather than automatic — and either answer clears it off the
-  // table.
-  onAcceptOffer(countryId) { acceptOffer(ctx.state, countryId); render(); },
-  onDeclineOffer(countryId) { declineOffer(ctx.state, countryId); render(); },
+  onListingDraft(patch) { Object.assign(ctx.ui.listing, patch); render(); },
+  onPostListing() { postListing(ctx.state, ctx.ui.listing); render(); },
+  onCancelListing(id) { cancelListing(ctx.state, id); render(); },
+  onTakeListing(id) { take(ctx.state, id); render(); },
+  onBorrow(amount) { takeLoan(ctx.state, amount); render(); },
+  onRepay(amount) { repayLoan(ctx.state, amount); render(); },
 
   onZoom(index) { ctx.ui.zoom = index; render(); },
+
+  // --- technology ---------------------------------------------------------
+
+  // Clicking the subject you are already studying puts the laboratories back on
+  // the shelf, which is the only way to stop spending on research entirely.
+  onResearch(techId) {
+    setResearch(ctx.state, ctx.state.countries[ctx.state.home].researching === techId ? null : techId);
+    render();
+  },
+  onResearchShare(share) { setResearchShare(ctx.state, share); render(); },
+  // The nearest nation that holds it is the one you buy from; the tree shows
+  // which, and how many others could have sold it to you.
+  onBuyTech(techId) {
+    const seller = sellersOf(ctx.state, ctx.state.home, techId)[0];
+    if (seller) buyTech(ctx.state, techId, seller);
+    render();
+  },
+  onAcceptTech(techId) { acceptTechOffer(ctx.state, techId); render(); },
+  onDeclineTech(techId) { declineTechOffer(ctx.state, techId); render(); },
+
+  // --- contracts ----------------------------------------------------------
+
+  onDraft(patch) { Object.assign(ctx.ui.draft, patch); render(); },
+  onSignContract() { proposeContract(ctx.state, ctx.ui.draft); render(); },
+  onAcceptContract(offer) { acceptContractOffer(ctx.state, offer); render(); },
+  onDeclineContract(offer) { declineContractOffer(ctx.state, offer); render(); },
+  onCancelContract(id) { cancelContract(ctx.state, id); render(); },
 
   onGoodsView(view) { ctx.ui.goodsView = view; render(); },
 
@@ -187,8 +214,14 @@ document.addEventListener('keydown', (event) => {
 // Alerts expire in real time rather than in ticks, so the sweep is a timer of
 // its own: a message you have read clears itself whether the game is running at
 // 4x or sitting paused.
+// ...and so do offers: an unanswered proposal is a declined one. The sweep is
+// held while the pointer is over the inbox, because an offer that vanishes as
+// you reach for it is worse than one that lingers.
 setInterval(() => {
-  if (pruneAlerts(ctx.state)) render();
+  const now = Date.now();
+  const swept = pruneAlerts(ctx.state, now);
+  const answered = pruneOffers(ctx.state, now, ctx.ui.inboxHeld);
+  if (swept || answered) render();
 }, 500);
 
 pushAlert(ctx.state, opening(ctx.state.home), 'info');

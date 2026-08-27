@@ -67,3 +67,50 @@
 /* Forty-six names, some of them long, in a 300px column. */
 .country__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .country[data-open="false"] { opacity: 0.5; }
+
+/* The border/graticule switch sits with zoom, since both are about how the map
+   is drawn rather than about the game. */
+.maptools__sep { width: 1px; align-self: stretch; background: var(--line); }
+
+/* No scrollbars. The map is panned by dragging it and zoomed with the wheel or
+   a trackpad pinch, so a scrollbar is a control nobody uses taking width from
+   the world. The scroller itself stays — it is what `scrollLeft`/`scrollTop`
+   move against — it just has nothing visible on it. */
+.map { scrollbar-width: none; -ms-overflow-style: none; }
+.map::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* Dragging the map should not select the country names painted on it. */
+.map { user-select: none; -webkit-user-select: none; touch-action: none; }
+
+/* Everything waiting on your answer, stacked in the corner over the map. It is
+   deliberately not a modal that blocks: you can ignore it, and the same offers
+   are in their tabs either way. */
+.inbox {
+  position: absolute; z-index: 6; right: 374px; bottom: 12px;
+  display: flex; flex-direction: column; gap: 6px;
+  width: 262px; max-height: 62vh; overflow-y: auto;
+  pointer-events: none;
+}
+.layout:not([data-left="true"]) .inbox { right: 374px; }
+.panel--tabs[data-open="false"] ~ .inbox { right: 12px; }
+
+.post {
+  pointer-events: auto;
+  border: 1px solid var(--accent); border-radius: var(--radius);
+  background: #1f1a12f2; backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px #00000073;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  animation: post-in .18s ease-out;
+}
+.post[data-kind="tech"] { border-color: #6f7fc9; background: #171a26f2; }
+@keyframes post-in { from { opacity: 0; transform: translateX(12px); } }
+
+.post__head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.post__from { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.post__kind {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .07em;
+  padding: 0 5px; border-radius: 999px; background: #ffffff14; color: var(--muted);
+}
+.post__body { margin: 0; font-size: 11px; line-height: 1.4; }
+.post__meta { margin: 0; font-size: 10px; }
+.post__act { display: flex; gap: 4px; margin-top: 2px; }
+.post__act button { flex: 1; padding: 3px 8px; font-size: 11px; }

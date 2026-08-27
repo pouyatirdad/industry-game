@@ -36,10 +36,16 @@
 <main class="layout" id="layout" data-left="true">
   <div id="map" class="map" role="img" aria-label="World map"></div>
 
+  <!-- Zoom is the wheel and the trackpad now, so there is nothing here but the
+       one thing the mouse cannot say. -->
   <div class="maptools floating">
-    <span class="maptools__label">Zoom</span>
-    <div class="speeds" id="zoom-buttons"></div>
+    <span class="maptools__label" id="zoom-label">1px</span>
   </div>
+
+  <!-- Anything waiting on your answer, over the map where you cannot miss it.
+       The same offers appear in their own tabs; this is so that saying yes never
+       costs you the pane you were reading. -->
+  <div id="inbox" class="inbox"></div>
 
   <ul id="alerts" class="alerts"></ul>
 
@@ -62,7 +68,7 @@
     </div>
   </aside>
 
-  <!-- One panel, five views. Everything used to be stacked in a single column,
+  <!-- One panel, eight views. Everything used to be stacked in a single column,
        which put the market table, the trade list, forty-six nations and the
        inspector on screen at once and made all four hard to read. The tab strip
        is the only thing that is always visible. -->
@@ -80,10 +86,12 @@
           <thead>
             <tr>
               <th>Commodity</th><th>Price</th><th title="Against the commodity's base price">±</th>
-              <th title="What this nation's people consume per tick">Want</th>
-              <th title="How much of that is actually reaching them">Met</th>
-              <th title="What your warehouses hold">Held</th>
-              <th title="Offer the surplus abroad">↗</th><th title="Buy in what your people and your factories are short of">↙</th>
+              <th title="What this nation's people need per tick">Need</th>
+              <th title="What this nation's domestic market consumed last tick">Consume</th>
+              <th title="What this nation's factories use per tick">Usage</th>
+              <th title="How much of that domestic need is actually reaching people">Met</th>
+              <th title="What this nation's warehouses hold">Held</th>
+              <th title="Willing to post asks for this on the exchange">↗</th><th title="Willing to post bids for this on the exchange">↙</th>
             </tr>
           </thead>
           <tbody id="market-body"></tbody>
@@ -91,7 +99,7 @@
         <p class="hint" id="market-note"></p>
         <details class="hint">
           <summary>What am I reading?</summary>
-          <b>Want/t</b> is what that nation's people consume per tick and <b>Met</b> how much of it is actually reaching them. Your warehouses feed your own market first, up to <b>Want/t</b>; whatever is left over is offered abroad if <b>Out</b> is on. <b>In</b> lets the treasury buy what your people are short of.
+          <b>Want/t</b> is what that nation's people consume per tick and <b>Met</b> how much of it is actually reaching them. Your warehouses feed your own people first, up to <b>Want/t</b>; whatever is left over is what you have to find a contract for. The <b>↗</b> and <b>↙</b> flags say which commodities you are willing to post on the exchange at all.
         </details>
       </section>
 
@@ -104,11 +112,39 @@
         </details>
       </section>
 
+      <!-- The global exchange. Every nation may deal with every other, so the
+           problem is not permission but finding somebody — this is the open book
+           where a surplus and a shortage meet. A match becomes a contract. -->
+      <section class="pane" data-pane="market" role="tabpanel" aria-labelledby="tab-market">
+        <div id="market-head" class="market__head"></div>
+
+        <h2>Post terms</h2>
+        <div id="listing-draft" class="draft"></div>
+
+        <h2>The book</h2>
+        <div id="listing-book" class="book"></div>
+
+        <h2>Clearing fund</h2>
+        <div id="fund-card" class="fund"></div>
+        <details class="hint">
+          <summary>How the exchange works</summary>
+          Anybody may post an <b>ask</b> (I will sell) or a <b>bid</b> (I will buy). The exchange pairs a bid with an ask whenever the buyer's price covers the seller's plus the freight and the fee, and the pair becomes a supply contract like any other. You can also <b>take</b> any listing outright at the price posted. The house charges both sides a small clearing fee on every settlement, and that fund is what a government borrows from when it cannot make payroll.
+        </details>
+      </section>
+
       <section class="pane" data-pane="trade" role="tabpanel" aria-labelledby="tab-trade">
         <div id="trade-head" class="trade-head"></div>
 
-        <h2>Offered to you</h2>
-        <div id="pact-offers" class="offers"></div>
+        <!-- Contracts are the ONLY way goods cross a border. Either they were
+             matched for you on the exchange, or you wrote them here by name. -->
+        <h2>Supply contracts</h2>
+        <div id="contract-offers" class="offers"></div>
+        <div id="contract-draft" class="draft"></div>
+        <div id="contract-list" class="contracts"></div>
+        <details class="hint">
+          <summary>How a contract works</summary>
+          A contract moves a fixed quantity at a price fixed on the day you sign, every <em>n</em> ticks for its term, and it is settled <em>before</em> your own people are served — so promising away supply you do not have really will starve them. If either side falls short, whoever fell short pays the other half the value it failed to deliver or take. Nothing else moves goods between nations: no cargo leaves without a contract behind it.
+        </details>
 
         <h2>Recent deals</h2>
         <ul id="trade-flows" class="flows"></ul>
@@ -127,11 +163,11 @@
           </thead>
           <tbody id="trade-goods"></tbody>
         </table>
-        <p class="hint hint--tight">Deals settle between the two local prices, so both sides gain — freight scales with distance, so your neighbours are your natural customers.</p>
+        <p class="hint hint--tight">A contract is priced when it is signed and never moves after — freight scales with distance, so your neighbours quote you the best terms.</p>
 
         <h2>Nations</h2>
         <div id="country-list" class="countries"></div>
-        <p class="hint hint--tight">You trade only with nations you hold a pact with. Click one to see its terms and sign — or wait, and one may come to you.</p>
+        <p class="hint hint--tight">Every market on earth is open to you. Click a nation to see what its people pay and what it is sitting on.</p>
       </section>
 
       <section class="pane" data-pane="goods" role="tabpanel" aria-labelledby="tab-goods">
@@ -176,6 +212,23 @@
         <details class="hint">
           <summary>How the score is worked out</summary>
           Every nation is measured against the best in the world on six counts and the score is the weighted total out of 100: the size of its economy (30), the industry it has built (20), what that industry turns out per tick (20), how well its own people are supplied (15), its treasury (10) and its trade balance (5). Click a column to rank by it.
+        </details>
+      </section>
+
+      <!-- The technology tree. What a nation may build is a decision it took
+           forty ticks ago rather than a property of its map, and every other
+           government is climbing the same tree out of its own treasury. -->
+      <section class="pane" data-pane="tech" role="tabpanel" aria-labelledby="tab-tech">
+        <div id="tech-head" class="tech__head"></div>
+
+        <h2>Licences offered to you</h2>
+        <div id="tech-offers" class="offers"></div>
+
+        <h2>The tree</h2>
+        <div id="tech-tree" class="tree"></div>
+        <details class="hint">
+          <summary>How research works</summary>
+          Your laboratories are funded as a share of the tax base — the slider above — and turn treasury into research points at a fixed rate. Pick a subject and it completes when its points are banked; the overflow carries into the next one. Anything you have not learned, you can <b>licence</b> from a nation that has, if you hold a pact with it: that costs more than researching it but arrives at once, and everything upstream you are missing comes with it. The forty-five other governments do all of this too, and being first up the tree is what lets you sell licences to them.
         </details>
       </section>
 

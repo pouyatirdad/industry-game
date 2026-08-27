@@ -1,9 +1,10 @@
 import { CONFIG } from '../core/config.js';
 import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
-import { projectedWages, warehouseStock, hasPact, ownerName, ownFlows } from '../core/state.js';
+import { projectedWages, warehouseStock, ownerName, ownFlows, exchangeOf } from '../core/state.js';
 import { supplyRatio } from '../systems/domestic.js';
 import { money, num, price, pct, html } from './format.js';
+import { tradeBalance } from './dashboard.js';
 
 // One tab that answers "how is the nation doing" without reading the other
 // four. Everything here is derived — the summary owns no state of its own — so
@@ -17,11 +18,16 @@ export function updateSummary(host, ctx) {
   const sites = siteCounts(state);
   const shortfalls = homeShortfalls(state);
   const held = topStock(state);
-  const partners = COUNTRY_IDS.filter((id) => id !== state.home && hasPact(state, id));
+  const partners = new Set((state.contracts ?? [])
+    .filter((c) => c.seller === state.home || c.buyer === state.home)
+    .map((c) => (c.seller === state.home ? c.buyer : c.seller)));
 
   const sig = [
     state.home, Math.round(me.cash), me.report.net, me.report.tax, me.report.domestic,
-    me.report.exports, me.report.imports, wages, sites.total, sites.running, sites.starved,
+    me.report.exports, me.report.imports, Math.round(me.report.research ?? 0),
+    Math.round(me.report.penalties ?? 0), Math.round(me.report.fees ?? 0),
+    Math.round(me.report.interest ?? 0), Math.round(me.debt ?? 0), me.pop?.toFixed(1),
+    wages, sites.total, sites.running, sites.starved,
     sites.blocked, sites.unstaffed, sites.idle, sites.stores, Math.round(sites.work * 100),
     me.demand.toFixed(1), me.supply.toFixed(2), partners.length,
     shortfalls.map((s) => s.id + Math.round(s.met * 100)).join(','),
@@ -31,7 +37,9 @@ export function updateSummary(host, ctx) {
   host.dataset.sig = sig;
 
   const grows = me.supply >= CONFIG.growth.pivot;
-  const balance = me.report.exports - me.report.imports;
+  const penalties = me.report.penalties ?? 0;
+  const owing = me.debt ?? 0;
+  const balance = tradeBalance(me);
 
   host.replaceChildren(html(`
     <div class="summary__inner">
@@ -43,6 +51,10 @@ export function updateSummary(host, ctx) {
           ${ledgerRow('Sold at home', me.report.domestic)}
           ${ledgerRow('Exports', me.report.exports)}
           ${ledgerRow('Imports', -me.report.imports)}
+          ${penalties ? ledgerRow('Penalties', penalties) : ''}
+          ${me.report.fees ? ledgerRow('Clearing fees', -(me.report.fees ?? 0)) : ''}
+          ${owing ? ledgerRow('Debt service', -((me.report.interest ?? 0) + (me.report.repaid ?? 0))) : ''}
+          ${ledgerRow('Research', -(me.report.research ?? 0))}
           ${ledgerRow('Payroll', -wages)}
           ${ledgerRow('Net per tick', me.report.net, 'ledger__total')}
         </ul>
@@ -56,7 +68,7 @@ export function updateSummary(host, ctx) {
         </div>
         <dl class="facts">
           <div><dt>Economy</dt><dd>${me.demand.toFixed(1)} / ${def.demand}</dd></div>
-          <div><dt>Population</dt><dd>${def.pop >= 10 ? Math.round(def.pop) : def.pop}m</dd></div>
+          <div><dt title="People, and they move: a nation that is both well supplied and comfortably solvent grows">Population</dt><dd>${(me.pop ?? def.pop) >= 10 ? Math.round(me.pop ?? def.pop) : (me.pop ?? def.pop).toFixed(1)}m</dd></div>
         </dl>
       </section>
 
@@ -90,7 +102,7 @@ export function updateSummary(host, ctx) {
       <section class="card card--wide">
         <h4>Trade</h4>
         <p class="card__big ${balance < 0 ? 'is-negative' : ''}">${balance >= 0 ? '+' : ''}${money(balance)}</p>
-        <p class="card__sub">${num(partners.length)} of ${COUNTRY_IDS.length - 1} markets open</p>
+        <p class="card__sub">${num(partners.size)} of ${COUNTRY_IDS.length - 1} nations under contract${owing ? ` &middot; <span class="is-negative">${money(owing)} owed</span>` : ''}</p>
         ${recentPartners(state)}
       </section>
     </div>`));

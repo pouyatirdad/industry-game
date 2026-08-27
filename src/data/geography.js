@@ -1,5 +1,6 @@
-import { SOURCE_ROWS, SOURCE_W, SOURCE_H } from './world.js';
-import { COUNTRY_IDS, COUNTRY_BY_CHAR } from './countries.js';
+import { SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H } from './world.js';
+import { COUNTRY_IDS } from './countries.js';
+import { WORLD_COUNTRY_INFO } from './worldCountries.js';
 
 // Where each country sits, and how far apart any two of them are. Derived from
 // the source art rather than authored, so moving a coastline moves the freight
@@ -12,10 +13,10 @@ function centroids() {
   const sum = {};
   for (const id of COUNTRY_IDS) sum[id] = { x: 0, y: 0, n: 0 };
 
-  for (let y = 0; y < SOURCE_H; y++) {
-    const row = SOURCE_ROWS[y];
-    for (let x = 0; x < SOURCE_W; x++) {
-      const id = COUNTRY_BY_CHAR[row[x]];
+  for (let y = 0; y < SOURCE_COUNTRY_H; y++) {
+    const row = SOURCE_COUNTRY_ROWS[y];
+    for (let x = 0; x < SOURCE_COUNTRY_W; x++) {
+      const id = row[x];
       if (!id) continue;
       const acc = sum[id];
       acc.x += x;
@@ -25,9 +26,17 @@ function centroids() {
   }
 
   const out = {};
+  const fallback = Object.fromEntries(WORLD_COUNTRY_INFO.map((info) => [
+    info.id,
+    {
+      x: (info.centre.lon + 180) * SOURCE_COUNTRY_W / 360,
+      y: (90 - info.centre.lat) * SOURCE_COUNTRY_H / 180,
+    },
+  ]));
   for (const id of COUNTRY_IDS) {
     const acc = sum[id];
-    out[id] = acc.n ? { x: acc.x / acc.n, y: acc.y / acc.n } : { x: SOURCE_W / 2, y: SOURCE_H / 2 };
+    out[id] = acc.n ? { x: acc.x / acc.n, y: acc.y / acc.n }
+      : fallback[id] ?? { x: SOURCE_COUNTRY_W / 2, y: SOURCE_COUNTRY_H / 2 };
   }
   return out;
 }
@@ -41,7 +50,7 @@ function separation(a, b) {
   const A = CENTROIDS[a];
   const B = CENTROIDS[b];
   let dx = Math.abs(A.x - B.x);
-  if (dx > SOURCE_W / 2) dx = SOURCE_W - dx;
+  if (dx > SOURCE_COUNTRY_W / 2) dx = SOURCE_COUNTRY_W - dx;
   const dy = A.y - B.y;
   return Math.sqrt(dx * dx + dy * dy);
 }

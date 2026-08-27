@@ -31,7 +31,7 @@ function within(candidates, x, y, owner) {
 // Depots grouped by the nation they belong to, in `state.buildings` order — so
 // the order goods are drawn in is exactly what it was when every site scanned
 // the whole world, and ticks stay deterministic.
-function depotsByOwner(state) {
+export function depotsByOwner(state) {
   const byOwner = new Map();
   for (const b of state.buildings) {
     if (!b.store) continue;
@@ -85,6 +85,71 @@ export function distribute(state) {
       }
     }
   }
+}
+
+// Cargo leaves the warehouses that hold it. Which one is arbitrary, so the
+// first ones found are drained in order — deterministic because
+// `state.buildings` is only ever appended to. Returns what was actually found.
+//
+// This and its opposite below are the ONLY way goods cross a border, whether by
+// spot deal or by contract, so both live here rather than in either system.
+export function drawFromWarehouses(state, ownerId, commodityId, qty) {
+  return drawFrom(state.buildings.filter((b) => b.owner === ownerId && b.store), commodityId, qty);
+}
+
+// The same question asked against a list already narrowed to one nation's
+// depots. A tick that settles a hundred contracts cannot afford to scan every
+// building in the world twice per contract, so `contracts.js` indexes the
+// depots once and calls these.
+export function drawFrom(depots, commodityId, qty) {
+  let left = qty;
+  for (const b of depots) {
+    if (left <= 0) break;
+    const held = b.store[commodityId] ?? 0;
+    if (held <= 0) continue;
+    const taken = Math.min(held, left);
+    b.store[commodityId] = held - taken;
+    left -= taken;
+  }
+  return qty - left;
+}
+
+export function deliverTo(depots, commodityId, qty) {
+  let left = qty;
+  for (const b of depots) {
+    if (left <= 0) break;
+    const free = BUILDINGS[b.type].capacity - warehouseUsed(b);
+    if (free <= 0) continue;
+    const put = Math.min(free, left);
+    b.store[commodityId] = (b.store[commodityId] ?? 0) + put;
+    left -= put;
+  }
+  return qty - left;
+}
+
+export function spaceIn(depots) {
+  let free = 0;
+  for (const b of depots) free += Math.max(0, BUILDINGS[b.type].capacity - warehouseUsed(b));
+  return free;
+}
+
+export function stockIn(depots, commodityId) {
+  let held = 0;
+  for (const b of depots) held += b.store[commodityId] ?? 0;
+  return held;
+}
+
+// ...and a cargo arrives in them, which is the whole point of the industrial
+// channel: goods a nation cannot dig up become goods its factories can draw on
+// next tick. Returns what actually fitted.
+export function deliverToWarehouses(state, ownerId, commodityId, qty) {
+  return deliverTo(state.buildings.filter((b) => b.owner === ownerId && b.store), commodityId, qty);
+}
+
+// Free depot space a nation has, in units. Trade and contracts both have to
+// know whether a cargo has anywhere to land before they agree to it.
+export function depotSpace(state, ownerId) {
+  return spaceIn(state.buildings.filter((b) => b.owner === ownerId && b.store));
 }
 
 // Storage is not free. A small share of everything sitting in a warehouse is

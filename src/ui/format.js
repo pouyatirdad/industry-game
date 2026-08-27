@@ -12,7 +12,7 @@ export function money(value) {
 }
 
 // A price short enough to sit next to a name in half a panel: $18k, $1.2M.
-// The build menu is twenty-six industries and they all have to be on screen at
+// The build menu is thirty-four industries and they all have to be on screen at
 // once, so four digits of precision are worth less than the row they cost.
 export function moneyShort(value) {
   const abs = Math.abs(value);

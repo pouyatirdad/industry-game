@@ -52,10 +52,52 @@ export function growEconomies(state) {
     const supply = weight > 0 ? weighted / weight : 1;
     country.supply = supply;
 
-    const base = COUNTRIES[id].demand;
+    // People move first, because how many of them there are is what the market
+    // below is bounded against.
+    growPopulation(state, country, supply);
+
+    // A bigger population widens the BAND demand may move in, rather than
+    // pushing demand up directly. Supply still decides where inside that band a
+    // nation actually sits — so a country can populate and still shrink if it
+    // cannot feed anybody, which is the honest outcome.
+    const heads = country.pop / COUNTRIES[id].pop;
+    const base = COUNTRIES[id].demand * heads;
     const next = country.demand * (1 + rate * (supply - pivot));
     country.demand = Math.min(base * ceiling, Math.max(base * floor, next));
   }
+}
+
+// People, as opposed to money.
+//
+// Demand answers to supply alone and moves within twenty ticks. Population is
+// the slower thing underneath it and needs BOTH conditions: shops that are
+// actually full, and a treasury that is comfortably ahead of its own bills. A
+// well-fed nation that cannot pay for anything is not one people move to.
+//
+// It matters because it feeds back: every extra head lifts the floor under
+// `demand`, so a nation that gets rich and stays supplied compounds twice — a
+// bigger market, and then a bigger market again. That is what makes prosperity
+// worth chasing past the point where your own people are simply fed.
+function growPopulation(state, country, supply) {
+  const { rate, pivot, starve, wealth, floor, ceiling } = CONFIG.population;
+  const base = COUNTRIES[country.id].pop;
+  if (!country.pop) country.pop = base;
+
+  // Wealth is measured against the nation's own tax base, so it means the same
+  // thing to DR Congo as it does to the United States.
+  const rich = country.report.tax > 0 && country.cash >= country.report.tax * wealth;
+
+  // Three bands, not two, and the middle one is where most of the world lives.
+  // A nation only gains people if its shops are genuinely full AND it is
+  // comfortably solvent; it only loses them if it is actually starving. Making
+  // the grow and shrink thresholds the same figure quietly emptied the planet,
+  // because the ordinary condition — fed, but not richly — fell on the wrong
+  // side of it.
+  const direction = supply >= pivot && rich ? 1 : supply < starve ? -1 : 0;
+  if (direction === 0) return;
+
+  const next = country.pop * (1 + rate * direction);
+  country.pop = Math.min(base * ceiling, Math.max(base * floor, next));
 }
 
 export function sampleHistory(state) {
@@ -84,7 +126,13 @@ export function reportHome(state) {
   state.warnedHungry = hungry;
 
   for (const owner of allOwners(state)) {
+    // Everything that moved the treasury this tick, in and out. Contracts and
+    // research are separate lines rather than folded into trade and wages,
+    // because both are policies you chose rather than things the market did to
+    // you — and a net that hid them would be unreadable the moment either bit.
     owner.report.net = owner.report.tax + owner.report.domestic + owner.report.exports
-      - owner.report.imports - owner.report.wages;
+      + (owner.report.penalties ?? 0)
+      - owner.report.imports - owner.report.wages - (owner.report.research ?? 0)
+      - (owner.report.fees ?? 0) - (owner.report.interest ?? 0) - (owner.report.repaid ?? 0);
   }
 }

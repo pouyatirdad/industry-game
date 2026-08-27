@@ -1,17 +1,19 @@
 import { setAttr, setText, html } from './format.js';
 
-// The seven views the side panel can show. `id` matches a `data-pane` in
+// The nine views the side panel can show. `id` matches a `data-pane` in
 // index.html and `ui.tab`; nothing else in the UI hardcodes the list, so adding
 // a view is a new entry here plus a <section class="pane"> in the markup.
 //
-// Seven no longer fit one row of a 352px panel, so the strip wraps (see
+// Nine do not fit one row of a 352px panel, so the strip wraps (see
 // panel.css) rather than shrinking every label into an ellipsis.
 export const TABS = [
   { id: 'summary', label: 'Summary', title: 'Treasury, industry, resources and trade on one screen.' },
   { id: 'resources', label: 'Prices', title: 'Prices, what a nation wants per tick, and what you hold.' },
   { id: 'factories', label: 'Factories', title: 'Every site you own — what it takes in, turns out, and how hard it is working.' },
   { id: 'goods', label: 'Goods', title: 'Every commodity you make, burn, sell, ship out and buy in.' },
-  { id: 'trade', label: 'Trade', title: 'Deals, what they are worth, and the nations you can strike them with.' },
+  { id: 'market', label: 'Market', title: 'The global exchange — every ask and bid on earth, and the clearing fund you can borrow from.' },
+  { id: 'trade', label: 'Trade', title: 'Your contracts, what they are worth, and the nations you are dealing with.' },
+  { id: 'tech', label: 'Tech', title: 'The technology tree — what you may build, what you are studying, and what you can licence.' },
   { id: 'ranks', label: 'Ranks', title: 'All forty-six nations scored against each other.' },
   { id: 'selected', label: 'Selected', title: 'Whatever you last clicked on the map.' },
 ];
@@ -60,10 +62,21 @@ export function updatePanels(refs, ctx) {
     // The badge is the reason to look: how many sites you own, whether any of
     // them is in trouble, and whether a nation is waiting on your answer.
     const badge = btn.querySelector('.tab__badge');
-    const offers = (state.offers ?? []).length;
-    const count = id === 'factories' ? mine.length : id === 'trade' ? offers : 0;
-    setText(badge, count ? String(count) : '');
-    setAttr(badge, 'data-alarm', (id === 'factories' && troubled) || (id === 'trade' && offers) ? 'true' : null);
+    // Anything waiting on your answer: a pact offered, a contract proposed, a
+    // licence for sale. A tab with a decision on it says so.
+    const waiting = (state.contractOffers ?? []).length;
+    const licences = (state.techOffers ?? []).length;
+    // A nation with no subject on the bench is spending nothing on research,
+    // which is a decision it is worth being told you have not made.
+    const idleLab = state.countries[state.home].researching ? 0 : 1;
+    const listings = (state.exchange?.listings ?? []).filter((l) => l.from !== state.home).length;
+    const count = id === 'factories' ? mine.length
+      : id === 'trade' ? waiting
+        : id === 'market' ? listings
+          : id === 'tech' ? licences : 0;
+    setText(badge, count ? String(count) : id === 'tech' && idleLab ? '!' : '');
+    setAttr(badge, 'data-alarm', (id === 'factories' && troubled) || (id === 'trade' && waiting)
+      || (id === 'tech' && (licences || idleLab)) ? 'true' : null);
   }
 
   setAttr(refs.panel, 'data-open', String(ui.panelOpen));

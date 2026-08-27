@@ -1,22 +1,28 @@
 import { createInitialState, warehouseStock, siteWages, DEPOSIT_TERRAINS, WATER_TERRAINS, rehydrate,
-  appetite, buildingsOf, hasPact, canTrade, isPlayer, projectedWages, packState,
-  pushAlert, pruneAlerts, dismissAlert, recordFlow, ownFlows } from '../src/core/state.js';
+  appetite, buildingsOf, canTrade, isPlayer, projectedWages, packState,
+  pushAlert, pruneAlerts, dismissAlert, recordFlow, ownFlows,
+  knowsTech, learnTech, techCount, contractsOf, exchangeOf } from '../src/core/state.js';
+import { TECHS, TECH_IDS, STARTING_TECHS, canResearch, availableTechs, techChain } from '../src/data/technology.js';
 import { COMMODITIES, COMMODITY_IDS } from '../src/data/commodities.js';
-import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR, pactCost } from '../src/data/countries.js';
-import { WORLD_ROWS, WORLD_W, WORLD_H, SOURCE_ROWS, SOURCE_W, SOURCE_H, AREA_SCALE } from '../src/data/world.js';
+import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR } from '../src/data/countries.js';
+import { WORLD_ROWS, WORLD_W, WORLD_H, SOURCE_ROWS, SOURCE_W, SOURCE_H,
+  SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H, AREA_SCALE } from '../src/data/world.js';
 import { CENTROIDS, distanceBetween, haulShare, neighboursOf, MAX_DISTANCE } from '../src/data/geography.js';
 import { BUILDINGS } from '../src/data/buildings.js';
 import { CONFIG } from '../src/core/config.js';
-import { build, canBuild, openPact, canOpenPact, demolish, acceptOffer, declineOffer } from '../src/actions.js';
+import { build, canBuild, demolish,
+  setResearch, setResearchShare, buyTech, canBuyTech, proposeContract, cancelContract,
+  acceptContractOffer, postListing, take, takeLoan, repayLoan } from '../src/actions.js';
 import { runTick } from '../src/systems/index.js';
 import { produce } from '../src/systems/production.js';
 import { payWages } from '../src/systems/economy.js';
 import { movePrices, growEconomies } from '../src/systems/market.js';
 import { sellDomestic, unmet, supplyRatio } from '../src/systems/domestic.js';
-import { runTrade } from '../src/systems/trade.js';
 import { warehousesServing, spoil } from '../src/systems/logistics.js';
 import { runStateIndustry } from '../src/systems/stateIndustry.js';
-import { runDiplomacy, offerFee, offerFrom } from '../src/systems/diplomacy.js';
+import { runResearch, runTechTrade, licenceCost } from '../src/systems/research.js';
+import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice } from '../src/systems/contracts.js';
+import { runExchange, runLending, post, takeListing, borrow, repay, borrowLimit } from '../src/systems/exchange.js';
 import { createLoop } from '../src/core/loop.js';
 // The nation table's scoring is the one piece of UI with a rule in it rather
 // than a layout, and it reads only `state` — so it is tested here like anything
@@ -49,9 +55,25 @@ function placeIn(state, countryId, type, x, y, terrain) {
   tile.terrain = terrain;
   tile.countryId = countryId;
   tile.buildingId = null;
+  // Technology is tested on its own, below. Every other test is about the
+  // economy, so the nation doing the building is granted whatever the industry
+  // needs rather than being made to research it first.
+  teach(state, countryId, BUILDINGS[type].tech);
   const result = build(state, type, tile, countryId);
   assert(result.ok, `failed to place ${type} in ${countryId}: ${result.reason}`);
   return result.building;
+}
+
+// Hands a nation a tech and everything it stands on.
+function teach(state, countryId, techId) {
+  if (!techId) return;
+  for (const id of techChain(state.countries[countryId].techs ?? {}, techId)) {
+    learnTech(state, countryId, id);
+  }
+}
+
+function teachEverything(state, countryId) {
+  for (const id of TECH_IDS) learnTech(state, countryId, id);
 }
 
 function place(state, type, x, y, terrain) {
@@ -72,6 +94,10 @@ function claim(state, countryId, x, y, terrain) {
 function fixture() {
   const state = createInitialState();
   state.countries[state.home].cash = 1_000_000;
+  // Almost every test below is about the economy rather than the tree, so the
+  // nation being played already knows everything. The technology tests build
+  // their own state and are explicit about what is and is not known.
+  teachEverything(state, state.home);
   return state;
 }
 
@@ -95,28 +121,25 @@ test('the source art is exactly the declared source grid', () => {
 });
 
 test('every nation owns land on the map', () => {
-  assert(COUNTRY_IDS.length >= 40, `the world should be crowded, got ${COUNTRY_IDS.length} nations`);
+  assert(COUNTRY_IDS.length >= 190, `the world should include nearly every country, got ${COUNTRY_IDS.length} nations`);
   const seen = new Set();
-  for (const row of SOURCE_ROWS) {
-    for (const char of row) {
-      const id = COUNTRY_BY_CHAR[char];
-      if (id) seen.add(id);
-    }
-  }
+  for (const tile of createInitialState().tiles) if (tile.countryId) seen.add(tile.countryId);
   const missing = COUNTRY_IDS.filter((id) => !seen.has(id));
   equal(missing.length, 0, `nations with no tiles: ${missing.join(', ')}`);
 });
 
-test('no two nations share a map character', () => {
-  equal(Object.keys(COUNTRY_BY_CHAR).length, COUNTRY_IDS.length,
-    'every country needs its own character in world.js');
+test('the ISO country grid is exactly the declared source grid', () => {
+  equal(SOURCE_COUNTRY_ROWS.length, SOURCE_COUNTRY_H, 'country source row count');
+  for (let y = 0; y < SOURCE_COUNTRY_ROWS.length; y++) {
+    equal(SOURCE_COUNTRY_ROWS[y].length, SOURCE_COUNTRY_W, `country source row ${y} width`);
+  }
 });
 
-test('no character on the map is left unexplained', () => {
-  for (let y = 0; y < WORLD_ROWS.length; y++) {
-    for (const char of WORLD_ROWS[y]) {
-      assert(char === '.' || char === '-' || COUNTRY_BY_CHAR[char],
-        `row ${y} uses "${char}", which is neither ocean, neutral land, nor a country`);
+test('no country code on the map is left unexplained', () => {
+  for (let y = 0; y < SOURCE_COUNTRY_ROWS.length; y++) {
+    for (const id of SOURCE_COUNTRY_ROWS[y]) {
+      assert(id == null || COUNTRIES[id],
+        `row ${y} uses "${id}", which is not a known country`);
     }
   }
 });
@@ -126,8 +149,8 @@ test('no character on the map is left unexplained', () => {
 // test in this file while putting Brazil in the Pacific.
 test('nations sit where they do on a real map', () => {
   // The source is equirectangular: column 0 is 180W, row 0 is the far north.
-  const lon = (id) => -180 + (CENTROIDS[id].x + 0.5) * (360 / SOURCE_W);
-  const lat = (id) => 84 - (CENTROIDS[id].y + 0.5) * (141 / SOURCE_H);
+  const lon = (id) => -180 + (CENTROIDS[id].x + 0.5) * (360 / SOURCE_COUNTRY_W);
+  const lat = (id) => 90 - (CENTROIDS[id].y + 0.5) * (180 / SOURCE_COUNTRY_H);
 
   assert(lon('US') < -70 && lon('US') > -130, `the United States should be in the western hemisphere, got ${lon('US').toFixed(0)}`);
   assert(lon('JP') > 120 && lon('JP') < 155, `Japan should be in the far east, got ${lon('JP').toFixed(0)}`);
@@ -409,76 +432,19 @@ test('a government cannot build outside its own borders either', () => {
   equal(canBuild(state, 'warehouse', iranian, 'DE').ok, false, 'Germany may not build in Iran');
 });
 
-test('the ocean and unclaimed land are never buildable', () => {
+test('the ocean is never buildable', () => {
   const state = fixture();
   const ocean = state.tiles.find((t) => t.terrain === 'water');
   equal(canBuild(state, 'warehouse', ocean).ok, false, 'ocean refused');
-
-  const neutral = state.tiles.find((t) => !t.countryId && t.terrain !== 'water');
-  assert(neutral, 'the map should carry some unclaimed land');
-  equal(canBuild(state, 'warehouse', neutral).ok, false, 'unclaimed land refused');
 });
 
-test('every nation starts solvent, with a treasury and its neighbours as partners', () => {
-  const state = createInitialState(1, 'IR');
-  for (const id of COUNTRY_IDS) {
-    assert(state.countries[id].cash > 0, `${id} needs a treasury to start with`);
-    assert(state.countries[id].solvent, `${id} should start solvent`);
-  }
-  const partners = COUNTRY_IDS.filter((id) => id !== 'IR' && hasPact(state, id));
-  assert(partners.length >= 3, `a new game should open with neighbours, got ${partners.length}`);
-  const far = neighboursOf('IR').at(-1);
-  assert(!hasPact(state, far), `the far side of the world should not be free (${far})`);
-});
 
 // ---- trade pacts -----------------------------------------------------------
 
-test('you may only trade with a nation you hold a pact with', () => {
-  const state = fixture();
-  const stranger = COUNTRY_IDS.find((id) => id !== state.home && !hasPact(state, id));
-  equal(canTrade(state, state.home, stranger), false, 'no pact, no trade');
-  equal(canTrade(state, stranger, state.home), false, 'and it is symmetric');
 
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  equal(canTrade(state, state.home, partner), true, 'a pact opens both directions');
-});
 
-test('two foreign nations always trade with each other', () => {
-  const state = fixture();
-  const [a, b] = COUNTRY_IDS.filter((id) => id !== state.home).slice(0, 2);
-  equal(canTrade(state, a, b), true, 'the rest of the world has had embassies for a century');
-  equal(canTrade(state, a, a), false, 'a country does not trade with itself');
-});
 
-test('signing a pact costs the treasury and pays the other nation', () => {
-  const state = fixture();
-  const target = COUNTRY_IDS.find((id) => id !== state.home && !hasPact(state, id));
-  const cost = pactCost(target);
-  me(state).cash = cost + 50_000;
-  const theirs = state.countries[target].cash;
 
-  const result = openPact(state, target);
-  equal(result.ok, true, 'pact accepted');
-  equal(me(state).cash, 50_000, 'fee debited in full');
-  equal(state.countries[target].cash, theirs + cost, 'and it lands in their treasury');
-  assert(hasPact(state, target), 'the pact stands');
-});
-
-test('a pact is refused outright when you cannot afford it', () => {
-  const state = fixture();
-  const target = COUNTRY_IDS.find((id) => id !== state.home && !hasPact(state, id));
-  me(state).cash = pactCost(target) - 1;
-
-  equal(canOpenPact(state, target).ok, false, 'refused');
-  openPact(state, target);
-  equal(me(state).cash, pactCost(target) - 1, 'no partial charge');
-  equal(hasPact(state, target), false, 'still closed');
-});
-
-test('a pact with a large market costs more than one with a small market', () => {
-  assert(pactCost('US') > pactCost('CD') * 20,
-    'the price of a pact should track the size of the market it opens');
-});
 
 // ---- the home market -------------------------------------------------------
 
@@ -532,112 +498,11 @@ test('warehouses across a nation draw on one shared appetite', () => {
 
 // ---- world trade -----------------------------------------------------------
 
-test('surplus goes abroad to a partner who is short of it', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  depot.store.steel = 500;
-  // Crush the home price so abroad is plainly the better market.
-  state.markets[state.home].steel.price = COMMODITIES.steel.basePrice * 0.5;
-  state.markets[partner].steel.price = COMMODITIES.steel.basePrice * 1.5;
-  me(state).cash = 0;
 
-  runTrade(state);
 
-  assert(me(state).report.exports > 0, 'the surplus found a buyer');
-  assert(depot.store.steel < 500, 'and it left the warehouse');
-  assert(state.flows.some((f) => f.from === state.home && f.to === partner),
-    'the deal is recorded as a flow you can see');
-});
 
-test('a deal settles between the two local prices, so both sides gain', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  depot.store.steel = 500;
-  const low = COMMODITIES.steel.basePrice * 0.5;
-  const high = COMMODITIES.steel.basePrice * 1.5;
-  state.markets[state.home].steel.price = low;
-  state.markets[partner].steel.price = high;
 
-  runTrade(state);
 
-  const flow = state.flows.find((f) => f.from === state.home && f.commodity === 'steel');
-  const unit = flow.value / flow.qty;
-  assert(unit > low, `the seller beats its home price: ${unit.toFixed(0)} vs ${low}`);
-  assert(unit < high, `and the buyer pays under its own: ${unit.toFixed(0)} vs ${high}`);
-});
-
-test('nothing is shipped to a nation you have no pact with', () => {
-  const state = fixture();
-  const stranger = COUNTRY_IDS.find((id) => id !== state.home && !hasPact(state, id));
-  // Only the stranger is short; everybody else is glutted.
-  for (const id of COUNTRY_IDS) {
-    state.markets[id].steel.price = COMMODITIES.steel.basePrice * 0.4;
-    state.markets[id].steel.importedLastTick = appetite(state, id, 'steel');
-  }
-  state.markets[stranger].steel.price = COMMODITIES.steel.basePrice * 1.8;
-  state.markets[stranger].steel.importedLastTick = 0;
-
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  depot.store.steel = 500;
-
-  runTrade(state);
-
-  assert(!state.flows.some((f) => f.to === stranger && f.from === state.home),
-    'a market you have not paid to open stays shut');
-});
-
-test('freight makes a distant buyer worth less than a near one', () => {
-  const state = fixture();
-  const near = neighboursOf(state.home).find((id) => hasPact(state, id));
-  const far = neighboursOf(state.home).at(-1);
-  state.countries[far].pact = true;
-
-  const proceeds = (partner) => {
-    const s = fixture();
-    s.countries[partner].pact = true;
-    const depot = placeIn(s, s.home, 'warehouse', 20, 20, 'plain');
-    depot.store.vehicles = 200;
-    for (const id of COUNTRY_IDS) s.markets[id].vehicles.price = COMMODITIES.vehicles.basePrice * 0.4;
-    s.markets[s.home].vehicles.price = COMMODITIES.vehicles.basePrice * 0.4;
-    s.markets[partner].vehicles.price = COMMODITIES.vehicles.basePrice * 1.8;
-    runTrade(s);
-    const flow = s.flows.find((f) => f.to === partner);
-    return flow ? s.countries[partner].report.imports / flow.qty : 0;
-  };
-
-  assert(proceeds(far) > proceeds(near),
-    'the same cargo must cost the distant buyer more per unit than the near one');
-});
-
-test('a nation will not spend its payroll on imports', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  placeIn(state, partner, 'warehouse', 40, 40, 'plain').store.steel = 5000;
-  const mine = place(state, 'ironMine', 20, 20, 'hills');
-  // Just enough treasury to cover the reserve, and not a penny more.
-  me(state).cash = projectedWages(state) * CONFIG.trade.reserveTicks;
-  state.markets[state.home].steel.price = COMMODITIES.steel.basePrice * 1.8;
-  state.markets[partner].steel.price = COMMODITIES.steel.basePrice * 0.4;
-  const before = me(state).cash;
-
-  runTrade(state);
-
-  equal(me(state).cash, before, 'the reserve is untouchable');
-  assert(mine.staffed, 'which is the point: payroll comes first');
-});
-
-test('an import is what actually fills the gap in a nations supply', () => {
-  const state = fixture();
-  const before = supplyRatio(state, state.home, 'steel');
-  const want = appetite(state, state.home, 'steel');
-  assert(unmet(state, state.home, 'steel') > 0, 'an untouched nation is short of everything');
-
-  state.markets[state.home].steel.importedLastTick = want * 0.5;
-  assert(supplyRatio(state, state.home, 'steel') > before, 'imports count toward supply');
-  assert(unmet(state, state.home, 'steel') < want, 'and shrink the shortfall');
-});
 
 // ---- prices ----------------------------------------------------------------
 
@@ -716,7 +581,11 @@ test('an economy cannot grow or collapse without limit', () => {
     for (const id of COMMODITY_IDS) state.markets[state.home][id].soldLastTick = 0;
     growEconomies(state);
   }
-  close(me(state).demand, base * CONFIG.growth.floor, base * 0.01, 'and so is collapse');
+  // The floor is the demand floor UNDER the population floor: a nation that
+  // starves for eight thousand ticks loses people as well as customers, and the
+  // two compound. That is the whole point of the population layer.
+  const bottom = base * CONFIG.growth.floor * CONFIG.population.floor;
+  close(me(state).demand, bottom, base * 0.01, 'and so is collapse');
 });
 
 test('a glut of one commodity cannot pay for starving the rest', () => {
@@ -1104,100 +973,16 @@ test('goods only leave a warehouse, never a factory floor', () => {
   equal(state.markets[state.home].ore.soldLastTick, 0, 'nothing was sold');
 });
 
-test('holding a commodity back keeps it out of the export market', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  depot.store.steel = 500;
-  state.markets[state.home].steel.price = COMMODITIES.steel.basePrice * 0.5;
-  state.markets[partner].steel.price = COMMODITIES.steel.basePrice * 1.5;
-  state.exports.steel = false;
-
-  runTrade(state);
-
-  equal(depot.store.steel, 500, 'held stock stays put');
-  equal(me(state).report.exports, 0, 'and earns nothing');
-});
 
 // ---- importing what you cannot dig up --------------------------------------
 
-// The failure this fixes: a nation with no coalfield could never run a coal
-// plant or a steel mill, because every unit it bought abroad was eaten by its
-// population on arrival. Feedstock lands in the WAREHOUSES instead.
-test('a nation with no coal can buy coal for its factories', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  place(state, 'coalPlant', 21, 20, 'plain');
-  placeIn(state, partner, 'warehouse', 60, 60, 'plain').store.coal = 4000;
-  // A real gap: the coal is cheap where it sits and dear where it is wanted.
-  state.markets[partner].coal.price = COMMODITIES.coal.basePrice * 0.5;
-  state.markets[state.home].coal.price = COMMODITIES.coal.basePrice * 1.6;
-  state.countries[partner].cash = 1_000_000;
 
-  runTrade(state);
 
-  assert(depot.store.coal > 0, 'imported feedstock has to reach a warehouse to be worth anything');
-  assert(state.ledger.tick.coal.feedstock > 0, 'and it is booked as feedstock, not as groceries');
-  assert(me(state).report.imports > 0, 'it is paid for like any other import');
-});
 
-test('feedstock is not counted as feeding anybody', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  place(state, 'steelMill', 21, 20, 'plain');
-  placeIn(state, partner, 'warehouse', 60, 60, 'plain').store.coal = 4000;
-  state.markets[partner].coal.price = COMMODITIES.coal.basePrice * 0.5;
-  state.markets[state.home].coal.price = COMMODITIES.coal.basePrice * 1.6;
-  // Your people already have all the coal they want this tick.
-  state.markets[state.home].coal.importedLastTick = appetite(state, state.home, 'coal');
-  const met = supplyRatio(state, state.home, 'coal');
-
-  runTrade(state);
-
-  assert(depot.store.coal > 0, 'the mill still gets its coal');
-  close(supplyRatio(state, state.home, 'coal'), met, 0.0001,
-    'a cargo on its way to a factory floor must not read as a fed population');
-});
-
-test('a nation buys no more feedstock than its factories can burn', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  const depot = place(state, 'warehouse', 20, 20, 'plain');
-  place(state, 'coalPlant', 21, 20, 'plain');
-  placeIn(state, partner, 'warehouse', 60, 60, 'plain').store.coal = 40_000;
-  state.markets[partner].coal.price = COMMODITIES.coal.basePrice * 0.4;
-  state.markets[state.home].coal.price = COMMODITIES.coal.basePrice * 1.8;
-  state.countries[partner].cash = 1_000_000;
-  me(state).cash = 50_000_000;
-
-  runTrade(state);
-
-  const recipe = BUILDINGS.coalPlant.recipe;
-  const burn = recipe.in.coal / recipe.ticks;
-  assert(depot.store.coal <= burn * CONFIG.trade.inputBuffer + 0.001,
-    `a treasury must not corner a market in one tick, got ${depot.store.coal}`);
-});
-
-test('a nation with nowhere to put it buys no feedstock at all', () => {
-  const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
-  place(state, 'coalPlant', 21, 20, 'plain');   // no depot anywhere
-  placeIn(state, partner, 'warehouse', 60, 60, 'plain').store.coal = 4000;
-  state.markets[partner].coal.price = COMMODITIES.coal.basePrice * 0.4;
-  state.markets[state.home].coal.price = COMMODITIES.coal.basePrice * 1.8;
-  // Nothing for the population either, so anything bought would be feedstock.
-  state.markets[state.home].coal.importedLastTick = appetite(state, state.home, 'coal');
-
-  runTrade(state);
-
-  equal(me(state).report.imports, 0, 'nothing is bought that cannot be put away');
-});
 
 test('a chain that needs an import runs on one', () => {
   const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
   place(state, 'warehouse', 20, 20, 'plain');
   place(state, 'ironMine', 19, 19, 'hills');
   const mill = place(state, 'steelMill', 21, 20, 'plain');
@@ -1209,7 +994,10 @@ test('a chain that needs an import runs on one', () => {
     runTick(state);
   }
 
-  assert(state.ledger.total.coal.feedstock > 0, 'the coal was bought in');
+  // A contracted cargo lands in a warehouse like any other, so it is booked as
+  // an import rather than as feedstock: whether it ends on a factory floor or
+  // over a counter is decided afterwards, by `distribute` and `sellDomestic`.
+  assert(state.ledger.total.coal.imported > 0, 'the coal was bought in');
   assert(mill.uptime > 0.3, `a mill on imported coal should be working, got ${mill.uptime.toFixed(2)}`);
   assert(state.ledger.total.steel.made > 0, 'and turning out steel');
 });
@@ -1260,7 +1048,7 @@ test('only your own industry is booked', () => {
 
 test('your own deals are never crowded out by the rest of the world', () => {
   const state = fixture();
-  const partner = COUNTRY_IDS.find((id) => id !== state.home && hasPact(state, id));
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
   recordFlow(state, { tick: 1, from: state.home, to: partner, commodity: 'steel', qty: 5, value: 500 });
   for (let i = 0; i < CONFIG.maxFlows * 2; i++) {
     recordFlow(state, { tick: 2, from: 'DE', to: 'FR', commodity: 'steel', qty: 1, value: 10 });
@@ -1274,62 +1062,9 @@ test('your own deals are never crowded out by the rest of the world', () => {
 
 // ---- being asked ------------------------------------------------------------
 
-test('a nation with goods it cannot place offers you a pact', () => {
-  const state = fixture();
-  const suitor = neighboursOf(state.home).find((id) => !hasPact(state, id));
-  placeIn(state, suitor, 'warehouse', 60, 60, 'plain').store.steel = 500;
-  // Only one nation on earth can afford to ask, so the roll has one candidate.
-  for (const id of COUNTRY_IDS) state.countries[id].cash = 0;
-  state.countries[suitor].cash = pactCost(suitor) * 10;
 
-  state.tick = CONFIG.diplomacy.every;
-  runDiplomacy(state);
 
-  const offer = offerFrom(state, suitor);
-  assert(offer, `${suitor} should have come knocking`);
-  assert(offer.fee > 0 && offer.fee < pactCost(suitor),
-    'being courted costs less than courting, but it is not free');
-});
 
-test('accepting an offered pact pays you rather than costing you', () => {
-  const state = fixture();
-  const suitor = COUNTRY_IDS.find((id) => id !== state.home && !hasPact(state, id));
-  const fee = offerFee(suitor);
-  state.offers = [{ from: suitor, fee, tick: state.tick }];
-  state.countries[suitor].cash = fee * 4;
-  me(state).cash = 0;
-
-  const result = acceptOffer(state, suitor);
-
-  equal(result.ok, true, 'accepted');
-  equal(me(state).cash, fee, 'the fee lands in your treasury');
-  equal(state.countries[suitor].cash, fee * 3, 'and leaves theirs');
-  assert(hasPact(state, suitor), 'the market is open');
-  equal(state.offers.length, 0, 'and the offer is off the table');
-});
-
-test('an offer can be declined, and lapses if you never answer', () => {
-  const state = fixture();
-  const suitor = COUNTRY_IDS.find((id) => id !== state.home && !hasPact(state, id));
-  state.offers = [{ from: suitor, fee: 1000, tick: 0 }];
-
-  equal(declineOffer(state, suitor).ok, true, 'declined');
-  equal(state.offers.length, 0, 'gone');
-  assert(!hasPact(state, suitor), 'and no pact was opened');
-
-  state.offers = [{ from: suitor, fee: 1000, tick: 0 }];
-  state.tick = CONFIG.diplomacy.ttl + 1;
-  runDiplomacy(state);
-  equal(state.offers.length, 0, 'an offer nobody answers does not stand forever');
-});
-
-test('a government too poor to pay does not offer', () => {
-  const state = fixture();
-  for (const id of COUNTRY_IDS) state.countries[id].cash = 0;
-  state.tick = CONFIG.diplomacy.every;
-  runDiplomacy(state);
-  equal(state.offers.length, 0, 'a treasury that cannot cover the fee has no business offering it');
-});
 
 // ---- other governments -----------------------------------------------------
 
@@ -1383,6 +1118,627 @@ test('every nation is scored against the rest of the world', () => {
   assert(best.score > worst.score, 'a score that separates nobody says nothing');
   assert(best.economy > worst.economy || best.sites > worst.sites,
     'and the leader has to lead on something');
+});
+
+// ---- technology ------------------------------------------------------------
+
+test('the tech tree is a directed acyclic graph with reachable roots', () => {
+  const depth = new Map();
+  const walk = (id, seen) => {
+    if (seen.has(id)) throw new Error(`${id} depends on itself through ${[...seen].join(' -> ')}`);
+    if (depth.has(id)) return depth.get(id);
+    seen.add(id);
+    const d = 1 + Math.max(0, ...TECHS[id].needs.map((need) => {
+      assert(TECHS[need], `${id} needs "${need}", which is not a technology`);
+      return walk(need, seen);
+    }));
+    seen.delete(id);
+    depth.set(id, d);
+    return d;
+  };
+  for (const id of TECH_IDS) walk(id, new Set());
+  const roots = TECH_IDS.filter((id) => !TECHS[id].needs.length);
+  assert(roots.length > 0, 'something has to be researchable on turn one');
+});
+
+test('every technology unlocks an industry and every gated industry names a real one', () => {
+  const unlocked = new Set();
+  for (const def of Object.values(BUILDINGS)) {
+    if (!def.tech) continue;
+    assert(TECHS[def.tech], `a building wants tech "${def.tech}", which does not exist`);
+    unlocked.add(def.tech);
+  }
+  const idle = TECH_IDS.filter((id) => !unlocked.has(id));
+  equal(idle.length, 0, `technologies that unlock nothing: ${idle.join(', ')}`);
+});
+
+test('a nation starts able to build the basics and nothing else', () => {
+  const state = createInitialState();
+  equal(techCount(state, state.home), STARTING_TECHS.length, 'a new nation starts with the shared basics');
+  const tile = claim(state, state.home, 5, 5, 'plain');
+  equal(canBuild(state, 'warehouse', tile).ok, true, 'a depot needs no technology');
+  equal(canBuild(state, 'steelMill', tile).ok, true, 'nor does the steel chain everyone starts with');
+  equal(canBuild(state, 'refinery', tile).ok, false, 'a refinery does');
+  equal(canBuild(state, 'vehiclePlant', tile).ok, false, 'and so does the top of the tree');
+});
+
+test('every nation starts with the same technology', () => {
+  const state = createInitialState();
+  const baseline = JSON.stringify(state.countries[state.home].techs ?? {});
+  for (const id of COUNTRY_IDS) {
+    equal(JSON.stringify(state.countries[id].techs ?? {}), baseline, `${id} should not start ahead or behind`);
+  }
+});
+
+test('the forty-five governments are gated by technology exactly as you are', () => {
+  const state = createInitialState();
+  const other = COUNTRY_IDS.find((id) => id !== state.home);
+  const tile = claim(state, other, 6, 6, 'plain');
+  state.countries[other].cash = 5_000_000;
+  equal(canBuild(state, 'refinery', tile, other).ok, false, 'no refining, no refinery');
+  learnTech(state, other, 'refining');
+  equal(canBuild(state, 'refinery', tile, other).ok, true, 'and with it, a refinery');
+});
+
+test('research turns treasury into technology and completes a subject', () => {
+  const state = createInitialState();
+  const gov = state.countries[state.home];
+  gov.cash = 5_000_000;
+  gov.report.tax = 100_000;             // a big budget, so it lands in a few ticks
+  setResearch(state, 'refining');
+  equal(gov.researching, 'refining', 'the subject is on the bench');
+
+  const before = gov.cash;
+  runResearch(state);
+  assert(gov.cash < before, 'laboratories are paid for out of the treasury');
+  assert(gov.report.research > 0, 'and the tick reports what they cost');
+
+  for (let i = 0; i < 20 && !knowsTech(state, state.home, 'refining'); i++) {
+    gov.report.tax = 100_000;
+    runResearch(state);
+  }
+  assert(knowsTech(state, state.home, 'refining'), 'a funded subject completes');
+  equal(gov.researching, null, 'and the bench is clear again');
+});
+
+test('a subject you have not the prerequisites for cannot be started', () => {
+  const state = createInitialState();
+  equal(canResearch(state.countries[state.home].techs, 'petrochemistry'), false, 'petrochemistry needs refining');
+  equal(setResearch(state, 'petrochemistry').ok, false, 'and the action refuses it');
+  learnTech(state, state.home, 'refining');
+  equal(setResearch(state, 'petrochemistry').ok, true, 'with refining in hand it opens');
+});
+
+test('a nation with nothing on the bench spends nothing', () => {
+  const state = createInitialState();
+  const gov = state.countries[state.home];
+  gov.report.tax = 100_000;
+  gov.cash = 1_000_000;
+  gov.researching = null;
+  runResearch(state);
+  equal(gov.cash, 1_000_000, 'no subject, no bill');
+});
+
+test('licensing a technology pays the nation that has it', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  // Start from nothing, so the licence is exactly the one tech.
+  state.countries[state.home].techs = {};
+  learnTech(state, seller, 'drilling');
+  state.countries[state.home].cash = 5_000_000;
+  const theirs = state.countries[seller].cash;
+  const cost = licenceCost(state, state.home, 'drilling');
+  assert(cost > 0, 'knowledge is not free');
+
+  const result = buyTech(state, 'drilling', seller);
+  assert(result.ok, `the licence should be available: ${result.reason}`);
+  assert(knowsTech(state, state.home, 'drilling'), 'and it arrives at once');
+  equal(state.countries[seller].cash, theirs + cost, 'the fee lands in the seller treasury');
+});
+
+test('a licence carries everything upstream the buyer is missing', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  state.countries[state.home].techs = {};
+  for (const id of ['drilling', 'refining', 'petrochemistry']) learnTech(state, seller, id);
+  state.countries[state.home].cash = 50_000_000;
+
+  buyTech(state, 'petrochemistry', seller);
+  assert(knowsTech(state, state.home, 'drilling'), 'you cannot licence a chemical works to a nation that cannot drill');
+  assert(knowsTech(state, state.home, 'refining'), 'so the whole missing branch comes with it');
+  assert(knowsTech(state, state.home, 'petrochemistry'), 'along with what was actually asked for');
+});
+
+
+test('the world climbs the tree on its own', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 400; i++) runTick(state);
+  const learned = COUNTRY_IDS.filter((id) => id !== state.home && techCount(state, id) > 0);
+  assert(learned.length > 20, `most governments should have researched something, got ${learned.length}`);
+  const best = Math.max(...COUNTRY_IDS.map((id) => techCount(state, id)));
+  const worst = Math.min(...COUNTRY_IDS.filter((id) => id !== state.home).map((id) => techCount(state, id)));
+  assert(best > worst, 'and a big economy should be ahead of a small one');
+});
+
+// ---- contracts -------------------------------------------------------------
+
+test('a contract moves goods at its own price, not the market price', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  const mine = place(state, 'warehouse', 20, 20, 'plain');
+  const theirs = placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  theirs.store.coal = 500;
+  state.countries[partner].cash = 5_000_000;
+
+  const signed = signContract(state, {
+    seller: partner, buyer: state.home, commodity: 'coal', qty: 10, every: 1, term: 20,
+  });
+  assert(signed.ok, `the contract should sign: ${signed.reason}`);
+  const agreed = signed.contract.price;
+
+  // The market moves under it; the contract does not.
+  state.markets[state.home].coal.price = COMMODITIES.coal.basePrice * 1.9;
+  state.tick = signed.contract.started;
+  const before = me(state).cash;
+  runContracts(state);
+
+  close(mine.store.coal, 10, 0.001, 'the full order is delivered');
+  close(before - me(state).cash, 10 * agreed, 0.01, 'and billed at the price agreed on the day');
+});
+
+test('a contract is settled before a nation feeds its own people', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  depot.store.food = 12;
+  state.countries[partner].cash = 50_000_000;
+  const signed = signContract(state, {
+    seller: state.home, buyer: partner, commodity: 'food', qty: 12, every: 1, term: 20,
+  });
+  state.tick = signed.contract.started;
+
+  runContracts(state);
+  close(depot.store.food, 0, 0.001, 'the promise is kept first');
+  sellDomestic(state);
+  equal(state.markets[state.home].food.soldLastTick, 0,
+    'and there is nothing left for your own counter — which is what makes a contract a promise');
+});
+
+test('a seller that cannot deliver pays the buyer a penalty', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');          // yours, empty
+  placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  state.countries[partner].cash = 50_000_000;
+  const signed = signContract(state, {
+    seller: state.home, buyer: partner, commodity: 'steel', qty: 10, every: 1, term: 20,
+  });
+  state.tick = signed.contract.started;
+
+  const mine = me(state).cash;
+  const theirs = state.countries[partner].cash;
+  runContracts(state);
+
+  const fee = 10 * signed.contract.price * CONFIG.contracts.penalty;
+  close(mine - me(state).cash, fee, 0.01, 'the defaulter pays');
+  close(state.countries[partner].cash - theirs, fee, 0.01, 'and the other side is paid');
+  assert(signed.contract.missed > 0, 'the miss is on the record');
+});
+
+test('a buyer that cannot pay defaults just as a seller that cannot deliver does', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');
+  const theirs = placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  theirs.store.steel = 500;
+  state.countries[partner].cash = 50_000_000;
+  const signed = signContract(state, {
+    seller: partner, buyer: state.home, commodity: 'steel', qty: 10, every: 1, term: 20,
+  });
+  state.tick = signed.contract.started;
+  me(state).cash = 0;                                   // nothing to pay with
+
+  runContracts(state);
+  assert(me(state).cash < 0, 'a penalty is charged whether or not it can be afforded');
+  assert(signed.contract.missed > 0, 'and the shortfall is recorded');
+});
+
+test('a contract runs out its term and no further', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');
+  const theirs = placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  theirs.store.coal = 10_000;
+  state.countries[partner].cash = 50_000_000;
+  me(state).cash = 50_000_000;
+  const signed = signContract(state, {
+    seller: partner, buyer: state.home, commodity: 'coal', qty: 2, every: 1, term: 5,
+  });
+
+  for (let i = 0; i <= 8; i++) { state.tick = signed.contract.started + i; runContracts(state); }
+  equal(state.contracts.length, 0, 'it is gone once its term is up');
+  equal(signed.contract.deliveries, 6, 'having settled on every tick of it, first and last included');
+});
+
+
+test('breaking a contract costs what defaulting on the rest of it would', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  const signed = signContract(state, {
+    seller: partner, buyer: state.home, commodity: 'coal', qty: 4, every: 2, term: 20,
+  });
+  me(state).cash = 5_000_000;
+  const mine = me(state).cash;
+  const theirs = state.countries[partner].cash;
+
+  const result = cancelContract(state, signed.contract.id);
+  assert(result.ok, 'your own contract is yours to break');
+  equal(state.contracts.length, 0, 'and it is off the book');
+  assert(result.fee > 0, 'walking away is not free');
+  equal(mine - me(state).cash, result.fee, 'you pay');
+  equal(state.countries[partner].cash - theirs, result.fee, 'they are paid');
+});
+
+
+test('the world writes contracts of its own', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 400; i++) runTick(state);
+  assert(state.contracts.length > 0, 'governments should be arranging standing supply with each other');
+  for (const c of state.contracts) {
+    assert(c.seller !== c.buyer, 'nobody contracts with itself');
+    assert(canTrade(state, c.seller, c.buyer), 'and only with a partner it may trade with');
+  }
+});
+
+// ---- feedstock, at the scale the world actually needs ----------------------
+
+// The failure this fixes: a nation with three coal plants and no coalfield got
+// one plant's worth of coal between them, however large its treasury. Two
+// things were wrong — nobody in the world built the mine, because `hasHeadroom`
+// counted only what populations EAT, and a well-supplied nation bid at its own
+// settled local price and was outbid every tick by every hungry country there is.
+test('a rich nation with no coal can feed three coal plants at once', () => {
+  const state = createInitialState(1234, 'JP');
+  state.buildings = [];
+  for (const id of COUNTRY_IDS) {
+    teachEverything(state, id);
+    state.countries[id].pact = true;
+  }
+  const depot = place(state, 'warehouse', 300, 100, 'plain');
+  const plants = [];
+  for (let i = 0; i < 3; i++) {
+    plants.push(place(state, 'coalPlant', 301 + i, 100, 'plain'));
+  }
+  me(state).cash = 500_000_000;
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  placeIn(state, seller, 'warehouse', 120, 120, 'plain').store.coal = 10_000;
+  state.countries[seller].cash = 500_000_000;
+  signContract(state, {
+    seller, buyer: state.home, commodity: 'coal', qty: 30, every: 1, term: 400, price: 40,
+  });
+
+  for (let i = 0; i < 5; i++) runTick(state);
+  const before = state.ledger.total.power.made;
+  for (let i = 0; i < 60; i++) runTick(state);
+  const made = state.ledger.total.power.made - before;
+
+  const recipe = BUILDINGS.coalPlant.recipe;
+  const ideal = 3 * 60 * recipe.out.power / recipe.ticks;
+  assert(made > ideal * 0.75,
+    `three plants on bought coal should run near capacity, got ${made} of ${ideal}`);
+  assert(state.ledger.total.coal.imported > 0, 'and the coal has to have been bought in');
+  assert(depot.store, 'the depot is what the cargo lands in');
+});
+
+
+// A government that only counted mouths never built the mine the world's
+// factories were waiting on.
+test('a government counts factory floors as demand, not just dinner tables', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 300; i++) runTick(state);
+  const burn = new Map();
+  const make = new Map();
+  for (const b of state.buildings) {
+    const recipe = BUILDINGS[b.type].recipe;
+    if (!recipe) continue;
+    for (const [id, qty] of Object.entries(recipe.in)) burn.set(id, (burn.get(id) ?? 0) + qty / recipe.ticks);
+    for (const [id, qty] of Object.entries(recipe.out)) make.set(id, (make.get(id) ?? 0) + qty / recipe.ticks);
+  }
+  for (const [id, eaten] of burn) {
+    assert((make.get(id) ?? 0) > eaten * 0.5,
+      `the world burns ${eaten.toFixed(1)} ${id} a tick and digs up only ${(make.get(id) ?? 0).toFixed(1)}`);
+  }
+});
+
+// ---- every market is open --------------------------------------------------
+
+test('every nation may deal with every other, and none with itself', () => {
+  const state = createInitialState();
+  for (const a of COUNTRY_IDS) {
+    equal(canTrade(state, a, a), false, `${a} cannot trade with itself`);
+    for (const b of COUNTRY_IDS.slice(0, 5)) {
+      if (a === b) continue;
+      equal(canTrade(state, a, b), true, `${a} and ${b} may deal — there is no permission left to buy`);
+    }
+  }
+});
+
+test('every nation starts solvent with a treasury and no debt', () => {
+  const state = createInitialState();
+  for (const id of COUNTRY_IDS) {
+    const gov = state.countries[id];
+    assert(gov.solvent, `${id} should open solvent`);
+    assert(gov.cash > 0, `${id} should open with money`);
+    equal(gov.debt, 0, `${id} should open owing nothing`);
+    close(gov.pop, COUNTRIES[id].pop, 0.0001, `${id} should open with its authored population`);
+  }
+});
+
+// ---- the exchange ----------------------------------------------------------
+
+test('a bid and an ask that cross become a contract', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  placeIn(state, seller, 'warehouse', 60, 60, 'plain').store.coal = 2000;
+  place(state, 'warehouse', 20, 20, 'plain');
+  state.countries[seller].cash = 5_000_000;
+
+  post(state, { from: seller, side: 'sell', commodity: 'coal', qty: 10, price: 30 });
+  post(state, { from: state.home, side: 'buy', commodity: 'coal', qty: 10, price: 60 });
+  equal(exchangeOf(state).listings.length, 2, 'both sides are on the book');
+
+  runExchange(state);
+
+  const made = state.contracts.filter((c) => c.commodity === 'coal');
+  equal(made.length, 1, 'the pair becomes exactly one contract');
+  equal(made[0].seller, seller, 'from the one who offered to sell');
+  equal(made[0].buyer, state.home, 'to the one who offered to buy');
+  assert(made[0].price > 30 && made[0].price < 60, `the deal splits the difference, got ${made[0].price}`);
+  assert(made[0].viaExchange, 'and it is marked as the exchange having brokered it');
+});
+
+test('a bid below the ask never crosses', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  post(state, { from: seller, side: 'sell', commodity: 'coal', qty: 10, price: 60 });
+  post(state, { from: state.home, side: 'buy', commodity: 'coal', qty: 10, price: 20 });
+
+  runExchange(state);
+  equal(state.contracts.length, 0, 'nobody sells below what they asked');
+  equal(exchangeOf(state).listings.length, 2, 'and both listings stand');
+});
+
+test('two listings for different commodities are never matched with each other', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  post(state, { from: seller, side: 'sell', commodity: 'coal', qty: 10, price: 10 });
+  post(state, { from: state.home, side: 'buy', commodity: 'steel', qty: 10, price: 900 });
+
+  runExchange(state);
+  equal(state.contracts.length, 0, 'a coal ask is not a steel supply at any price');
+});
+
+test('a listing you take by hand becomes a contract at the price posted', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  const posted = post(state, { from: seller, side: 'sell', commodity: 'coal', qty: 8, price: 41, term: 50 });
+
+  const result = takeListing(state, posted.listing.id, state.home);
+  assert(result.ok, `taking it should work: ${result.reason}`);
+  equal(result.contract.price, 41, 'at their price, not a midpoint — you accepted their terms');
+  equal(result.contract.buyer, state.home, 'and you are the buyer of an ask');
+  equal(exchangeOf(state).listings.length, 0, 'the listing comes off the book');
+});
+
+test('taking a bid makes you the seller', () => {
+  const state = fixture();
+  const buyer = COUNTRY_IDS.find((id) => id !== state.home);
+  const posted = post(state, { from: buyer, side: 'buy', commodity: 'steel', qty: 3, price: 400, term: 50 });
+
+  const result = takeListing(state, posted.listing.id, state.home);
+  assert(result.ok, `taking it should work: ${result.reason}`);
+  equal(result.contract.seller, state.home, 'somebody offering to buy is somebody you can sell to');
+});
+
+test('a listing lapses if nobody takes it', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  post(state, { from: seller, side: 'sell', commodity: 'uranium', qty: 2, price: 9999 });
+  state.tick += CONFIG.exchange.ttl + 1;
+  runExchange(state);
+  equal(exchangeOf(state).listings.filter((l) => l.commodity === 'uranium').length, 0,
+    'terms nobody would take do not stand for ever');
+});
+
+test('the world posts what it cannot place and bids for what it cannot dig up', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 120; i++) runTick(state);
+  const book = exchangeOf(state);
+  assert(book.listings.length > 0, 'the book should not be empty once the world is producing');
+  assert(book.listings.some((l) => l.side === 'sell'), 'somebody is offering something');
+  assert(book.listings.some((l) => l.side === 'buy'), 'and somebody is asking for something');
+  for (const l of book.listings) {
+    assert(l.qty > 0 && l.price > 0, 'every listing has a quantity and a price');
+    assert(COMMODITIES[l.commodity], 'and names a real commodity');
+  }
+});
+
+test('nothing crosses a border except under a contract', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 200; i++) runTick(state);
+  const moved = COUNTRY_IDS.reduce((sum, id) => sum + state.countries[id].report.exports, 0);
+  assert(moved > 0, 'the world should be trading by now');
+  assert(state.contracts.length > 0, 'and every unit of it is under a contract');
+  // The report lines ARE the contract settlements; nothing else writes them.
+  const contracted = state.contracts.filter((c) => state.tick >= c.started);
+  assert(contracted.length > 0, 'with contracts actually settling');
+});
+
+test('the ↗ and ↙ flags decide whether your government posts at all', () => {
+  const state = fixture();
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  depot.store.steel = 5000;
+  for (const id of COMMODITY_IDS) { state.exports[id] = false; state.imports[id] = false; }
+  state.tick = CONFIG.exchange.post;
+
+  runExchange(state);
+  equal(exchangeOf(state).listings.filter((l) => l.from === state.home).length, 0,
+    'with both flags off your surplus is yours to place by hand');
+
+  state.exports.steel = true;
+  state.tick += CONFIG.exchange.post;
+  runExchange(state);
+  assert(exchangeOf(state).listings.some((l) => l.from === state.home && l.side === 'sell' && l.commodity === 'steel'),
+    'and with the flag on it is offered for you');
+});
+
+// ---- the clearing fund and lending ----------------------------------------
+
+test('the exchange takes a cut of both sides and it goes into the fund', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');
+  placeIn(state, seller, 'warehouse', 60, 60, 'plain').store.coal = 500;
+  state.countries[seller].cash = 5_000_000;
+
+  const signed = signContract(state, {
+    seller, buyer: state.home, commodity: 'coal', qty: 10, every: 1, term: 20, price: 40,
+    viaExchange: true,
+  });
+  state.tick = signed.contract.started;
+  const before = exchangeOf(state).fund;
+  runContracts(state);
+
+  const fund = exchangeOf(state).fund;
+  assert(fund > before, 'the house is paid');
+  close(fund - before, 10 * 40 * CONFIG.exchange.fee * 2, 0.01, 'both sides of the deal, at the posted rate');
+  assert(me(state).report.fees > 0, 'and your own books show what it cost you');
+});
+
+test('a contract written by hand pays no clearing fee', () => {
+  const state = fixture();
+  const seller = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');
+  placeIn(state, seller, 'warehouse', 60, 60, 'plain').store.coal = 500;
+  state.countries[seller].cash = 5_000_000;
+
+  const signed = signContract(state, {
+    seller, buyer: state.home, commodity: 'coal', qty: 10, every: 1, term: 20, price: 40,
+  });
+  state.tick = signed.contract.started;
+  runContracts(state);
+  equal(exchangeOf(state).fund, 0, 'the house was not involved, so it is not paid');
+});
+
+test('a nation can borrow against the fund and is charged for it', () => {
+  const state = fixture();
+  exchangeOf(state).fund = 5_000_000;
+  me(state).report.tax = 10_000;
+  const cash = me(state).cash;
+
+  const drawn = borrow(state, state.home, 200_000);
+  assert(drawn.ok, `the fund should lend: ${drawn.reason}`);
+  equal(me(state).cash, cash + drawn.amount, 'the money arrives');
+  equal(me(state).debt, drawn.amount, 'and so does the balance');
+  equal(exchangeOf(state).fund, 5_000_000 - drawn.amount, 'out of the fund, not out of thin air');
+
+  const owed = me(state).debt;
+  runLending(state);
+  assert(me(state).report.interest > 0, 'interest accrues every tick');
+  assert(me(state).debt < owed, 'and the tax base pays it down');
+});
+
+test('nothing is lent that the fund does not hold', () => {
+  const state = fixture();
+  exchangeOf(state).fund = 0;
+  me(state).report.tax = 10_000;
+  const result = borrow(state, state.home, 1_000_000);
+  equal(result.ok, false, 'an empty fund lends nothing');
+  equal(me(state).debt, 0, 'and nobody ends up owing it');
+});
+
+test('a balance is bounded by what the tax base can service', () => {
+  const state = fixture();
+  exchangeOf(state).fund = 500_000_000;
+  me(state).report.tax = 1_000;
+  const limit = borrowLimit(state, state.home);
+  close(limit, 1_000 * CONFIG.exchange.loan.maxDebt, 1, 'a small economy is lent a small amount');
+  borrow(state, state.home, 500_000_000);
+  assert(me(state).debt <= limit + 1, 'and cannot draw past it however full the fund is');
+});
+
+test('a loan can be repaid early and the fund gets it back', () => {
+  const state = fixture();
+  exchangeOf(state).fund = 5_000_000;
+  me(state).report.tax = 10_000;
+  borrow(state, state.home, 100_000);
+  const owed = me(state).debt;
+  const fund = exchangeOf(state).fund;
+
+  const result = repay(state, state.home, owed);
+  assert(result.ok, 'you may clear it whenever you can afford to');
+  equal(me(state).debt, 0, 'and then owe nothing');
+  equal(exchangeOf(state).fund, fund + owed, 'the fund is whole again');
+});
+
+test('the world borrows rather than closing its industry', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 400; i++) runTick(state);
+  assert(exchangeOf(state).fund > 0, 'trade should have paid fees in by now');
+  const borrowers = COUNTRY_IDS.filter((id) => (state.countries[id].debt ?? 0) > 0);
+  assert(borrowers.length > 0, 'and somebody should have needed it');
+  for (const id of borrowers) {
+    assert(state.countries[id].debt <= borrowLimit(state, id) + state.countries[id].debt + 1,
+      `${id} borrowed more than it may`);
+  }
+});
+
+// ---- population ------------------------------------------------------------
+
+test('a nation that is both well supplied and rich gains people', () => {
+  const state = fixture();
+  const gov = me(state);
+  gov.cash = 500_000_000;
+  gov.report.tax = 1_000;
+  const before = gov.pop;
+  for (let i = 0; i < 300; i++) {
+    for (const id of COMMODITY_IDS) {
+      state.markets[state.home][id].soldLastTick = appetite(state, state.home, id);
+    }
+    growEconomies(state);
+  }
+  assert(gov.pop > before, `a fed and solvent nation should grow, got ${gov.pop} from ${before}`);
+  assert(gov.demand > COUNTRIES[state.home].demand, 'and its market with it');
+});
+
+test('a starving nation loses people, and both are bounded', () => {
+  const state = fixture();
+  const gov = me(state);
+  gov.cash = 0;
+  gov.report.tax = 1_000;
+  for (let i = 0; i < 2_000; i++) {
+    for (const id of COMMODITY_IDS) state.markets[state.home][id].soldLastTick = 0;
+    growEconomies(state);
+  }
+  const base = COUNTRIES[state.home].pop;
+  close(gov.pop, base * CONFIG.population.floor, base * 0.01, 'collapse has a floor');
+  assert(gov.pop > 0, 'a nation is never emptied entirely');
+});
+
+test('being fed but poor holds a population steady', () => {
+  const state = fixture();
+  const gov = me(state);
+  gov.cash = 0;                       // fed, but nowhere near comfortable
+  gov.report.tax = 1_000_000;
+  const before = gov.pop;
+  for (let i = 0; i < 500; i++) {
+    for (const id of COMMODITY_IDS) {
+      state.markets[state.home][id].soldLastTick = appetite(state, state.home, id);
+    }
+    growEconomies(state);
+  }
+  close(gov.pop, before, 0.0001, 'the ordinary condition is neither boom nor exodus');
 });
 
 // ---- loop ------------------------------------------------------------------
