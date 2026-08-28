@@ -2,8 +2,8 @@ import { CONFIG } from '../core/config.js';
 import { BUILDINGS } from '../data/buildings.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { CENTROIDS } from '../data/geography.js';
-import { placeForCountry, provinceForTile } from '../data/places.js';
-import { SOURCE_W, SOURCE_H } from '../data/world.js';
+import { placeForCountry, provinceForTile, provinceIndexForTile, PROVINCE_BOUNDS } from '../data/places.js';
+import { SOURCE_COUNTRY_W, SOURCE_COUNTRY_H } from '../data/world.js';
 import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
 
@@ -36,9 +36,12 @@ const TERRAIN_COLOR = {
   uraniumore: '#3f7a3a',
   lithiumflat: '#8f8a68',
   rareearth: '#6b3f80',
-  offshoreOil: '#2b2350',
-  offshoreGas: '#2f6f88',
-  fishery: '#1f5a6b',
+  // Offshore deposits sit in a country's own sea, and there is a lot of that on
+  // screen. They are a shade off the water rather than a colour of their own,
+  // or every coastline on the planet reads as confetti.
+  offshoreOil: '#222040',
+  offshoreGas: '#22485c',
+  fishery: '#1a3c4a',
 };
 
 const TERRAIN_LABEL = {
@@ -62,14 +65,21 @@ const NEUTRAL_TINT = '#4a4f57';
 // and it costs one extra comparison per tile rather than a second data set.
 const BORDER_COLOR = '#0b0d12b3';
 const COAST_COLOR = '#0a1620cc';
-const PROVINCE_COLOR = '#fff1a066';
+// A province line is an INTERNAL division: it has to be visible when you are
+// looking at one country and invisible when you are looking at the planet, so
+// it is a hairline a shade lighter than the land rather than a bright stroke.
+const PROVINCE_COLOR = '#ffffff2b';
+// The tile size from which provinces are drawn at all, and the one from which
+// they are named. Below PROVINCE_ZOOM a province is a few pixels across and the
+// lines mesh into a grid that hides the continents — the map is a WORLD map at
+// that range, and it has to read like one.
+const PROVINCE_ZOOM = 3;
+const PROVINCE_LABEL_ZOOM = 8;
 const GRATICULE = '#ffffff12';
 const MERIDIAN = '#ffffff26';
 
-// Degrees per source column and row, from world.js: column 0 is 180W at 3 deg
-// per column, row 0 is 84N at 2.35 deg per row.
-const LON_PER_COL = 3;
-const LAT_PER_ROW = 2.35;
+// The projection is plain equirectangular over the whole globe: column 0 is
+// 180W, row 0 is 90N, and a tile is a quarter of a degree each way.
 const GRID_DEGREES = 15;
 
 export function mountMap(host, ctx) {
@@ -228,6 +238,20 @@ function draw(host, view, ctx) {
     view.spacer.style.height = `${h * tilePx}px`;
   }
 
+  // Open on YOUR OWN country. Scroll starts at 0,0, which on a whole planet is
+  // the empty North Pacific — every new game began by asking the player to go
+  // and find themselves. It happens on the first draw rather than at mount
+  // because the spacer has no size until here, and scrolling against a
+  // zero-width scroller does nothing at all.
+  if (!view.centred && host.clientWidth > 0) {
+    view.centred = true;
+    const home = CENTROIDS[state.home];
+    if (home) {
+      host.scrollLeft = Math.max(0, (home.x + 0.5) * (w / SOURCE_COUNTRY_W) * tilePx - host.clientWidth / 2);
+      host.scrollTop = Math.max(0, (home.y + 0.5) * (h / SOURCE_COUNTRY_H) * tilePx - host.clientHeight / 2);
+    }
+  }
+
   // The canvas covers only what is on screen, at device resolution.
   const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
   const cssW = Math.min(host.clientWidth, w * tilePx);
@@ -262,6 +286,11 @@ function draw(host, view, ctx) {
   // the end. Flat arrays of x1,y1,x2,y2 rather than objects: at one pixel a tile
   // this can run to thousands of edges on one draw.
   const borders = ui.borders !== false;
+  // Province lines are gathered only when they could be seen. At two pixels a
+  // tile they are invisible, and asking every tile which province it is in — for
+  // both of its edges, over a viewport that is the whole planet — is the one
+  // question in this loop that is worth not asking.
+  const provinceLines = borders && tilePx >= PROVINCE_ZOOM;
   const frontiers = [];
   const coasts = [];
   const provinces = [];
@@ -271,15 +300,43 @@ function draw(host, view, ctx) {
     g.textBaseline = 'middle';
   }
 
+  // The base fill is drawn in RUNS of one colour rather than a rect per tile.
+  // Most of a row is ocean, or one country, so this turns tens of thousands of
+  // fillRect calls — and, worse, tens of thousands of `fillStyle` assignments,
+  // which are the expensive half — into a few dozen a row. It is what makes the
+  // whole planet affordable to draw at one pixel a tile.
+  //
+  // A run is flushed BEFORE anything is drawn on top of a tile inside it, or the
+  // fill would paint over the ring it was meant to sit under.
+  let runColour = null;
+  let runFrom = 0;
+  const flush = (until, py) => {
+    if (runColour === null) return;
+    const from = Math.floor(runFrom * tilePx - left);
+    g.fillStyle = runColour;
+    g.fillRect(from, py, Math.max(1, Math.floor(until * tilePx - left) - from), tilePx);
+    runColour = null;
+  };
+
   for (let y = y0; y < y1; y++) {
+    const py = Math.floor(y * tilePx - top);
+    runColour = null;
+
     for (let x = x0; x < x1; x++) {
       const tile = state.tiles[y * w + x];
       const px = Math.floor(x * tilePx - left);
-      const py = Math.floor(y * tilePx - top);
       const building = byTile.get(tile.id);
 
-      g.fillStyle = fillFor(state, tile, building);
-      g.fillRect(px, py, tilePx, tilePx);
+      const colour = fillFor(state, tile, building);
+      if (colour !== runColour) {
+        flush(x, py);
+        runColour = colour;
+        runFrom = x;
+      }
+
+      const buildable = !building && tool && tile.countryId && canBuild(state, tool, tile).ok;
+      const selected = ui.selectedTileId === tile.id;
+      if (building || buildable || selected) flush(x + 1, py);
 
       if (building) {
         const ring = statusColor(building);
@@ -294,13 +351,13 @@ function draw(host, view, ctx) {
           g.fillStyle = '#fff';
           g.fillText(BUILDINGS[building.type].glyph, px + tilePx / 2, py + tilePx / 2);
         }
-      } else if (tool && tile.countryId && canBuild(state, tool, tile).ok) {
+      } else if (buildable) {
         g.strokeStyle = '#5fbf7f';
         g.lineWidth = 1;
         g.strokeRect(px + 0.5, py + 0.5, tilePx - 1, tilePx - 1);
       }
 
-      if (ui.selectedTileId === tile.id) {
+      if (selected) {
         g.strokeStyle = '#f0b34b';
         g.lineWidth = 2;
         g.strokeRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
@@ -311,9 +368,10 @@ function draw(host, view, ctx) {
       // frontier is recorded once rather than twice from either side.
       const right = x + 1 < w ? state.tiles[y * w + x + 1] : null;
       const below = y + 1 < h ? state.tiles[(y + 1) * w + x] : null;
-      edge(frontiers, coasts, provinces, tile, right, px + tilePx, py, px + tilePx, py + tilePx);
-      edge(frontiers, coasts, provinces, tile, below, px, py + tilePx, px + tilePx, py + tilePx);
+      edge(frontiers, coasts, provinceLines ? provinces : null, tile, right, px + tilePx, py, px + tilePx, py + tilePx);
+      edge(frontiers, coasts, provinceLines ? provinces : null, tile, below, px, py + tilePx, px + tilePx, py + tilePx);
     }
+    flush(x1, py);
   }
 
   // Frontiers and the graticule go on TOP of the terrain, so a border is never
@@ -322,7 +380,7 @@ function draw(host, view, ctx) {
   // tile the visible window is the whole planet, and a second pass over 180,000
   // tiles would double the worst-case draw.
   if (borders) {
-    strokeEdges(g, provinces, PROVINCE_COLOR, tilePx >= 5 ? 1.25 : 1);
+    strokeEdges(g, provinces, PROVINCE_COLOR, 1);
     strokeEdges(g, frontiers, BORDER_COLOR, tilePx >= 5 ? 1.5 : 1);
     strokeEdges(g, coasts, COAST_COLOR, tilePx >= 5 ? 1.5 : 1);
     drawGraticule(g, state, tilePx, left, top, cssW, cssH);
@@ -332,7 +390,13 @@ function draw(host, view, ctx) {
 }
 
 function drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1) {
-  if (tilePx < 5) return;
+  // A province is NAMED later than it is drawn. Its line only has to be seen;
+  // its name has to be read, and a planet's worth of them at once is not a map
+  // any more.
+  if (tilePx < PROVINCE_LABEL_ZOOM) return;
+  // ...and how much of one has to be on screen before it is worth naming: the
+  // closer in you are, the less of it you need to see.
+  const minTiles = tilePx >= 20 ? 4 : tilePx >= 14 ? 8 : 20;
   const centres = new Map();
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
@@ -348,14 +412,14 @@ function drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1,
     }
   }
 
-  g.font = `500 ${Math.min(11, Math.max(8, Math.round(tilePx * 0.9)))}px system-ui, sans-serif`;
+  g.font = `500 ${Math.min(13, Math.max(8, Math.round(tilePx * 0.9)))}px system-ui, sans-serif`;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   g.lineWidth = 2.5;
   g.strokeStyle = '#0b0d12cc';
   g.fillStyle = '#fff1a0cc';
   for (const row of centres.values()) {
-    if (row.n < 10) continue;
+    if (row.n < minTiles) continue;
     const px = (row.x / row.n + 0.5) * tilePx - left;
     const py = (row.y / row.n + 0.5) * tilePx - top;
     if (px < -60 || py < -20 || px > cssW + 60 || py > cssH + 20) continue;
@@ -369,10 +433,14 @@ function drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1,
 // the game thinks the country IS — a name drawn anywhere else would quietly
 // disagree with what every haul costs.
 function drawLabels(g, state, tilePx, left, top, cssW, cssH) {
-  if (tilePx < 3) return;
-  const scaleX = state.grid.w / SOURCE_W;
-  const scaleY = state.grid.h / SOURCE_H;
-  g.font = `600 ${Math.min(15, Math.max(9, Math.round(tilePx * 1.3)))}px system-ui, sans-serif`;
+  if (tilePx < 2) return;
+  // CENTROIDS are in OWNERSHIP-grid cells (geography.js), which is the grid the
+  // tiles are on. Scaling them by the old hand-painted art grid put every
+  // country's name several screens away from the country.
+  const scaleX = state.grid.w / SOURCE_COUNTRY_W;
+  const scaleY = state.grid.h / SOURCE_COUNTRY_H;
+  const fontPx = Math.min(15, Math.max(9, Math.round(tilePx * 1.3)));
+  g.font = `600 ${fontPx}px system-ui, sans-serif`;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   g.lineWidth = 3;
@@ -383,6 +451,21 @@ function drawLabels(g, state, tilePx, left, top, cssW, cssH) {
     const py = (centre.y + 0.5) * scaleY * tilePx - top;
     if (px < -60 || py < -20 || px > cssW + 60 || py > cssH + 20) continue;
     const name = tilePx >= 8 ? `${placeForCountry(id).city}\n${COUNTRIES[id].name}` : COUNTRIES[id].name;
+    // A name has to FIT the land it names. Without this the Caribbean is a wall
+    // of overlapping text at every zoom — fifteen territories whose whole
+    // coastline is narrower than the word for it. Zoom in and each one gets its
+    // label the moment there is room for it.
+    //
+    // The width is ESTIMATED from the character count rather than measured:
+    // `measureText` on a hundred and fifty countries a draw costs more than
+    // every fill in the viewport put together, and this only has to decide
+    // whether a name is roughly too big for its country.
+    const box = PROVINCE_BOUNDS[id];
+    if (box && Number.isFinite(box.minX)) {
+      const wide = (box.maxX - box.minX + 1) * scaleX * tilePx;
+      const longest = Math.max(...name.split('\n').map((line) => line.length)) * fontPx * 0.55;
+      if (wide < longest * 0.7) continue;
+    }
     // A halo rather than a box: a filled label would hide the terrain it names.
     g.fillStyle = isPlayer(state, id) ? '#ffd9a8' : '#e6e9efbb';
     drawMultilineLabel(g, name, px, py, Math.round(tilePx * 1.45));
@@ -404,9 +487,14 @@ function drawMultilineLabel(g, text, x, y, lineHeight) {
 // strokeStyle per segment would mean a path per edge instead of two paths.
 function edge(frontiers, coasts, provinces, tile, other, x1, y1, x2, y2) {
   if (!other) return;
-  if (tile.countryId && tile.countryId === other?.countryId && !isSea(tile) && !isSea(other)
-    && provinceForTile(tile) !== provinceForTile(other)) {
-    provinces.push(x1, y1, x2, y2);
+  if (tile.countryId && tile.countryId === other.countryId) {
+    // Same country: the only line that can run here is a provincial one, and
+    // only when they are close enough to see. Indices, not names — this runs
+    // twice per tile.
+    if (provinces && !isSea(tile) && !isSea(other)
+      && provinceIndexForTile(tile) !== provinceIndexForTile(other)) {
+      provinces.push(x1, y1, x2, y2);
+    }
     return;
   }
   if (tile.countryId === other.countryId) return;
@@ -442,8 +530,11 @@ function isSea(tile) {
 function drawGraticule(g, state, tilePx, left, top, cssW, cssH) {
   if (tilePx < 2) return;
   const { w, h } = state.grid;
-  const colsPerDegree = w / (LON_PER_COL * 120);
-  const rowsPerDegree = h / (LAT_PER_ROW * 60);
+  // Pole to pole, 180 degrees of latitude over the whole grid. This used to be
+  // measured against the old hand-painted art, which ran 84N to 57S — every
+  // parallel was drawn a couple of thousand kilometres off.
+  const colsPerDegree = w / 360;
+  const rowsPerDegree = h / 180;
 
   g.lineWidth = 1;
   for (let lon = -180; lon <= 180; lon += GRID_DEGREES) {
@@ -455,8 +546,8 @@ function drawGraticule(g, state, tilePx, left, top, cssW, cssH) {
     g.lineTo(x, cssH);
     g.stroke();
   }
-  for (let lat = 75; lat >= -60; lat -= GRID_DEGREES) {
-    const y = Math.floor((84 - lat) * rowsPerDegree * tilePx - top) + 0.5;
+  for (let lat = 75; lat >= -75; lat -= GRID_DEGREES) {
+    const y = Math.floor((90 - lat) * rowsPerDegree * tilePx - top) + 0.5;
     if (y < 0 || y > cssH) continue;
     g.strokeStyle = lat === 0 ? MERIDIAN : GRATICULE;
     g.beginPath();
@@ -479,23 +570,22 @@ function fillFor(state, tile, building) {
   // Two tiers now, because there are exactly two relationships left: your own
   // soil, and everybody else's. Every market on earth is open, so the map no
   // longer has to answer "where may I sell" — only "what is mine".
-  const colour = COUNTRIES[tile.countryId].color;
-  if (isPlayer(state, tile.countryId)) return colour;
-  return dim(colour, 0.5);
+  if (isPlayer(state, tile.countryId)) return COUNTRIES[tile.countryId].color;
+  return DIM[tile.countryId];
 }
 
-const dimCache = new Map();
+// Every country's foreign tint, worked out ONCE. This used to be a cache keyed
+// by a template string, which meant building a string and hashing it for every
+// land tile on screen — a couple of hundred thousand of them a draw, and the
+// single biggest cost in the fill loop after `fillStyle` itself.
+const DIM = Object.fromEntries(COUNTRY_IDS.map((id) => [id, dim(COUNTRIES[id].color, 0.5)]));
+
 function dim(hex, factor) {
-  const key = `${hex}|${factor}`;
-  let out = dimCache.get(key);
-  if (out) return out;
   const n = parseInt(hex.slice(1), 16);
   const r = Math.round((((n >> 16) & 255) * factor) + 12);
-  const gg = Math.round((((n >> 8) & 255) * factor) + 12);
+  const g = Math.round((((n >> 8) & 255) * factor) + 12);
   const b = Math.round(((n & 255) * factor) + 12);
-  out = `rgb(${r},${gg},${b})`;
-  dimCache.set(key, out);
-  return out;
+  return `rgb(${r},${g},${b})`;
 }
 
 function statusColor(building) {
@@ -512,7 +602,7 @@ function statusColor(building) {
 function tooltip(state, tile) {
   const building = state.buildings.find((b) => b.tileId === tile.id);
   const where = tile.countryId
-    ? placeName(tile.countryId)
+    ? placeName(tile)
     : tile.terrain === 'water' ? 'International waters' : 'Unclaimed territory';
   if (building) {
     const def = BUILDINGS[building.type];
@@ -524,9 +614,13 @@ function tooltip(state, tile) {
   return `${where} · ${label}${sea}`;
 }
 
-function placeName(countryId) {
-  const place = placeForCountry(countryId);
-  return `${COUNTRIES[countryId].name} · ${place.province} · ${place.city}`;
+// The province under the POINTER, not the country's first one. Hovering Texas
+// and being told "California" was the old answer, and it made the whole
+// subdivision layer read as decoration.
+function placeName(tile) {
+  const place = placeForCountry(tile.countryId);
+  const province = provinceForTile(tile) ?? place.province;
+  return `${COUNTRIES[tile.countryId].name} · ${province} · ${place.city}`;
 }
 
 function describe(building, def) {

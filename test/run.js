@@ -8,7 +8,7 @@ import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR } from '../src/data/countries.j
 import { WORLD_ROWS, WORLD_W, WORLD_H, SOURCE_ROWS, SOURCE_W, SOURCE_H,
   SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H, AREA_SCALE } from '../src/data/world.js';
 import { CENTROIDS, distanceBetween, haulShare, neighboursOf, MAX_DISTANCE } from '../src/data/geography.js';
-import { placeForCountry, provinceForTile } from '../src/data/places.js';
+import { placeForCountry, provinceForTile, provinceForPoint } from '../src/data/places.js';
 import { BUILDINGS } from '../src/data/buildings.js';
 import { CONFIG } from '../src/core/config.js';
 import { build, canBuild, demolish,
@@ -195,9 +195,13 @@ test('distance wraps around the globe rather than across the map', () => {
 });
 
 test('a nations nearest neighbours are actually its neighbours', () => {
+  // The quarter-degree grid puts real centroids on real land, so Germany's six
+  // closest markets are now the countries it actually touches — including the
+  // small ones a coarse grid could not see.
   const near = neighboursOf('DE').slice(0, 6);
-  assert(near.some((id) => ['FR', 'NL', 'PL', 'IT'].includes(id)),
-    `Germany's closest markets should be European, got ${near.join(', ')}`);
+  const borders = ['FR', 'NL', 'PL', 'IT', 'BE', 'CH', 'AT', 'CZ', 'DK', 'LU', 'LI'];
+  assert(near.every((id) => borders.includes(id)),
+    `Germany's closest markets should be its neighbours, got ${near.join(', ')}`);
   assert(!near.includes('NZ'), 'New Zealand is not next door to Germany');
 });
 
@@ -219,6 +223,81 @@ test('large countries have multiple provinces on the map', () => {
     .filter((tile) => tile.countryId === 'AF')
     .map((tile) => provinceForTile(tile)));
   assert(provinces.size > 1, `Afghanistan should have visible provinces, got ${[...provinces].join(', ')}`);
+});
+
+// A province with no land is a name on nothing: it would be listed, never drawn,
+// and never reachable by hovering anything.
+test('every province a country lists has land in it', () => {
+  const found = {};
+  for (let y = 0; y < SOURCE_COUNTRY_H; y++) {
+    for (let x = 0; x < SOURCE_COUNTRY_W; x++) {
+      const id = SOURCE_COUNTRY_ROWS[y][x];
+      if (!id) continue;
+      (found[id] ??= new Set()).add(provinceForPoint(id, x, y));
+    }
+  }
+  for (const [id, names] of Object.entries(found)) {
+    const listed = placeForCountry(id).provinces;
+    equal(names.size, listed.length, `${id} lists ${listed.length} provinces but only ${names.size} have land`);
+    for (const name of listed) {
+      assert(names.has(name), `${id} lists ${name}, which no cell is in`);
+    }
+  }
+});
+
+// The provinces are real polygons now, so this is the check that the raster is
+// the right way up and the right way round: a province has to be where the
+// atlas says it is, not merely somewhere inside the right country.
+test('a province is where the atlas puts it', () => {
+  const middle = (id, name) => {
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (let y = 0; y < SOURCE_COUNTRY_H; y++) {
+      for (let x = 0; x < SOURCE_COUNTRY_W; x++) {
+        if (SOURCE_COUNTRY_ROWS[y][x] !== id || provinceForPoint(id, x, y) !== name) continue;
+        sx += x;
+        sy += y;
+        n++;
+      }
+    }
+    assert(n > 0, `${id} has no ${name}`);
+    return {
+      lon: (sx / n) * 360 / SOURCE_COUNTRY_W - 180,
+      lat: 90 - (sy / n) * 180 / SOURCE_COUNTRY_H,
+      n,
+    };
+  };
+
+  const near = (place, lon, lat, slack, what) => {
+    assert(Math.abs(place.lon - lon) < slack && Math.abs(place.lat - lat) < slack,
+      `${what} should be near ${lon}, ${lat} — found ${place.lon.toFixed(1)}, ${place.lat.toFixed(1)}`);
+  };
+
+  near(middle('US', 'Alaska'), -152, 64, 8, 'Alaska');
+  near(middle('US', 'Texas'), -99.5, 31.5, 4, 'Texas');
+  near(middle('US', 'Florida'), -82, 28.5, 4, 'Florida');
+  near(middle('IR', 'Tehran'), 51.5, 35.5, 3, 'Tehran province');
+  near(middle('IR', 'Sistan and Baluchestan'), 60.5, 28, 3, 'Sistan and Baluchestan');
+  near(middle('AU', 'Queensland'), 144, -22.5, 5, 'Queensland');
+  near(middle('CN', 'Xinjiang'), 85, 41, 5, 'Xinjiang');
+});
+
+// Thirty-one for Iran, not six blobs cut out of it by a clustering algorithm.
+// This is the whole reason the admin-1 raster exists.
+test('countries have their real subdivisions', () => {
+  // The real subdivision counts, less any the quarter-degree raster is too
+  // coarse to land a cell on — Afghanistan's thirty-four lose Panjshir and
+  // Daykundi that way. These are a regression guard on the raster itself.
+  const counts = { IR: 31, US: 51, AF: 32, DE: 16, JP: 47, BR: 27 };
+  for (const [id, want] of Object.entries(counts)) {
+    equal(placeForCountry(id).provinces.length, want, `${id} province count`);
+  }
+  const iran = placeForCountry('IR');
+  equal(iran.province, 'Tehran', "Iran's capital province");
+  for (const name of ['Khuzestan', 'Fars', 'Esfahan', 'Kerman', 'Gilan', 'Alborz']) {
+    assert(iran.provinces.includes(name), `Iran should have ${name}`);
+  }
 });
 
 test('deposits only ever land inside the country that owns them', () => {
@@ -335,9 +414,13 @@ test('Iran keeps its token forest, limestone and uranium', () => {
   const state = createInitialState();
   const tiles = state.tiles.filter((t) => t.countryId === 'IR');
   for (const terrain of ['forest', 'quarry', 'uraniumore']) {
+    // Token is measured in AUTHORED cells, not tiles: the deposits in
+    // countries.js are written against a 360x180 grid and AREA_SCALE converts
+    // them, so the threshold has to be converted too or it means something
+    // different every time the map gets sharper.
     const found = tiles.filter((t) => t.terrain === terrain).length;
     assert(found > 0, `Iran lost its ${terrain}`);
-    assert(found < 10, `Iran's ${terrain} is meant to be token, found ${found}`);
+    assert(found < 3 * AREA_SCALE, `Iran's ${terrain} is meant to be token, found ${found}`);
   }
 });
 

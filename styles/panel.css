@@ -230,10 +230,13 @@
    showing that is the difference between "already set" and "broken". */
 .policy-all button[data-active="true"] { background: var(--panel-2); color: var(--ink); border-color: var(--accent); }
 
-.prices__split { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(420px, 1fr); gap: 10px; align-items: start; }
+.prices { table-layout: fixed; }
 .prices th, .prices td { padding: 0 3px; }
+.prices tbody th, .prices tbody td {
+  height: 16px; line-height: 16px; overflow: hidden; text-overflow: ellipsis;
+}
 .prices td { text-align: right; }
-.prices th[scope="row"] { max-width: 76px; }
+
 /* Two header rows, so the columns say WHOSE figures they are — the market you
    picked, or your own nation. Both rows stay put while the rows scroll under
    them, which means the second one has to sit below the first rather than on
@@ -246,10 +249,15 @@
 .prices__groups + tr th { border-bottom: 1px solid #ffffff1a; }
 /* The two halves are told apart by a rule down the middle rather than by
    colour, which the swatches and the drift arrows are already using. */
-.prices--market tr > :nth-child(2), .prices--home tr > :nth-child(2), .prices--home tr > :nth-child(8) {
+.prices tr > :nth-child(2), .prices tr > :nth-child(7), .prices tr > :nth-child(13) {
   border-left: 1px solid #ffffff14;
 }
+/* Thirteen columns in one line. The name column is fixed and the twelve figure
+   columns divide what is left evenly, so the two halves line up down the
+   table however wide the dock happens to be. */
+.prices th[scope="row"], .prices__groups > :first-child { width: 88px; }
 .prices__flags { white-space: nowrap; text-align: center; }
+.prices__flags .flag { height: 14px; padding: 0 4px; line-height: 1; }
 .prices__flags .flag:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .prices__flags .flag:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
 /* A commodity you have never touched keeps its row and its place in the table —
@@ -427,7 +435,6 @@
 .pane[data-pane="trade"] .hint--tight { grid-column: 2; }
 
 @media (max-width: 760px) {
-  .prices__split,
   .pane[data-active="true"][data-pane="market"],
   .pane[data-active="true"][data-pane="trade"] { grid-template-columns: 1fr; }
   .pane[data-pane="market"] > *,

@@ -31,6 +31,24 @@ repo deliberately has no `package.json`** — without one Node reads `test/run.j
 chokes on its `import`s, so the wrapper writes `{"type":"module"}` for the length of the run and
 removes it again in a `finally`. Do not "simplify" that away by committing a package.json.
 
+**Do not run two of those wrappers at once.** They write and delete the same marker file, so a
+second one finishing pulls the ESM marker out from under the first, which then dies on `require is
+not defined in ES module scope` — a failure that has nothing to do with the code under test. If you
+write a throwaway script that needs the marker, run it *after* the suite, not beside it.
+
+### Regenerating the world
+
+`src/data/worldProvinces.js` is generated, not written:
+
+```bash
+node tools/genworld.js <path-to>/ne_10m_admin_1_states_provinces.geojson
+```
+
+The source is Natural Earth's 10m admin-1 layer (public domain, from the `nvkelso/natural-earth-vector`
+GeoJSON mirror, ~39MB). It is deliberately NOT in the repo — the repo carries the raster, exactly as
+it always carried one. The 50m edition looks like the obvious cheaper choice and is not: it has 294
+subdivisions covering a handful of federal countries, where the 10m has 4,596 covering every one.
+
 When the user asks you to commit and push, update this file in the same change if the work teaches a
 new repo rule, run the relevant tests first, commit only the files you intentionally changed, and
 push the current branch. Do not leave a requested push as a reminder.
@@ -213,26 +231,54 @@ hardcoded quantity inside `src/systems/` is a bug, and so is a system that reads
 - `countries.js` — hand-balanced values for featured nations plus default values for every other
   ISO country/territory: `wageMul`, `demand`, `pop`, `waters`, and `deposits`. `char` remains only
   for compatibility with the old hand-painted source art.
-- `worldCountries.js` — generated ISO country/territory ownership data from GeoJSON polygons:
-  `WORLD_COUNTRY_INFO` and a 360×180 `SOURCE_COUNTRY_ROWS` grid. This is the live ownership source.
-- `world.js` — keeps the old hand-editable 120×60 source art as reference/fallback data, but also
-  imports and upscales the ISO country grid for the live map.
+- `worldProvinces.js` — **GENERATED, and the live map.** A 1440×720 raster (a quarter of a degree a
+  cell) of Natural Earth's 10m admin-1 polygons, run-length encoded a row at a time, plus the name
+  and owner of every one of its 3,817 provinces. Do not hand-edit it: re-run `tools/genworld.js`
+  against the source GeoJSON. It is one raster rather than two because **the union of a country's
+  provinces IS the country** — ownership is derived from it, so who owns a cell and which province
+  it is in can never disagree.
+- `worldCountries.js` — the 258 ISO countries and territories (`WORLD_COUNTRY_INFO`), which is what
+  decides who is in the game, plus the OLD 360×180 ownership grid. That grid is no longer read at
+  run time: it is the generator's fallback for the thirty-five territories the admin-1 layer does not
+  cover, and it is why the file is still here.
+- `world.js` — decodes the raster into `PROVINCE_AT` (a typed array) and `SOURCE_COUNTRY_ROWS`, and
+  keeps the old hand-editable 120×60 source art as reference data. There is no upscale step any
+  more: the raster is the playable grid.
 - `geography.js` — **derived** data: each country's centroid and the distance matrix between all of
   them, computed once from the ISO country grid with GeoJSON centroids as fallback for tiny
   countries. Freight reads this, so moving country ownership moves the freight bill with it.
-- `places.js` — **derived** map labels below the nation level. The repo does not carry real
-  administrative boundary polygons, so every country gets province labels from its own map footprint
-  and a stable city label, with capital-name overrides for featured nations. It is presentation data
-  only: do not persist it on `state`.
+- `places.js` — the province LOOKUP and the capital names. Provinces themselves are real now: Iran
+  has its thirty-one where they actually are, Afghanistan thirty-two, France ninety-nine. They used
+  to be derived — a country's land cut into blobs by k-means and given plausible names — and every
+  line of that is gone. What is left is presentation data only: do not persist it on `state`. Three
+  rules in it are load-bearing:
+  - **Asking which province a tile is in is ONE typed-array read.** The map asks it per tile per
+    edge while drawing, so anything else is unaffordable. `provinceIndexForTile` numbers a province
+    within its own country and the map compares THAT, never two strings.
+  - **Two polygons under one name are one province.** The admin-1 layer splits a few (England has
+    two Haltons); merging them is what stops the map drawing a boundary between two halves of the
+    same name and then writing that name on both sides.
+  - **The raster answers for LAND.** Territorial water, and the cells `generateWorld` hands to a
+    country too small for the raster to see, fall back to whichever of that country's provinces is
+    nearest. `CAPITAL_PROVINCE` names the handful where the seat of government is not simply the
+    province of the same name — without it Washington DC lands in Washington state.
 
-**The live country source grid is 360×180; the playable grid is 720×360 — 259,200 tiles.**
-`world.js` upscales `SOURCE_COUNTRY_ROWS` at load, so tile ownership is real ISO country IDs rather
-than one-character paint. The projection is plain equirectangular: column 0 is 180°W, row 0 is 90°N.
-Russia and Canada are stretched near the poles exactly as on a Plate Carrée wall map, and their tile
-counts reflect that.
+**The grid is 1440×720 — 1,036,800 tiles, a quarter of a degree each.** There is no separate source
+grid any more: `SOURCE_COUNTRY_W/H` and `WORLD_W/H` are the same numbers, and `WORLD_COUNTRY_ROWS`
+is the same array as `SOURCE_COUNTRY_ROWS` rather than a copy. The projection is plain
+equirectangular over the whole globe: column 0 is 180°W, row 0 is 90°N. Russia and Canada are
+stretched near the poles exactly as on a Plate Carrée wall map, and their tile counts reflect that.
 
-The opening zoom is `CONFIG.defaultZoom = 2` (3px/tile), because labels only appear from 3px upward
-and tiny countries otherwise look absent even when the ISO grid gives them land.
+At this resolution the coastline is the real coastline — Italy has a boot, Japan has four islands,
+Hudson Bay is a bay. That is the whole reason for the size, and it costs about 110MB of tile objects
+and a 100ms draw at one pixel a tile. Both were measured; see the map and generation notes below
+before making it bigger again.
+
+The opening zoom is `CONFIG.defaultZoom = 1` (2px/tile), which is a hundred and sixty degrees of
+longitude across a laptop screen. The top of `CONFIG.zoomLevels` is 28px/tile, and it is set by the
+PROVINCES rather than by the tiles: a province name has to fit on the land it names. **The map opens
+centred on your own country** (`mountMap`, on the first draw, because the spacer has no size until
+then) — scroll 0,0 on a whole planet is the empty North Pacific.
 
 `generateWorld()` also expands any country below nine land cells into a tiny cluster at its GeoJSON
 centroid. This intentionally spends a little ocean or neighbour space on legibility: all countries
@@ -252,19 +298,32 @@ storage from production.
 
 ### Three silent traps when editing country data
 
-- **Land deposits are authored against the 360×180 ISO source and multiplied by `AREA_SCALE`.** Write
-  the number as a count of *source* cells. Fractions are allowed. Default countries intentionally get
-  a tiny baseline mix of farmland, quarry and hills so no country starts with nothing to build from.
+- **Land deposits are authored against a 360×180 grid and multiplied by `AREA_SCALE`.** Write the
+  number as a count of cells *at that authoring resolution* — one authored cell is sixteen tiles
+  today. `AREA_SCALE` divides by `AUTHORED_W/H`, deliberately NOT by the source grid, which is now
+  the same size as the playable one: forty-six hand-balanced countries must not need rewriting every
+  time the map gets sharper. Fractions are allowed. Default countries intentionally get a tiny
+  baseline mix of farmland, quarry and hills so no country starts with nothing to build from.
+  A test that measures "token" amounts has to measure them in `AREA_SCALE` too, for the same reason.
 - **Water deposits (`waters`) are FRACTIONS of a country's territorial sea, not counts.** The sea is
   not in the source art, so there is nothing to scale against and a fraction is scale-free.
 - **A country's deposits must sum to no more than ~60% of the cells it owns.** `MAX_DEPOSIT_SHARE`
   reserves flat ground, and once the budget runs out, generation drops whatever comes last in
   `DEPOSIT_ORDER`. `DEPOSIT_ORDER` therefore puts scarce and strategic resources first and ubiquitous
   filler (quarry, farmland, desert) last, so a cramped country keeps what it is known for. A test
-  fails if any country over-subscribes. Countries authored before the grid grew to 720×360 can look
-  tighter than they are — Iran and Saudi Arabia read as capped and in fact use well under a fifth of
-  their budget — so **check the actual counts before paying for one deposit with another**: generate
-  a state and count the tiles rather than trusting a comment.
+  fails if any country over-subscribes. Countries authored before the grid grew can look tighter
+  than they are — Iran and Saudi Arabia read as capped and in fact use well under a fifth of their
+  budget — so **check the actual counts before paying for one deposit with another**: generate a
+  state and count the tiles rather than trusting a comment. `MIN_VISIBLE_LAND_CELLS` scales with the
+  grid for exactly this reason: it is the smallest country the deposits still have to fit inside.
+
+**Deposits are laid in PATCHES, not scattered a tile at a time** (`layDeposits`/`growPatch` in
+`state.js`). The COUNT is unchanged — the same tiles are drawn from the same shuffled pool in the
+same order, so balance, the budget and the tests do not move — but each terrain grows outward from
+its seed into a blob. Scattering was invisible when a tile was half a degree and a deposit was four
+of them; at a quarter of a degree it is sixteen, and the whole planet turned to television static.
+The frontier is picked from at RANDOM rather than in order, because strict breadth-first growth
+makes a perfect diamond and a planet of identical diamonds is no better than the static was.
 
 **`wageMul` is UNIT labour cost, not the hourly wage.** A German hour costs fifteen times an
 Ethiopian one but buys far more output, so the spread here is about six to one. This matters because
@@ -274,10 +333,24 @@ opens. A test asserts the dearest labour on earth can still profit on the deepes
 
 ### Governments are you, without the mouse
 
-`systems/stateIndustry.js` is about a hundred and eighty lines because it only decides *what* to
+`systems/stateIndustry.js` is about two hundred lines because it only decides *what* to
 build; `build()`, `produce`, `collect`, `payWages`, `sellDomestic` and `runExchange` do the rest. Four
 rules in it are load-bearing, and each one was added to fix a specific way the world used to fall
 apart:
+
+**Before any of them: this file is where a million tiles bites.** Three indexes keep a decision tick
+affordable, and removing any one of them takes it from ~100ms to well over a second — measured, with
+the cost still growing as the world builds:
+
+- `tilesByCountry` groups every tile by country ONCE and caches it against `state.tiles` in a
+  `WeakMap`, exactly as `depositsOf` in research.js does. Nothing mutates terrain or ownership after
+  generation, which is the same guarantee that lets the save omit tiles.
+- ...and buckets them **by terrain** inside each country, because `findTile` asks for one terrain at
+  a time. Walking Russia's forty-seven thousand tiles once per building type to discover that a
+  coalfield is not plain ground is thirty-four scans of a country per decision.
+- `servedBy(depots, x, y)` replaces `warehousesServing` in the decision path. The old call scanned
+  every building in the world per candidate tile per building type, so the cost grew with the square
+  of the game's progress.
 
 - **Depots are decided before industry, not scored against it** (`needsDepot`). A warehouse earns
   nothing directly, so any profitable plant always outbids it — and a government that only ever
@@ -458,7 +531,12 @@ Consequences worth knowing:
   `overflow-y: hidden` on the principle that a table is read whole — which was true of the pane it
   was written for and false of every pane that grew since: the bottom of the Trade list, the Ranks
   table and the tech tree were simply unreachable on a short window. The aim is unchanged, so the
-  build menu is a horizontal carousel of simple build boxes, the tables' rows are still single-line
+  bottom dock shows only the build menu, as a two-row horizontal carousel of build boxes. **Those two
+  rows are a GRID** (`grid-auto-flow: column`, two fixed rows), not a wrapping flex column: wrapping
+  fills whatever rows the container's height happens to allow, which is one row on a short window and
+  three on a tall one, and the row count is a layout decision rather than a leftover. Two rows in a
+  156px dock leave a box 47px tall, which is why the recipe line is one line and the dock's own
+  "Build" heading is hidden — the rail that opens the panel already says it. Table rows are still single-line
   (`.market td` is `nowrap`, the name truncates, and figures use `priceShort`/`qtyShort` so a
   four-digit price cannot wrap a row into two), and the standing explanations are still `<details>`.
   **Sideways is a different matter** — a pane that overflows horizontally is a bug, not a scroll,
@@ -494,15 +572,16 @@ Five things earn their own view rather than sharing one:
   is how full it is instead.
 - **Summary** is derived from the other four and owns nothing. It exists so the answer to "how is the
   nation doing" is not four tabs of reading.
-- **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book, split into two
-  narrow tables so the top dock stays compact: selected-market figures on the left, your own book
-  and export/import policy on the right.
-  Prices and Goods were two tabs, then two tables stacked in one pane — which meant the price of coal
-  was in one place and what you were doing with coal was in another, though both were the same
-  thirty-four rows in the same order. They now sit in parallel tables: the first group of columns is the
-  market named in the header (price, drift, need, met, held — any nation on earth, chosen in the
-  select), the second is your own book (made, burned, sold, balance, shipped out, bought in, per tick
-  or for the whole game from `state.ledger`), and the `↗`/`↙` flags at the end are your policy.
+- **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book: **ONE table, one line
+  a commodity, thirteen columns.** Prices and Goods were two tabs, then two tables stacked in one
+  pane, then two tables side by side — every one of which meant the price of coal was in one place
+  and what you were doing with coal was in another, though both were the same thirty-four rows in the
+  same order. On one line: the first group of columns is the market named in the header (price,
+  drift, need, met, held — any nation on earth, chosen in the select), the second is your own book
+  (made, burned, sold, balance, shipped out, bought in, per tick or for the whole game from
+  `state.ledger`), and the `↗`/`↙` flags at the end are your policy. It fits because the table is
+  `table-layout: fixed` with one fixed name column and twelve even figure columns, at a font size
+  smaller than the rest of the panel.
   **The two halves are different nations whenever the select is not you**, which is the point — what
   Germany pays and how short it is, beside what you can actually spare — so the group header row is
   load-bearing and says whose figures each half is. The bracket in the `In` column is the feedstock
@@ -559,7 +638,7 @@ which is what the Trade tab used to do — showed a handful and silently hid the
 writes to both. The deal list also GROUPS by partner, commodity and direction, because the same cargo
 goes to the same partner every tick and sixty raw lines were four routes written fifteen times.
 
-**The map does NOT work that way — it is a canvas.** At 259,200 tiles there is no DOM option: that
+**The map does NOT work that way — it is a canvas.** At 1,036,800 tiles there is no DOM option: that
 many elements exhausts memory and stalls layout, and virtualising the viewport does not rescue it
 because zooming out legitimately puts every tile on screen. `src/ui/map.js` repaints the visible
 window on every render, so there is no per-tile cache to keep in step. Terrain and ownership colours
@@ -567,18 +646,43 @@ therefore live in `TERRAIN_COLOR` and `fillFor()` in JS, **not** in CSS.
 
 Consequences worth knowing before editing the map:
 
+- **The base fill is drawn in RUNS of one colour, a row at a time**, not a rect per tile. Most of a
+  row is ocean or one country, and the expensive half of a per-tile fill is not `fillRect` but
+  assigning `fillStyle` a hundred thousand times: batching took the whole-planet draw from ~290ms to
+  ~40ms, measured. A run is flushed **before** anything is drawn on top of a tile inside it — a
+  status ring, a buildable highlight, the selection — or the fill would paint over what it was meant
+  to sit under. That ordering is the whole correctness argument; keep it if you touch the loop.
 - **Frontiers, coastlines, a graticule and country names are painted over the terrain**, and the
   border segments are COLLECTED during the tile loop rather than found in a sweep of their own: at
-  one pixel a tile the visible window is the whole planet, and a second pass over 259,200 tiles
+  one pixel a tile the visible window is the whole planet, and a second pass over a million tiles
   would double the worst-case draw. A frontier is simply an edge where two neighbouring tiles belong
   to different countries, so it can never disagree with who owns what. Labels sit on the centroids
   in `geography.js` — the same ones the freight matrix uses — so a name is drawn exactly where the
-  game thinks the country is. Province boundaries are derived per tile from `places.js`, drawn in a
-  visible light stroke inside a country before national borders are drawn, and real subdivision names
-  appear at close zoom where a country has authored names. The country label adds the capital/city
-  name at close zoom, and hover/Selected show
-  country → province → city. There is no Borders button now; frontiers and province lines are part
-  of the map read.
+  game thinks the country is. Province boundaries come from `places.js`, drawn in a light stroke
+  inside a country before national borders are drawn. **Province lines and labels appear only from
+  `PROVINCE_ZOOM` (3px) upward**, and that gate is not cosmetic: below it a province line is thinner
+  than the tile it divides, and asking every tile which province it is in — twice, over a viewport
+  that is the whole planet — is the one question in the tile loop worth not asking. `edge()` compares
+  province INDICES, never names. How much of a province has to be on screen before it is worth
+  naming falls as you zoom in (`minTiles`), so a speck does not land its name on its neighbour. The
+  country label adds the capital/city name at close zoom, and hover/Selected show
+  country → **the province the tile is actually in** → city. There is no Borders button now;
+  frontiers and province lines are part of the map read.
+- **A province is DRAWN at `PROVINCE_ZOOM` (3px) and NAMED at `PROVINCE_LABEL_ZOOM` (8px)**, and the
+  two are different numbers on purpose. A line only has to be seen; a name has to be read, and a
+  planet's worth of them at once stops being a map. Getting this wrong is what turned the world into
+  a mesh of yellow boxes the first time provinces went in — the fix was the thresholds and a
+  hairline colour, not fewer provinces.
+- **A country's name is only drawn if it FITS the country.** Without that the Caribbean is a wall of
+  overlapping text at every zoom. The width is ESTIMATED from the character count, not measured:
+  `measureText` on a hundred and fifty visible countries a draw costs more than every fill in the
+  viewport put together, and this only has to decide whether a name is roughly too big.
+- **Every country's dimmed tint is computed once** into `DIM`. It used to be a cache keyed by a
+  template string, which built and hashed a string per land tile per draw — a couple of hundred
+  thousand of them.
+- **The graticule is measured pole to pole** (180° over the grid height). It used to be measured
+  against the old hand-painted art, which ran 84°N to 57°S, so every parallel was drawn a couple of
+  thousand kilometres out.
 - Ownership is painted in **two tiers** — your own soil, and everybody else's. Every market on
   earth is open now, so the map no longer has to answer "where may I sell"; only "what is mine".
 - **There are no scrollbars and no zoom buttons.** The map is PANNED by dragging it and ZOOMED with
@@ -608,7 +712,7 @@ Consequences worth knowing before editing the map:
 Zoom is `ui.zoom`, an index into `CONFIG.zoomLevels`. It lives on `ui`, not `state`, so it never
 reaches the save file. Glyphs are dropped below 10px because they are illegible there.
 
-**Tiles are not saved.** 259,200 tile objects run to tens of megabytes and blow the localStorage
+**Tiles are not saved.** A million tile objects run to about 110 megabytes and blow the localStorage
 quota, so `packState` strips them and `loadState` calls `rehydrate`, which regenerates them from
 `seed` and reattaches each building via its `tileId`. This works only because **nothing in the game
 mutates terrain or `countryId` after generation** — if you add a mechanic that does (terraforming,

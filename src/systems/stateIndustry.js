@@ -4,7 +4,7 @@ import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
 import { projectedWages, buildingsOf, appetite, siteWages, warehouseUsed, knowsTech } from '../core/state.js';
 import { build, canBuild, demolish } from '../actions.js';
-import { warehousesServing } from './logistics.js';
+import { servedBy } from './logistics.js';
 
 // The other forty-five nations run their own industry. They are not scripted
 // opponents with special powers: each goes through `build` exactly as you do,
@@ -19,18 +19,41 @@ import { warehousesServing } from './logistics.js';
 // Decisions are deliberately slow (CONFIG.stateBuildEvery) and capped at one
 // site per country per decision, because a government that built every tick
 // would carpet its own land inside a minute and leave you nothing to buy.
+
+// Every country's tiles, grouped in ONE pass and CACHED against the tile array.
+// Nothing in the game mutates terrain or ownership after generation — the same
+// guarantee that lets the save omit tiles entirely — so this index is built once
+// per world rather than once per decision. At a million tiles, regrouping it
+// every eight ticks was the most expensive thing in the pipeline by an order of
+// magnitude; `depositsOf` in research.js is cached for exactly the same reason.
+//
+// ...and bucketed by TERRAIN inside each country, because `findTile` asks for
+// one terrain at a time. A steel mill wants plain ground; walking a country's
+// coalfields and fisheries to find out they are not plain is thirty-four scans
+// of the whole country per decision.
+const tileCache = new WeakMap();
+function tilesByCountry(state) {
+  let index = tileCache.get(state.tiles);
+  if (index) return index;
+  index = new Map();
+  for (const tile of state.tiles) {
+    if (!tile.countryId) continue;
+    let entry = index.get(tile.countryId);
+    if (!entry) { entry = { all: [], byTerrain: new Map() }; index.set(tile.countryId, entry); }
+    entry.all.push(tile);
+    const list = entry.byTerrain.get(tile.terrain);
+    if (list) list.push(tile); else entry.byTerrain.set(tile.terrain, [tile]);
+  }
+  tileCache.set(state.tiles, index);
+  return index;
+}
+
+const EMPTY_LAND = { all: [], byTerrain: new Map() };
+
 export function runStateIndustry(state) {
   if (state.tick % CONFIG.stateBuildEvery !== 0) return;
 
-  // Tiles are grouped by country in ONE pass and shared across all the
-  // decisions. Rescanning every tile per country per building type — the
-  // obvious way to write this — costs millions of checks per decision.
-  const byCountry = new Map();
-  for (const tile of state.tiles) {
-    if (!tile.countryId || tile.countryId === state.home) continue;
-    const list = byCountry.get(tile.countryId);
-    if (list) list.push(tile); else byCountry.set(tile.countryId, [tile]);
-  }
+  const byCountry = tilesByCountry(state);
 
   // What the world has on offer, so a government can plan a plant around an
   // input it cannot dig up. Indexed once for all forty-five decisions.
@@ -42,12 +65,12 @@ export function runStateIndustry(state) {
   for (const id of COUNTRY_IDS) {
     // Your own country is yours to run. Nothing builds on your soil but you.
     if (id === state.home) continue;
-    const tiles = byCountry.get(id) ?? [];
+    const land = byCountry.get(id) ?? EMPTY_LAND;
     // More than one site per decision, or a government with a full treasury
     // spends the game saving it. It still stops the moment nothing is worth
     // building or the reserve is reached, so this is a ceiling, not a quota.
     for (let n = 0; n < CONFIG.stateBuildsPerDecision; n++) {
-      if (!considerBuild(state, id, tiles, offered, wants)) break;
+      if (!considerBuild(state, id, land, offered, wants)) break;
     }
   }
 }
@@ -98,13 +121,13 @@ function worldOffer(state) {
   return totals;
 }
 
-function considerBuild(state, countryId, tiles, offered, wants) {
+function considerBuild(state, countryId, land, offered, wants) {
   const gov = state.countries[countryId];
   // A broke government closes plants rather than sinking forever. Without this
   // one line an insolvent nation idles every site, keeps paying the payroll on
   // all of them, and never comes back — and half the map ends up bankrupt.
   if (!gov.solvent) { closeWorstSite(state, countryId); return false; }
-  if (!tiles.length) return false;
+  if (!land.all.length) return false;
 
   // Keep enough treasury to make payroll for a while after spending.
   const reserve = projectedWages(state, countryId) * CONFIG.stateReserveTicks;
@@ -117,14 +140,14 @@ function considerBuild(state, countryId, tiles, offered, wants) {
   // earns nothing directly, so any profitable plant always outbids it — and a
   // government that only ever builds plants ends up with one full warehouse and
   // thirty sites blocked behind it, which is exactly what used to happen.
-  const candidate = needsDepot(state, countryId, own, depots)
-    ? bestDepot(state, countryId, spendable, tiles)
-    : bestSite(state, countryId, spendable, own, tiles, offered, wants);
+  const candidate = needsDepot(own, depots)
+    ? bestDepot(state, countryId, spendable, land.all)
+    : bestSite(state, countryId, spendable, own, depots, land, offered, wants);
   if (!candidate) return false;
   return build(state, candidate.type, candidate.tile, countryId).ok;
 }
 
-function needsDepot(state, countryId, own, depots) {
+function needsDepot(own, depots) {
   if (!depots.length) return true;
   const free = depots.reduce((sum, d) => sum + BUILDINGS[d.type].capacity - warehouseUsed(d), 0);
   if (free < BUILDINGS.warehouse.capacity * CONFIG.stateDepotHeadroom) return true;
@@ -133,7 +156,7 @@ function needsDepot(state, countryId, own, depots) {
   // site makes the government build warehouses forever and never build industry
   // again.
   if (depots.length * CONFIG.stateSitesPerDepot >= own.length) return false;
-  return own.some((b) => b.output && !warehousesServing(state, b.x, b.y, countryId).length);
+  return own.some((b) => b.output && !servedBy(depots, b.x, b.y));
 }
 
 // The most expensive site goes first, and the demolition refund is what buys
@@ -183,7 +206,7 @@ function bestDepot(state, countryId, spendable, tiles) {
 // market. A country with no coalfield can run a steel mill on imported coal
 // exactly as you can, so refusing to plan around an input it cannot dig up was
 // what left half the map as pure extraction economies.
-function bestSite(state, countryId, spendable, own, tiles, offered, wants) {
+function bestSite(state, countryId, spendable, own, depots, land, offered, wants) {
   const market = state.markets[countryId];
   const produces = new Set();
   const rate = {};
@@ -217,7 +240,7 @@ function bestSite(state, countryId, spendable, own, tiles, offered, wants) {
     const score = marginPerTick(def, market) - wages;
     if (score <= 0) continue;
 
-    const tile = findTile(state, countryId, type, tiles);
+    const tile = findTile(state, countryId, type, depots, land);
     if (!tile) continue;
     if (!best || score > best.score) best = { type, tile, score };
   }
@@ -260,16 +283,22 @@ function marginPerTick(def, market) {
 
 // Only tiles the government's own depots already reach are considered, so state
 // industry grows in clusters rather than scattering unreachable sites.
-function findTile(state, countryId, type, tiles) {
+//
+// It walks the country's tiles OF THE RIGHT TERRAIN rather than all of them: a
+// steel mill wants plain ground, and at a quarter of a degree Russia's fortyseven
+// thousand tiles were being walked once per building type to discover that a
+// coalfield is not plain.
+function findTile(state, countryId, type, depots, land) {
   const def = BUILDINGS[type];
-  for (const tile of tiles) {
-    // Cheapest checks first: terrain and occupancy reject nearly everything, and
-    // canBuild allocates a reason string on every rejection.
-    if (tile.buildingId != null) continue;
-    if (!def.terrain.includes(tile.terrain)) continue;
-    if (def.recipe && !warehousesServing(state, tile.x, tile.y, countryId).length) continue;
-    if (!canBuild(state, type, tile, countryId).ok) continue;
-    return tile;
+  for (const terrain of def.terrain) {
+    for (const tile of land.byTerrain.get(terrain) ?? []) {
+      // Cheapest checks first: occupancy rejects nearly everything, and canBuild
+      // allocates a reason string on every rejection.
+      if (tile.buildingId != null) continue;
+      if (def.recipe && !servedBy(depots, tile.x, tile.y)) continue;
+      if (!canBuild(state, type, tile, countryId).ok) continue;
+      return tile;
+    }
   }
   return null;
 }

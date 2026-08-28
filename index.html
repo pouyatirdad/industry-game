@@ -78,9 +78,11 @@
         <div id="summary-card" class="summary"></div>
       </section>
 
-      <!-- Goods is split into two narrow tables so the dock can stay compact:
-           the selected market on the left, your own book and policy on the
-           right. The rows are still the same commodities in the same order. -->
+      <!-- Goods is ONE table, one line a commodity: the market you picked on
+           the left of the line, your own book and policy on the right of the
+           same line. Two tables meant reading the price of coal in one place
+           and what you are doing with coal in another, though both were the
+           same thirty-four rows in the same order. -->
       <section class="pane" data-pane="resources" role="tabpanel" aria-labelledby="tab-resources">
         <div class="prices__head">
           <label class="home">Market <select id="prices-country"></select></label>
@@ -95,10 +97,16 @@
             <button type="button" id="all-buy-off" title="Bid for nothing on the exchange (&#8601; off for all)">Buy none</button>
           </div>
         </div>
-        <div class="prices__split">
-        <table class="market prices prices--market">
+        <table class="market prices">
           <thead>
-            <tr><th colspan="6" id="prices-where">That market</th></tr>
+            <!-- The group row is load-bearing: whenever the select is not you,
+                 the two halves of a line are two different nations. -->
+            <tr class="prices__groups">
+              <td></td>
+              <th colspan="5" id="prices-where">That market</th>
+              <th colspan="6">Your nation</th>
+              <th></th>
+            </tr>
             <tr>
               <th>Commodity</th>
               <th title="What a unit fetches in the market named above">Price</th>
@@ -106,15 +114,6 @@
               <th title="What that nation's people want per tick">Need</th>
               <th title="How much of that need is actually reaching them">Met</th>
               <th title="What that nation's warehouses hold">Held</th>
-            </tr>
-          </thead>
-          <tbody id="prices-body"></tbody>
-        </table>
-        <table class="market prices prices--home">
-          <thead>
-            <tr><th colspan="8">Your nation</th></tr>
-            <tr>
-              <th>Commodity</th>
               <th title="Units your industry turned out">Made</th>
               <th title="Units your own factories burned as inputs">Used</th>
               <th title="Units your own people bought">Sold</th>
@@ -124,9 +123,8 @@
               <th title="Whether your government may post this commodity on the exchange">Trade</th>
             </tr>
           </thead>
-          <tbody id="prices-home-body"></tbody>
+          <tbody id="prices-body"></tbody>
         </table>
-        </div>
         <p class="hint" id="prices-note"></p>
         <details class="hint">
           <summary>What am I reading?</summary>

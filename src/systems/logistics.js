@@ -28,6 +28,18 @@ function within(candidates, x, y, owner) {
   return out;
 }
 
+// "Is there a depot of this owner's within reach of here?", asked against a
+// list already narrowed to that owner. State industry asks it per candidate tile
+// per building type, and against every building in the world that was, at a
+// million tiles, the single most expensive thing in the tick.
+export function servedBy(depots, x, y) {
+  for (const b of depots) {
+    const radius = BUILDINGS[b.type].radius ?? 0;
+    if (Math.max(Math.abs(b.x - x), Math.abs(b.y - y)) <= radius) return true;
+  }
+  return false;
+}
+
 // Depots grouped by the nation they belong to, in `state.buildings` order — so
 // the order goods are drawn in is exactly what it was when every site scanned
 // the whole world, and ticks stay deterministic.

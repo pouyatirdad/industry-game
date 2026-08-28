@@ -7,7 +7,7 @@ import { WORLD_COUNTRY_INFO } from '../data/worldCountries.js';
 import { STARTING_TECHS } from '../data/technology.js';
 
 const SAVE_KEY = 'industry-game.save.v9';
-const SAVE_VERSION = 9;
+const SAVE_VERSION = 10;
 
 // You are a NATION, not a firm. There is no separate player object: the country
 // you picked is an entry in `state.countries` exactly like the other forty-five,
@@ -34,8 +34,12 @@ const DEPOSIT_ORDER = [
 // scaling when the grid grows.
 const WATER_DEPOSIT_ORDER = ['offshoreOil', 'offshoreGas', 'fishery'];
 
-// How far a country's territorial waters reach from its coast, in tiles.
-const TERRITORIAL_RANGE = 8;
+// How far a country's territorial waters reach from its coast, in TILES — so it
+// scales with the grid rather than with the planet. Ten tiles at a quarter of a
+// degree is about two and a half degrees of sea: a continental shelf rather
+// than a twelve-mile limit, which is what makes an offshore rig a decision, and
+// narrow enough that the sea still reads as sea.
+const TERRITORIAL_RANGE = 10;
 
 // Never let a country's whole sea become deposits — open water has to remain.
 const MAX_WATER_SHARE = 0.7;
@@ -48,7 +52,11 @@ export const WATER_TERRAINS = WATER_DEPOSIT_ORDER;
 // A country whose every tile is a mine can extract but never manufacture, which
 // is a dead end rather than a hard choice. This reserves flat ground.
 const MAX_DEPOSIT_SHARE = 0.68;
-const MIN_VISIBLE_LAND_CELLS = 9;
+// A microstate the raster cannot see still has to be visible and buildable, and
+// it has to stay the SIZE it was when the grid was coarser — this is nine cells
+// of the old half-degree grid, which is the smallest blob that reads as a
+// country and still has room for its own deposits.
+const MIN_VISIBLE_LAND_CELLS = 36;
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -117,14 +125,12 @@ export function generateWorld(seed) {
       pool.length ? pool.length - 1 : 0,
       Math.floor(pool.length * MAX_DEPOSIT_SHARE),
     );
-    let cursor = 0;
+    const wanted = {};
     for (const terrain of DEPOSIT_ORDER) {
-      // Authored against the 120x60 source, so scaled to whatever grid we run.
-      const wanted = Math.round((COUNTRIES[id].deposits[terrain] ?? 0) * AREA_SCALE);
-      for (let n = 0; n < wanted && cursor < budget; n++, cursor++) {
-        tiles[pool[cursor]].terrain = terrain;
-      }
+      // Authored against a 360x180 grid, so scaled to whatever grid we run.
+      wanted[terrain] = Math.round((COUNTRIES[id].deposits[terrain] ?? 0) * AREA_SCALE);
     }
+    layDeposits(tiles, pool, budget, DEPOSIT_ORDER, wanted, id, rand);
   });
 
   layOffshoreDeposits(tiles, seed);
@@ -150,7 +156,7 @@ function ensureVisibleCountries(tiles, owned) {
 
 function nearestCells(x, y) {
   const cells = [];
-  for (let radius = 0; radius < 12; radius++) {
+  for (let radius = 0; radius < 24; radius++) {
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
@@ -180,7 +186,7 @@ function claimLandCell(tiles, owned, index, countryId) {
 function nearestOpenCell(tiles, x, y) {
   const first = y * WORLD_W + x;
   if (!tiles[first].countryId) return first;
-  for (let radius = 1; radius < 8; radius++) {
+  for (let radius = 1; radius < 16; radius++) {
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
@@ -198,30 +204,47 @@ function nearestOpenCell(tiles, x, y) {
 // Ocean within TERRITORIAL_RANGE of a coast belongs to the nearest country. A
 // single multi-source breadth-first sweep out from every land tile at once gives
 // each water tile its nearest owner in one O(tiles) pass — measuring distances
-// per country would be forty-six passes over 180,000 tiles.
+// per country would be two hundred and fifty-eight passes over a million tiles.
+//
+// Each claimed tile REMEMBERS the coast it was claimed from, and the range is
+// measured against that rather than counted in steps. Counting steps measures
+// Manhattan distance, which drew a perfect diamond of sea around every island in
+// the Pacific — an artifact you cannot un-see once you have seen it.
 function claimTerritorialWaters(tiles, owned) {
   const seas = {};
   for (const id of COUNTRY_IDS) seas[id] = [];
 
+  const fromX = new Int16Array(tiles.length);
+  const fromY = new Int16Array(tiles.length);
   let frontier = [];
   for (const id of COUNTRY_IDS) {
-    for (const index of owned[id]) frontier.push(index);
+    for (const index of owned[id]) {
+      frontier.push(index);
+      fromX[index] = tiles[index].x;
+      fromY[index] = tiles[index].y;
+    }
   }
 
-  for (let step = 0; step < TERRITORIAL_RANGE && frontier.length; step++) {
+  const reach = TERRITORIAL_RANGE * TERRITORIAL_RANGE;
+  while (frontier.length) {
     const next = [];
     for (const index of frontier) {
       const tile = tiles[index];
       const claimant = tile.countryId;
       if (!claimant) continue;
       const { x, y } = tile;
+      const ox = fromX[index];
+      const oy = fromY[index];
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const nx = x + dx;
         const ny = y + dy;
         if (nx < 0 || ny < 0 || nx >= WORLD_W || ny >= WORLD_H) continue;
+        if ((nx - ox) ** 2 + (ny - oy) ** 2 > reach) continue;
         const neighbour = tiles[ny * WORLD_W + nx];
         if (neighbour.terrain !== 'water' || neighbour.countryId) continue;
         neighbour.countryId = claimant;
+        fromX[neighbour.id] = ox;
+        fromY[neighbour.id] = oy;
         seas[claimant].push(neighbour.id);
         next.push(neighbour.id);
       }
@@ -246,14 +269,90 @@ function layOffshoreDeposits(tiles, seed) {
     const pool = shuffle(sea.slice(), rand);
     const budget = Math.floor(pool.length * MAX_WATER_SHARE);
     const waters = COUNTRIES[id].waters ?? {};
-    let cursor = 0;
+    const wanted = {};
     for (const terrain of WATER_DEPOSIT_ORDER) {
-      const wanted = Math.round((waters[terrain] ?? 0) * pool.length);
-      for (let n = 0; n < wanted && cursor < budget; n++, cursor++) {
-        tiles[pool[cursor]].terrain = terrain;
-      }
+      wanted[terrain] = Math.round((waters[terrain] ?? 0) * pool.length);
     }
+    layDeposits(tiles, pool, budget, WATER_DEPOSIT_ORDER, wanted, id, rand);
   });
+}
+
+// Deposits are laid in PATCHES, not scattered a tile at a time.
+//
+// This is a map, and on a map a coalfield is a coalfield: one field of a dozen
+// tiles reads as a place, and a dozen single tiles sprinkled across a country
+// reads as television static. Scattering was invisible when a tile was half a
+// degree and there were four of them; at a quarter of a degree there are
+// sixteen, and the whole planet turned to dither.
+//
+// The COUNT is unchanged — the same number of tiles becomes the same terrain,
+// drawn from the same shuffled pool in the same order — so nothing about
+// balance, the deposit budget or the tests moves. Only where they sit does.
+const PATCH_TILES = 22;
+
+function layDeposits(tiles, pool, budget, order, wanted, countryId, rand) {
+  const taken = new Uint8Array(pool.length);
+  const byIndex = new Map();
+  pool.forEach((index, at) => byIndex.set(index, at));
+
+  let spent = 0;
+  let cursor = 0;
+  for (const terrain of order) {
+    let left = wanted[terrain] ?? 0;
+    while (left > 0 && spent < budget) {
+      // The seed is the next unused tile in the shuffled pool, so which tiles a
+      // terrain gets is exactly what it was before — they are simply grown into
+      // rather than taken one by one.
+      while (cursor < pool.length && taken[cursor]) cursor++;
+      if (cursor >= pool.length) return;
+      const spread = Math.max(4, Math.round(PATCH_TILES * (0.5 + rand())));
+      const size = Math.min(left, budget - spent, spread);
+      const grown = growPatch(tiles, pool[cursor], size, terrain, byIndex, taken, rand);
+      if (!grown) { taken[cursor] = 1; continue; }
+      spent += grown;
+      left -= grown;
+    }
+  }
+}
+
+// One patch, grown outward from a seed over its own country's tiles.
+//
+// The frontier is drawn from at RANDOM rather than in order: strict breadth
+// first grows a perfect diamond, and a planet covered in identical diamonds
+// looks no more like a map than the static did. Picking any waiting tile gives
+// the ragged blob a real orefield has.
+function growPatch(tiles, seed, size, terrain, byIndex, taken, rand) {
+  const seedAt = byIndex.get(seed);
+  if (seedAt === undefined || taken[seedAt]) return 0;
+  const queue = [seed];
+  let placed = 0;
+  const queued = new Set([seed]);
+
+  while (queue.length && placed < size) {
+    const pick = Math.floor(rand() * queue.length);
+    const index = queue[pick];
+    queue[pick] = queue[queue.length - 1];
+    queue.pop();
+    const at = byIndex.get(index);
+    if (at === undefined || taken[at]) continue;
+    const tile = tiles[index];
+    taken[at] = 1;
+    tile.terrain = terrain;
+    placed++;
+    const { x, y } = tile;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= WORLD_W || ny >= WORLD_H) continue;
+      const next = ny * WORLD_W + nx;
+      if (queued.has(next)) continue;
+      const spot = byIndex.get(next);
+      if (spot === undefined || taken[spot]) continue;
+      queued.add(next);
+      queue.push(next);
+    }
+  }
+  return placed;
 }
 
 // Every figure a nation reports for the tick just run. `domestic` is what its

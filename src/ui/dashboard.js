@@ -17,15 +17,16 @@ export function mountDashboard(refs, ctx) {
 
   refs.buildMenu.replaceChildren(...BUILDING_IDS.map((id) => {
     const def = BUILDINGS[id];
-    // One line per industry: thirty-four of them have to fit a column you can
-    // take in at a glance. The recipe unfolds only for the tool in your hand,
-    // and the full story is on the tooltip, written in updateDashboard because
-    // wages depend on which nation you govern.
+    // Two compact rows per industry: name/cost first, recipe/status second.
+    // The full story is still on the tooltip, written in updateDashboard
+    // because wages depend on which nation you govern.
     const item = html(`
       <button type="button" class="build" data-type="${id}">
-        <span class="build__glyph">${def.glyph}</span>
-        <span class="build__name">${def.name}</span>
-        <b class="build__cost"></b>
+        <span class="build__top">
+          <span class="build__glyph">${def.glyph}</span>
+          <span class="build__name">${def.name}</span>
+          <b class="build__cost"></b>
+        </span>
         <span class="build__recipe">${recipeLine(def)}</span>
       </button>`);
     item.addEventListener('click', () => ctx.onSelectTool(id));

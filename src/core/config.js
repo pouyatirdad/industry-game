@@ -32,8 +32,14 @@ export const CONFIG = {
   speeds: [1, 2, 4],
   // Tile sizes in px. The world is far wider than a screen, so zoom is a
   // first-class control rather than a nicety.
-  zoomLevels: [1, 2, 3, 5, 8, 14],
-  defaultZoom: 2,
+  // ...and the top of the range is set by the PROVINCES rather than by the
+  // tiles: a province name has to fit on the land it names, so the map has to
+  // be able to get big enough to read one.
+  zoomLevels: [1, 2, 3, 5, 8, 14, 20, 28],
+  // 2px a tile on a 1440-wide world is a hundred and sixty degrees of longitude
+  // across a laptop screen: a world map you can read, one step out from the
+  // whole planet and one step in from a single continent.
+  defaultZoom: 1,
   // Weight of the current tick in a site's rolling 'working %'. Uptime has to
   // answer 'is this plant earning its wages lately', so it is an exponential
   // average rather than a lifetime one: a factory starved for fifty ticks and
