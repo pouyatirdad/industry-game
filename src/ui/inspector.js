@@ -2,6 +2,7 @@ import { BUILDINGS } from '../data/buildings.js';
 import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
 import { COUNTRIES } from '../data/countries.js';
 import { haulShare } from '../data/geography.js';
+import { placeForCountry } from '../data/places.js';
 import { buildingOnTile, warehouseUsed, siteWages, countryDeposits, WATER_TERRAINS,
   ownerName, ownerColor, isPlayer } from '../core/state.js';
 import { warehousesServing } from '../systems/logistics.js';
@@ -64,10 +65,12 @@ function renderLand(state, tile, mine) {
   // soil.
   if (tile.terrain === 'water' || WATER_TERRAINS.includes(tile.terrain)) {
     const c = tile.countryId ? COUNTRIES[tile.countryId] : null;
+    const place = tile.countryId ? placeForCountry(tile.countryId) : null;
     const what = TERRAIN_LABEL[tile.terrain] ?? tile.terrain;
     return html(`
       <div class="inspect">
         <h3>${c ? `${what} &mdash; ${c.name} waters` : 'International waters'}</h3>
+        ${place ? `<p class="muted">${place.region} &middot; ${place.province} &middot; ${place.city}</p>` : ''}
         <p class="muted">Tile (${tile.x}, ${tile.y})${mine ? ' &middot; your own waters' : ''}</p>
         <p>${c
           ? 'Territorial sea. Offshore oil, gas and fisheries here belong to that nation alone.'
@@ -84,6 +87,7 @@ function renderLand(state, tile, mine) {
   }
 
   const c = COUNTRIES[tile.countryId];
+  const place = placeForCountry(tile.countryId);
   const gov = state.countries[tile.countryId];
   const deposits = countryDeposits(state, tile.countryId);
   const found = Object.entries(deposits)
@@ -97,6 +101,7 @@ function renderLand(state, tile, mine) {
     return html(`
       <div class="inspect">
         <h3>${TERRAIN_LABEL[tile.terrain] ?? tile.terrain} &mdash; ${c.name}</h3>
+        <p class="muted">${place.region} &middot; ${place.province} &middot; ${place.city}</p>
         <p class="muted">Your own soil &middot; tile (${tile.x}, ${tile.y})</p>
         <p class="muted">National deposits: ${found || 'none'}</p>
         <p class="muted">${served ? `Served by ${served} warehouse${served > 1 ? 's' : ''}.` : '⚠ No warehouse in range — nothing built here could move its goods.'}</p>
@@ -106,6 +111,7 @@ function renderLand(state, tile, mine) {
   return html(`
     <div class="inspect">
       <h3>${TERRAIN_LABEL[tile.terrain] ?? tile.terrain} &mdash; ${c.name}</h3>
+      <p class="muted">${place.region} &middot; ${place.province} &middot; ${place.city}</p>
       <p class="muted">Foreign soil &middot; tile (${tile.x}, ${tile.y})</p>
       <dl class="facts">
         <div><dt>Economy</dt><dd>${gov.demand.toFixed(1)}</dd></div>

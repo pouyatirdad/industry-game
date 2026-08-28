@@ -220,6 +220,10 @@ hardcoded quantity inside `src/systems/` is a bug, and so is a system that reads
 - `geography.js` — **derived** data: each country's centroid and the distance matrix between all of
   them, computed once from the ISO country grid with GeoJSON centroids as fallback for tiny
   countries. Freight reads this, so moving country ownership moves the freight bill with it.
+- `places.js` — **derived** map labels below the nation level. The repo does not carry province or
+  city boundary polygons, so every country gets a stable region/province/city label from its
+  centroid, with capital-name overrides for featured nations. It is presentation data only: do not
+  persist it on `state`.
 
 **The live country source grid is 360×180; the playable grid is 720×360 — 259,200 tiles.**
 `world.js` upscales `SOURCE_COUNTRY_ROWS` at load, so tile ownership is real ISO country IDs rather
@@ -424,6 +428,12 @@ Contracts are settled against **depots indexed once per tick** (`depotsByOwner`)
 `distribute`, because a tick that settles a hundred of them must not scan every building in the
 world twice per contract.
 
+There is **no per-nation contract cap**. A country may hold as many contracts as it can arrange; the
+guardrail is commodity cover, not a raw count. Automatic exchange and AI-seeking paths must subtract
+already promised export rates before offering more of the same commodity, so removing a count limit
+does not let one warehouse sell the same coal, limestone, or steel twice. Hand-written contracts may
+still over-commit, because penalties are the point of making a promise.
+
 `state.contractOffers` and `state.techOffers` are what other governments have put to you; both lapse
 if you never answer, and both also appear in the floating inbox over the map.
 
@@ -556,7 +566,9 @@ Consequences worth knowing before editing the map:
   would double the worst-case draw. A frontier is simply an edge where two neighbouring tiles belong
   to different countries, so it can never disagree with who owns what. Labels sit on the centroids
   in `geography.js` — the same ones the freight matrix uses — so a name is drawn exactly where the
-  game thinks the country is. There is no Borders button now; frontiers are part of the map read.
+  game thinks the country is. At close zoom the label adds the derived city name from `places.js`,
+  and hover/Selected show the full country → region → province → city chain. There is no Borders
+  button now; frontiers are part of the map read.
 - Ownership is painted in **two tiers** — your own soil, and everybody else's. Every market on
   earth is open now, so the map no longer has to answer "where may I sell"; only "what is mine".
 - **There are no scrollbars and no zoom buttons.** The map is PANNED by dragging it and ZOOMED with

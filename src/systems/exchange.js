@@ -6,7 +6,7 @@ import { BUILDINGS } from '../data/buildings.js';
 import { allOwners, exchangeOf, exportsFrom, importsTo, isPlayer, ownerName, pushAlert,
   siteWages } from '../core/state.js';
 import { depotsByOwner, spaceIn, stockIn } from './logistics.js';
-import { signContract, countContracts } from './contracts.js';
+import { signContract } from './contracts.js';
 import { unmet } from './domestic.js';
 
 // THE GLOBAL EXCHANGE.
@@ -108,7 +108,7 @@ function topAsks(state, id, held, flows, posted, room) {
     // Already promised away? Then it is not spare. A nation that ignored its own
     // standing contracts kept offering the same tonne to everybody.
     const promised = promisedBy(state, id, commodityId);
-    const free = spare - promised * CONFIG.trade.inputBuffer;
+    const free = spare - promised * CONFIG.contracts.maxTerm;
     if (free < 1) continue;
     offers.push({
       // How badly it is drowning in the stuff, weighted by how widely the world
@@ -298,6 +298,7 @@ export function withdraw(state, listingId) {
 function matchBook(state) {
   const book = exchangeOf(state);
   if (!book.listings.length) return;
+  const depots = depotsByOwner(state);
 
   const byCommodity = new Map();
   for (const l of book.listings) {
@@ -322,11 +323,13 @@ function matchBook(state) {
         if (bid.qty <= 0.05) break;
         const fee = (ask.price + bid.price) * 0.5 * CONFIG.exchange.fee;
         if (bid.price < ask.price + freight + fee * 2) continue;
-        if (countContracts(state, bid.from) >= CONFIG.contracts.maxPerNation) break;
-        if (countContracts(state, ask.from) >= CONFIG.contracts.maxPerNation) continue;
-
         const qty = Math.round(Math.min(bid.qty, ask.qty) * 10) / 10;
         if (qty <= 0.05) continue;
+        // The exchange writes promises automatically, so it is stricter than a
+        // hand-written contract: do not fill a buyer's warehouse with deals it
+        // has nowhere to stage. Manual contracts may still over-commit because
+        // that is a deliberate player choice with penalties attached.
+        if (spaceIn(depots.get(bid.from) ?? []) < qty * CONFIG.trade.inputBuffer) continue;
         // Split the difference, exactly as a spot deal did. The buyer beats its
         // own shortage price and the seller beats what it could get at home.
         const price = round2(ask.price + (bid.price - ask.price) * CONFIG.trade.split);
@@ -363,9 +366,6 @@ export function canTake(state, listingId, byId = state.home) {
   const listing = exchangeOf(state).listings.find((l) => l.id === listingId);
   if (!listing) return { ok: false, reason: 'That listing has gone.' };
   if (listing.from === byId) return { ok: false, reason: 'That is your own listing.' };
-  if (countContracts(state, byId) >= CONFIG.contracts.maxPerNation) {
-    return { ok: false, reason: 'You are holding as many contracts as you will.' };
-  }
   return { ok: true, listing };
 }
 

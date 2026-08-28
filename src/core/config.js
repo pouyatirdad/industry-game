@@ -161,9 +161,6 @@ export const CONFIG = {
   contracts: {
     minTerm: 5,
     maxTerm: 400,
-    // Open contracts one nation will hold at once, so the book stays readable
-    // and the save stays small.
-    maxPerNation: 30,
     // What a defaulter pays the other side, as a share of the value it failed
     // to deliver or failed to take. Half: enough to hurt, not enough to make
     // one bad tick fatal.

@@ -194,11 +194,6 @@ export function canSignContract(state, terms) {
   if (term > 0 && term < CONFIG.contracts.minTerm) {
     return { ok: false, reason: `A standing contract runs at least ${CONFIG.contracts.minTerm} ticks.` };
   }
-  for (const id of [seller, buyer]) {
-    if (countContracts(state, id) >= CONFIG.contracts.maxPerNation) {
-      return { ok: false, reason: `${ownerName(id)} has as many contracts as it will hold.` };
-    }
-  }
   return { ok: true };
 }
 
@@ -306,7 +301,6 @@ function worldContracts(state, depots, need) {
 function seekContract(state, buyerId, depots, need) {
   const buyer = state.countries[buyerId];
   if (!buyer?.solvent) return;
-  if (countContracts(state, buyerId) >= CONFIG.contracts.maxPerNation) return;
 
   const row = need.get(buyerId) ?? {};
   const commodityId = Object.keys(row).sort((a, b) => row[b] - row[a])[0];
@@ -334,13 +328,19 @@ function bestSeller(state, buyerId, commodityId, perTick, depots) {
     if (id === buyerId || !canTrade(state, id, buyerId)) continue;
     if (!state.countries[id].solvent) continue;
     const held = stockIn(depots.get(id) ?? [], commodityId);
+    const promised = promisedBy(state, id, commodityId) * CONFIG.contracts.maxTerm;
     // Enough on the shelf to cover several deliveries, and enough left over
     // that its own people are not being sold out from under it.
-    if (held < perTick * 4) continue;
+    if (held - promised < perTick * 4) continue;
     const haul = haulShare(id, buyerId);
     if (!best || haul < best.haul) best = { id, haul };
   }
   return best?.id ?? null;
+}
+
+function promisedBy(state, countryId, commodityId) {
+  return (state.contracts ?? []).reduce((sum, c) =>
+    sum + (c.seller === countryId && c.commodity === commodityId ? c.qty / c.every : 0), 0);
 }
 
 // ...and one nation comes to you with terms. It is asking, so it is asking for

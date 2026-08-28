@@ -8,6 +8,7 @@ import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR } from '../src/data/countries.j
 import { WORLD_ROWS, WORLD_W, WORLD_H, SOURCE_ROWS, SOURCE_W, SOURCE_H,
   SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H, AREA_SCALE } from '../src/data/world.js';
 import { CENTROIDS, distanceBetween, haulShare, neighboursOf, MAX_DISTANCE } from '../src/data/geography.js';
+import { placeForCountry } from '../src/data/places.js';
 import { BUILDINGS } from '../src/data/buildings.js';
 import { CONFIG } from '../src/core/config.js';
 import { build, canBuild, demolish,
@@ -192,6 +193,18 @@ test('a nations nearest neighbours are actually its neighbours', () => {
   assert(near.some((id) => ['FR', 'NL', 'PL', 'IT'].includes(id)),
     `Germany's closest markets should be European, got ${near.join(', ')}`);
   assert(!near.includes('NZ'), 'New Zealand is not next door to Germany');
+});
+
+test('every country has a region province and city for the map', () => {
+  for (const id of COUNTRY_IDS) {
+    const place = placeForCountry(id);
+    assert(place.region, `${id} is missing a region`);
+    assert(place.province, `${id} is missing a province`);
+    assert(place.city, `${id} is missing a city`);
+  }
+  const spain = placeForCountry('ES');
+  equal(spain.region, 'Europe', 'Spain region');
+  equal(spain.city, 'Madrid', 'Spain city');
 });
 
 test('deposits only ever land inside the country that owns them', () => {
@@ -1326,6 +1339,24 @@ test('a contract moves goods at its own price, not the market price', () => {
 
   close(mine.store.coal, 10, 0.001, 'the full order is delivered');
   close(before - me(state).cash, 10 * agreed, 0.01, 'and billed at the price agreed on the day');
+});
+
+test('a nation can hold more than the old contract cap', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');
+  const theirs = placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  theirs.store.coal = 10_000;
+  me(state).cash = 50_000_000;
+  state.countries[partner].cash = 50_000_000;
+
+  for (let i = 0; i < 35; i++) {
+    const result = signContract(state, {
+      seller: partner, buyer: state.home, commodity: 'coal', qty: 1, every: 1, term: 20,
+    });
+    assert(result.ok, `contract ${i + 1} should sign: ${result.reason}`);
+  }
+  equal(contractsOf(state, state.home).length, 35, 'every signed contract is held');
 });
 
 test('a contract is settled before a nation feeds its own people', () => {

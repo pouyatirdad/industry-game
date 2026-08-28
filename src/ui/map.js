@@ -2,6 +2,7 @@ import { CONFIG } from '../core/config.js';
 import { BUILDINGS } from '../data/buildings.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { CENTROIDS } from '../data/geography.js';
+import { placeForCountry } from '../data/places.js';
 import { SOURCE_W, SOURCE_H } from '../data/world.js';
 import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
@@ -344,11 +345,20 @@ function drawLabels(g, state, tilePx, left, top, cssW, cssH) {
     const px = (centre.x + 0.5) * scaleX * tilePx - left;
     const py = (centre.y + 0.5) * scaleY * tilePx - top;
     if (px < -60 || py < -20 || px > cssW + 60 || py > cssH + 20) continue;
-    const name = COUNTRIES[id].name;
+    const name = tilePx >= 8 ? `${placeForCountry(id).city}\n${COUNTRIES[id].name}` : COUNTRIES[id].name;
     // A halo rather than a box: a filled label would hide the terrain it names.
-    g.strokeText(name, px, py);
     g.fillStyle = isPlayer(state, id) ? '#ffd9a8' : '#e6e9efbb';
-    g.fillText(name, px, py);
+    drawMultilineLabel(g, name, px, py, Math.round(tilePx * 1.45));
+  }
+}
+
+function drawMultilineLabel(g, text, x, y, lineHeight) {
+  const lines = text.split('\n');
+  const top = y - ((lines.length - 1) * lineHeight) / 2;
+  for (let i = 0; i < lines.length; i++) {
+    const yy = top + i * lineHeight;
+    g.strokeText(lines[i], x, yy);
+    g.fillText(lines[i], x, yy);
   }
 }
 
@@ -459,7 +469,7 @@ function statusColor(building) {
 function tooltip(state, tile) {
   const building = state.buildings.find((b) => b.tileId === tile.id);
   const where = tile.countryId
-    ? COUNTRIES[tile.countryId].name
+    ? placeName(tile.countryId)
     : tile.terrain === 'water' ? 'International waters' : 'Unclaimed territory';
   if (building) {
     const def = BUILDINGS[building.type];
@@ -469,6 +479,11 @@ function tooltip(state, tile) {
   const label = TERRAIN_LABEL[tile.terrain] ?? tile.terrain;
   const sea = tile.countryId && tile.terrain === 'water' ? ' · territorial waters' : '';
   return `${where} · ${label}${sea}`;
+}
+
+function placeName(countryId) {
+  const place = placeForCountry(countryId);
+  return `${COUNTRIES[countryId].name} · ${place.region} · ${place.province} · ${place.city}`;
 }
 
 function describe(building, def) {
