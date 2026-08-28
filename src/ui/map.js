@@ -6,6 +6,7 @@ import { placeForCountry, provinceForTile, provinceIndexForTile, PROVINCE_BOUNDS
 import { SOURCE_COUNTRY_W, SOURCE_COUNTRY_H } from '../data/world.js';
 import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
+import { depotsByOwner, servedBy } from '../systems/logistics.js';
 
 // The map is drawn to a CANVAS, not to DOM nodes.
 //
@@ -300,6 +301,7 @@ function draw(host, view, ctx) {
   // Owners are indexed once per draw rather than searched per tile.
   const byTile = new Map();
   for (const b of state.buildings) byTile.set(b.tileId, b);
+  const depots = depotsByOwner(state);
 
   const tool = ui.tool;
   const glyphs = tilePx >= 10;
@@ -360,6 +362,7 @@ function draw(host, view, ctx) {
       if (building || buildable || selected) flush(x + 1, py);
 
       if (building) {
+        const stranded = building.output && !servedBy(depots.get(building.owner) ?? [], building.x, building.y);
         const ring = statusColor(building);
         if (ring && tilePx >= 3) {
           g.strokeStyle = ring;
@@ -372,6 +375,7 @@ function draw(host, view, ctx) {
           g.fillStyle = '#fff';
           g.fillText(BUILDINGS[building.type].glyph, px + tilePx / 2, py + tilePx / 2);
         }
+        if (stranded) drawStrandedBadge(g, px, py, tilePx);
       } else if (buildable) {
         g.strokeStyle = '#5fbf7f';
         g.lineWidth = 1;
@@ -618,6 +622,25 @@ function statusColor(building) {
     case 'store': return '#dfe6ef';
     default: return null;
   }
+}
+
+function drawStrandedBadge(g, px, py, tilePx) {
+  g.save();
+  const radius = Math.max(3, Math.min(8, tilePx * 0.34));
+  const cx = px + tilePx - radius - 1;
+  const cy = py + radius + 1;
+  g.fillStyle = '#e22929';
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.fill();
+  if (tilePx >= 8) {
+    g.fillStyle = '#fff';
+    g.font = `700 ${Math.max(7, Math.floor(radius * 1.7))}px system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('!', cx, cy + 0.2);
+  }
+  g.restore();
 }
 
 function tooltip(state, tile) {

@@ -659,6 +659,10 @@ Consequences worth knowing before editing the map:
   ~40ms, measured. A run is flushed **before** anything is drawn on top of a tile inside it — a
   status ring, a buildable highlight, the selection — or the fill would paint over what it was meant
   to sit under. That ordering is the whole correctness argument; keep it if you touch the loop.
+- **Factories with no warehouse in range get a red `!` badge on the map.** Compute that from
+  owner-scoped logistics (`depotsByOwner` + `servedBy`) during the draw, not from a DOM overlay and
+  not from cross-owner depots. The marker belongs on producers only (`building.output`), never on
+  warehouses themselves.
 - **Frontiers, coastlines, a graticule and country names are painted over the terrain**, and the
   border segments are COLLECTED during the tile loop rather than found in a sweep of their own: at
   one pixel a tile the visible window is the whole planet, and a second pass over a million tiles
