@@ -53,6 +53,8 @@ When the user asks you to commit and push, update this file in the same change i
 new repo rule, run the relevant tests first, commit only the files you intentionally changed, and
 push the current branch. Do not leave a requested push as a reminder.
 
+Important: all pushes and commits must be on the `develop` branch.
+
 The same suite also runs in the browser at `test.html` (add `?only=<substring>` to filter), which
 is the path to use when you need a DOM.
 
