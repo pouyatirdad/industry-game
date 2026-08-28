@@ -108,10 +108,10 @@ const me = (state) => state.countries[state.home];
 
 // ---- world data integrity -------------------------------------------------
 
-test('the map panels start folded away', () => {
+test('the information dock starts folded and the build dock starts open', () => {
   const ui = createUiState();
   equal(ui.panelOpen, false, 'the top information dock starts closed');
-  equal(ui.leftOpen, false, 'the bottom build dock starts closed');
+  equal(ui.leftOpen, true, 'the bottom build dock starts open');
 });
 
 test('the world map is a complete rectangle of the declared size', () => {

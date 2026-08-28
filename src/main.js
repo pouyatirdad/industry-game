@@ -118,9 +118,10 @@ const ctx = {
   onPeekPanel() { if (!ctx.ui.panelOpen) { ctx.ui.panelOpen = true; render(); } },
   onHidePanel() { if (ctx.ui.panelOpen) { ctx.ui.panelOpen = false; render(); } },
 
-  onToggleLeft() { ctx.ui.leftOpen = !ctx.ui.leftOpen; render(); },
+  onToggleLeft() { ctx.ui.leftOpen = true; render(); },
   onPeekLeft() { if (!ctx.ui.leftOpen) { ctx.ui.leftOpen = true; render(); } },
-  onHideLeft() { if (ctx.ui.leftOpen) { ctx.ui.leftOpen = false; render(); } },
+  onHideLeft() {},
+  onCenterHome() { renderer.centerOnCountry(ctx.state.home); },
 
   // A row in the factory list is both a disclosure and a way to find the site:
   // it unfolds the numbers and puts the map over the tile they describe.

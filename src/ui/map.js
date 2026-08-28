@@ -101,7 +101,7 @@ export function mountMap(host, ctx) {
   };
 
   const toTile = (event) => {
-    const rect = canvas.getBoundingClientRect();
+    const rect = host.getBoundingClientRect();
     const px = event.clientX - rect.left + host.scrollLeft;
     const py = event.clientY - rect.top + host.scrollTop;
     const x = Math.floor(px / view.tilePx);
@@ -110,13 +110,6 @@ export function mountMap(host, ctx) {
     return y * state.grid.w + x;
   };
 
-  host.addEventListener('click', (event) => {
-    // A drag that ended on a tile is a pan, not a click. Without this, moving
-    // the map with the mouse would build a mine wherever you let go.
-    if (view.dragged) { view.dragged = false; return; }
-    const id = toTile(event);
-    if (id != null) ctx.onTileClick(id);
-  });
   host.addEventListener('contextmenu', (event) => {
     const id = toTile(event);
     if (id == null) return;
@@ -133,7 +126,7 @@ export function mountMap(host, ctx) {
   host.addEventListener('scroll', () => draw(host, view, ctx), { passive: true });
 
   attachZoom(host, view, ctx);
-  attachPan(host, view);
+  attachPan(host, view, ctx, toTile);
 
   // The map fills the window, so its size is not something a render can assume.
   // It is zero on the very first layout pass, and it changes whenever the window
@@ -194,18 +187,35 @@ function attachZoom(host, view, ctx) {
 // ...and panning is dragging, since the scrollbars are gone. `dragged` is what
 // tells the click handler above that the pointer went down to move the map
 // rather than to put a building on it.
-function attachPan(host, view) {
+function attachPan(host, view, ctx, toTile) {
   let from = null;
   host.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
+    event.preventDefault();
+    host.setPointerCapture?.(event.pointerId);
     from = { x: event.clientX, y: event.clientY, left: host.scrollLeft, top: host.scrollTop, moved: 0 };
   });
-  const end = () => { from = null; };
-  host.addEventListener('pointerup', end);
+  host.addEventListener('pointerup', (event) => {
+    if (!from || event.button !== 0) return;
+    event.preventDefault();
+    host.releasePointerCapture?.(event.pointerId);
+    const wasDrag = from.moved >= 4;
+    from = null;
+    view.dragged = false;
+    if (wasDrag) return;
+    const id = toTile(event);
+    if (id != null) ctx.onTileClick(id);
+  });
+  const end = (event) => {
+    if (from) host.releasePointerCapture?.(event.pointerId);
+    from = null;
+    view.dragged = false;
+  };
   host.addEventListener('pointerleave', end);
   host.addEventListener('pointercancel', end);
   host.addEventListener('pointermove', (event) => {
     if (!from) return;
+    event.preventDefault();
     const dx = event.clientX - from.x;
     const dy = event.clientY - from.y;
     from.moved = Math.max(from.moved, Math.abs(dx) + Math.abs(dy));
@@ -224,6 +234,17 @@ export function centerMapOn(host, view, ctx, x, y) {
   const tilePx = CONFIG.zoomLevels[ctx.ui.zoom] ?? CONFIG.zoomLevels[CONFIG.defaultZoom];
   host.scrollLeft = Math.max(0, (x + 0.5) * tilePx - host.clientWidth / 2);
   host.scrollTop = Math.max(0, (y + 0.5) * tilePx - host.clientHeight / 2);
+  draw(host, view, ctx);
+}
+
+export function centerMapOnCountry(host, view, ctx, countryId) {
+  const centre = CENTROIDS[countryId];
+  if (!centre) return;
+  const tilePx = CONFIG.zoomLevels[ctx.ui.zoom] ?? CONFIG.zoomLevels[CONFIG.defaultZoom];
+  const scaleX = ctx.state.grid.w / SOURCE_COUNTRY_W;
+  const scaleY = ctx.state.grid.h / SOURCE_COUNTRY_H;
+  host.scrollLeft = Math.max(0, (centre.x + 0.5) * scaleX * tilePx - host.clientWidth / 2);
+  host.scrollTop = Math.max(0, (centre.y + 0.5) * scaleY * tilePx - host.clientHeight / 2);
   draw(host, view, ctx);
 }
 

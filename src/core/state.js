@@ -646,7 +646,7 @@ export function createUiState(home = DEFAULT_HOME) {
     // rides along in the save file.
     tab: 'summary',
     panelOpen: false,
-    leftOpen: false,
+    leftOpen: true,
     openFactoryId: null,
     // Whether the commodity book reads the tick just run or the whole game, and
     // which column the nation table is ranked by. View preferences both.

@@ -523,10 +523,15 @@ topbar and the layout, and the only things that scroll are the map and panel int
 
 Consequences worth knowing:
 
-- **Both panels start folded away and open on hover or click.** Moving the pointer out closes the
-  panel again; the close button, `B`, collapse control, or active-tab click do the same explicitly. The
-  bottom build panel leaves the `☰ Build` rail (`ui.leftOpen`, `B`), and the top information panel
-  leaves its tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
+- **The bottom build panel is always visible and spans the bottom edge.** Do not add a hide state,
+  rail, or close button back to it: `ui.leftOpen` starts true and the CSS keeps the dock rendered even
+  if old code sets it false. Its header carries the home-nation name and a small map-target button
+  that recentres the map on the nation's centroid, because at high zoom it is easy to lose your own
+  country.
+
+- **The top information panel starts folded away and opens on hover or click.** Moving the pointer
+  out closes it again; the collapse control or active-tab click do the same explicitly. It leaves its
+  tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
 - **Messages sit above every panel.** Alerts and inbox cards use the high overlay layer (`z-index:
   100`) so a popup is visible even when the top or bottom dock is open.
 - **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
