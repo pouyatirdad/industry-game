@@ -441,15 +441,19 @@ if you never answer, and both also appear in the floating inbox over the map.
 
 `.layout` is ONE layer. The map is absolutely positioned to fill it, and panels dock over it rather
 than taking columns out of it: the information tabs hang from the top of the map like an app bar, and
-the build controls sit along the bottom like a strategy-game command panel. The fixed `.topbar`
-above the layout does not move. Neither the page nor the body scrolls: `body` is a flex column of a
-fixed topbar and the layout, and the only things that scroll are the map and panel interiors.
+the build controls sit along the bottom like a strategy-game command panel. Keep them compact: the
+top dock is capped around 340px/42vh and the bottom dock around 200px/30vh. The fixed `.topbar` above
+the layout does not move. Neither the page nor the body scrolls: `body` is a flex column of a fixed
+topbar and the layout, and the only things that scroll are the map and panel interiors.
 
 Consequences worth knowing:
 
-- **Both panels start folded away and open on hover or click.** The bottom build panel leaves the
-  `☰ Build` rail (`ui.leftOpen`, `B`), and the top information panel leaves its tab strip
-  (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
+- **Both panels start folded away and open on hover or click.** Hovering out does not close them; the
+  close button, `B`, collapse control, or active-tab click are the explicit ways back down. The
+  bottom build panel leaves the `☰ Build` rail (`ui.leftOpen`, `B`), and the top information panel
+  leaves its tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
+- **Messages sit above every panel.** Alerts and inbox cards use the high overlay layer (`z-index:
+  40`) so a popup is visible even when the top or bottom dock is open.
 - **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
   `overflow-y: hidden` on the principle that a table is read whole — which was true of the pane it
   was written for and false of every pane that grew since: the bottom of the Trade list, the Ranks
@@ -567,10 +571,11 @@ Consequences worth knowing before editing the map:
   would double the worst-case draw. A frontier is simply an edge where two neighbouring tiles belong
   to different countries, so it can never disagree with who owns what. Labels sit on the centroids
   in `geography.js` — the same ones the freight matrix uses — so a name is drawn exactly where the
-  game thinks the country is. Province boundaries are derived per tile from `places.js` and stroked
-  inside a country before national borders are drawn; at close zoom the label adds the derived city
-  name, and hover/Selected show country → province → city. There is no Borders button now;
-  frontiers and province lines are part of the map read.
+  game thinks the country is. Province boundaries are derived per tile from `places.js`, drawn in a
+  visible light stroke inside a country before national borders are drawn, and province names appear
+  at close zoom. The country label adds the derived city name at close zoom, and hover/Selected show
+  country → province → city. There is no Borders button now; frontiers and province lines are part
+  of the map read.
 - Ownership is painted in **two tiers** — your own soil, and everybody else's. Every market on
   earth is open now, so the map no longer has to answer "where may I sell"; only "what is mine".
 - **There are no scrollbars and no zoom buttons.** The map is PANNED by dragging it and ZOOMED with

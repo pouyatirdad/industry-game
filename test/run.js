@@ -204,6 +204,7 @@ test('a nations nearest neighbours are actually its neighbours', () => {
 test('every country has a province and city for the map', () => {
   for (const id of COUNTRY_IDS) {
     const place = placeForCountry(id);
+    assert(!('region' in place), `${id} should not be assigned to a region`);
     assert(place.province, `${id} is missing a province`);
     assert(place.city, `${id} is missing a city`);
     assert(place.provinces.length >= 1, `${id} is missing province labels`);

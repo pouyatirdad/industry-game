@@ -62,7 +62,7 @@ const NEUTRAL_TINT = '#4a4f57';
 // and it costs one extra comparison per tile rather than a second data set.
 const BORDER_COLOR = '#0b0d12b3';
 const COAST_COLOR = '#0a1620cc';
-const PROVINCE_COLOR = '#ffffff2e';
+const PROVINCE_COLOR = '#fff1a066';
 const GRATICULE = '#ffffff12';
 const MERIDIAN = '#ffffff26';
 
@@ -322,11 +322,45 @@ function draw(host, view, ctx) {
   // tile the visible window is the whole planet, and a second pass over 180,000
   // tiles would double the worst-case draw.
   if (borders) {
-    strokeEdges(g, provinces, PROVINCE_COLOR, tilePx >= 8 ? 1 : 0.75);
+    strokeEdges(g, provinces, PROVINCE_COLOR, tilePx >= 5 ? 1.25 : 1);
     strokeEdges(g, frontiers, BORDER_COLOR, tilePx >= 5 ? 1.5 : 1);
     strokeEdges(g, coasts, COAST_COLOR, tilePx >= 5 ? 1.5 : 1);
     drawGraticule(g, state, tilePx, left, top, cssW, cssH);
+    drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1);
     drawLabels(g, state, tilePx, left, top, cssW, cssH);
+  }
+}
+
+function drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1) {
+  if (tilePx < 5) return;
+  const centres = new Map();
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const tile = state.tiles[y * state.grid.w + x];
+      if (!tile.countryId || isSea(tile)) continue;
+      const province = provinceForTile(tile);
+      const key = `${tile.countryId}|${province}`;
+      const row = centres.get(key) ?? { province, x: 0, y: 0, n: 0 };
+      row.x += x;
+      row.y += y;
+      row.n++;
+      centres.set(key, row);
+    }
+  }
+
+  g.font = `500 ${Math.min(11, Math.max(8, Math.round(tilePx * 0.9)))}px system-ui, sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineWidth = 2.5;
+  g.strokeStyle = '#0b0d12cc';
+  g.fillStyle = '#fff1a0cc';
+  for (const row of centres.values()) {
+    if (row.n < 10) continue;
+    const px = (row.x / row.n + 0.5) * tilePx - left;
+    const py = (row.y / row.n + 0.5) * tilePx - top;
+    if (px < -60 || py < -20 || px > cssW + 60 || py > cssH + 20) continue;
+    g.strokeText(row.province.replace(' Province', ''), px, py);
+    g.fillText(row.province.replace(' Province', ''), px, py);
   }
 }
 
