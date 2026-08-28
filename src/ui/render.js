@@ -20,7 +20,7 @@ const ID_MAP = {
   fundCard: 'fund-card', bookFilter: 'book-filter', inbox: 'inbox', zoomLabel: 'zoom-label',
   allSellOn: 'all-sell-on', allSellOff: 'all-sell-off', allBuyOn: 'all-buy-on', allBuyOff: 'all-buy-off',
   pricesCountry: 'prices-country', pricesWhere: 'prices-where', pricesView: 'prices-view',
-  pricesBody: 'prices-body', pricesNote: 'prices-note',
+  pricesBody: 'prices-body', pricesHomeBody: 'prices-home-body', pricesNote: 'prices-note',
   ranksHead: 'ranks-head', ranksCols: 'ranks-cols', ranksBody: 'ranks-body',
   techHead: 'tech-head', techOffers: 'tech-offers', techTree: 'tech-tree',
   contractOffers: 'contract-offers', contractDraft: 'contract-draft', contractList: 'contract-list',

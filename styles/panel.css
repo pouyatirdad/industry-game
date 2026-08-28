@@ -49,7 +49,7 @@
    every pane that grew since: the bottom of the trade list, the ranks table and
    the tech tree were simply unreachable. The scrollbar itself is invisible
    (base.css), so this costs no width. */
-.panes { flex: 1; min-height: 0; padding: 10px 12px 12px; overflow-y: auto; display: flex; flex-direction: column; }
+.panes { flex: 1; min-height: 0; padding: 8px 10px 10px; overflow-y: auto; display: flex; flex-direction: column; }
 .pane { display: none; }
 .pane[data-active="true"] { display: block; }
 /* The factory list is the one pane that can outgrow any window — a nation can
@@ -73,13 +73,13 @@
 /* Two columns, so the whole nation is one screenful rather than a scroll. The
    cards that carry a list run the full width; the two that are only a figure
    sit side by side. */
-.summary__inner { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.summary__inner { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
 .card {
   background: var(--panel-2); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 6px 9px;
   display: flex; flex-direction: column; gap: 4px; min-width: 0;
 }
-.card--wide { grid-column: 1 / -1; }
+.card--wide { grid-column: span 2; }
 .card h4 { margin: 0; }
 .card__big { margin: 0; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card__big.is-negative { color: var(--bad); }
@@ -230,6 +230,7 @@
    showing that is the difference between "already set" and "broken". */
 .policy-all button[data-active="true"] { background: var(--panel-2); color: var(--ink); border-color: var(--accent); }
 
+.prices__split { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(420px, 1fr); gap: 10px; align-items: start; }
 .prices th, .prices td { padding: 0 3px; }
 .prices td { text-align: right; }
 .prices th[scope="row"] { max-width: 76px; }
@@ -245,7 +246,7 @@
 .prices__groups + tr th { border-bottom: 1px solid #ffffff1a; }
 /* The two halves are told apart by a rule down the middle rather than by
    colour, which the swatches and the drift arrows are already using. */
-.prices tr > :nth-child(2), .prices tr > :nth-child(7), .prices tr > :nth-child(13) {
+.prices--market tr > :nth-child(2), .prices--home tr > :nth-child(2), .prices--home tr > :nth-child(8) {
   border-left: 1px solid #ffffff14;
 }
 .prices__flags { white-space: nowrap; text-align: center; }
@@ -398,6 +399,40 @@
    rest of the panel, so the widest row still fits without a sideways scroll. */
 .pane[data-pane="resources"] .prices { font-size: 10px; }
 .pane[data-pane="resources"] .prices thead th { font-size: 8px; letter-spacing: .02em; }
+
+.pane[data-active="true"][data-pane="market"],
+.pane[data-active="true"][data-pane="trade"] {
+  display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 8px 12px; align-content: start;
+}
+.pane[data-pane="market"] .market__head,
+.pane[data-pane="market"] > h2:nth-of-type(1),
+.pane[data-pane="market"] #listing-draft,
+.pane[data-pane="market"] > h2:nth-of-type(2),
+.pane[data-pane="market"] #fund-card,
+.pane[data-pane="market"] > details { grid-column: 1; }
+.pane[data-pane="market"] .book__head,
+.pane[data-pane="market"] #listing-book { grid-column: 2; }
+.pane[data-pane="trade"] .trade-head,
+.pane[data-pane="trade"] > h2:nth-of-type(1),
+.pane[data-pane="trade"] #contract-offers,
+.pane[data-pane="trade"] #contract-draft,
+.pane[data-pane="trade"] > details { grid-column: 1; }
+.pane[data-pane="trade"] #contract-list,
+.pane[data-pane="trade"] > h2:nth-of-type(2),
+.pane[data-pane="trade"] #trade-flows,
+.pane[data-pane="trade"] > h2:nth-of-type(3),
+.pane[data-pane="trade"] table,
+.pane[data-pane="trade"] > h2:nth-of-type(4),
+.pane[data-pane="trade"] #country-list,
+.pane[data-pane="trade"] .hint--tight { grid-column: 2; }
+
+@media (max-width: 760px) {
+  .prices__split,
+  .pane[data-active="true"][data-pane="market"],
+  .pane[data-active="true"][data-pane="trade"] { grid-template-columns: 1fr; }
+  .pane[data-pane="market"] > *,
+  .pane[data-pane="trade"] > * { grid-column: 1 !important; }
+}
 
 /* ---- the exchange ---- */
 

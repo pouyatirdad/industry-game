@@ -36,12 +36,14 @@ export function mountTabs(refs, ctx) {
   collapse.addEventListener('pointerenter', () => ctx.onPeekPanel());
 
   refs.tabs.replaceChildren(...buttons, collapse);
+  refs.panel.addEventListener('pointerleave', () => ctx.onHidePanel());
 
   // The left panel is a modal over the map too, so it needs the same pair of
   // controls: a close on the panel and a handle that brings it back.
   refs.leftClose.addEventListener('click', () => ctx.onToggleLeft());
   refs.leftToggle.addEventListener('click', () => ctx.onToggleLeft());
   refs.leftToggle.addEventListener('pointerenter', () => ctx.onPeekLeft());
+  refs.leftPanel.addEventListener('pointerleave', () => ctx.onHideLeft());
 }
 
 // Both floating panels, and the badge that says whether the factory list is

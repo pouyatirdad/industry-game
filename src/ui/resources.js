@@ -50,7 +50,7 @@ export function mountResources(refs, ctx) {
   // tick, exactly as the factory list and the ranks table work.
   refs.pricesBody.replaceChildren(...COMMODITY_IDS.map((id) => {
     const def = COMMODITIES[id];
-    const row = html(`
+    return html(`
       <tr data-commodity="${id}">
         <th scope="row"><i class="swatch" style="--swatch:${def.color}"></i>${def.name}</th>
         <td class="market__price"></td>
@@ -58,6 +58,14 @@ export function mountResources(refs, ctx) {
         <td class="market__demand"></td>
         <td class="market__met"></td>
         <td class="market__stock"></td>
+      </tr>`);
+  }));
+
+  refs.pricesHomeBody.replaceChildren(...COMMODITY_IDS.map((id) => {
+    const def = COMMODITIES[id];
+    const row = html(`
+      <tr data-commodity="${id}">
+        <th scope="row"><i class="swatch" style="--swatch:${def.color}"></i>${def.name}</th>
         <td class="goods__made"></td>
         <td class="goods__used"></td>
         <td class="goods__sold"></td>
@@ -108,7 +116,6 @@ export function updateResources(refs, ctx) {
     const id = row.dataset.commodity;
     const def = COMMODITIES[id];
     const line = market[id];
-    const led = book[id] ?? {};
 
     const drift = Math.round(((line.price - def.basePrice) / def.basePrice) * 100);
     setText(row.querySelector('.market__price'), priceShort(line.price));
@@ -128,6 +135,15 @@ export function updateResources(refs, ctx) {
 
     const held = warehouseStock(state, id, where);
     setText(row.querySelector('.market__stock'), held > 0.5 ? qtyShort(held) : '·');
+
+    row.title = `${def.name} — ${mine ? 'your people' : `${COUNTRIES[where].name}'s people`} want ${want.toFixed(1)} a tick and ${(usage[id] ?? 0).toFixed(1)} goes to its factories`;
+  }
+
+  for (const row of refs.pricesHomeBody.children) {
+    const id = row.dataset.commodity;
+    const def = COMMODITIES[id];
+    const led = book[id] ?? {};
+    const held = warehouseStock(state, id, state.home);
 
     setText(row.querySelector('.goods__made'), figure(led.made, perTick));
     setText(row.querySelector('.goods__used'), figure(led.used, perTick));
@@ -160,7 +176,7 @@ export function updateResources(refs, ctx) {
     setAttr(row.querySelector('.flag--out'), 'data-on', state.exports[id] ? 'true' : 'false');
     setAttr(row.querySelector('.flag--in'), 'data-on', state.imports[id] ? 'true' : 'false');
 
-    row.title = `${def.name} — ${mine ? 'your people' : `${COUNTRIES[where].name}'s people`} want ${want.toFixed(1)} a tick and ${(usage[id] ?? 0).toFixed(1)} goes to its factories; you make ${(make[id] ?? 0).toFixed(1)} and burn ${(burn[id] ?? 0).toFixed(1)}`;
+    row.title = `${def.name} — you make ${(make[id] ?? 0).toFixed(1)} and burn ${(burn[id] ?? 0).toFixed(1)}`;
   }
 
   setText(refs.pricesNote, `${mine

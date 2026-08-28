@@ -442,23 +442,23 @@ if you never answer, and both also appear in the floating inbox over the map.
 `.layout` is ONE layer. The map is absolutely positioned to fill it, and panels dock over it rather
 than taking columns out of it: the information tabs hang from the top of the map like an app bar, and
 the build controls sit along the bottom like a strategy-game command panel. Keep them compact: the
-top dock is capped around 340px/42vh and the bottom dock around 200px/30vh. The fixed `.topbar` above
+top dock is capped around 286px/38vh and the bottom dock around 156px/25vh. The fixed `.topbar` above
 the layout does not move. Neither the page nor the body scrolls: `body` is a flex column of a fixed
 topbar and the layout, and the only things that scroll are the map and panel interiors.
 
 Consequences worth knowing:
 
-- **Both panels start folded away and open on hover or click.** Hovering out does not close them; the
-  close button, `B`, collapse control, or active-tab click are the explicit ways back down. The
+- **Both panels start folded away and open on hover or click.** Moving the pointer out closes the
+  panel again; the close button, `B`, collapse control, or active-tab click do the same explicitly. The
   bottom build panel leaves the `☰ Build` rail (`ui.leftOpen`, `B`), and the top information panel
   leaves its tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
 - **Messages sit above every panel.** Alerts and inbox cards use the high overlay layer (`z-index:
-  40`) so a popup is visible even when the top or bottom dock is open.
+  100`) so a popup is visible even when the top or bottom dock is open.
 - **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
   `overflow-y: hidden` on the principle that a table is read whole — which was true of the pane it
   was written for and false of every pane that grew since: the bottom of the Trade list, the Ranks
   table and the tech tree were simply unreachable on a short window. The aim is unchanged, so the
-  build menu is still two columns of one-line rows, the tables' rows are still single-line
+  build menu is a horizontal carousel of simple build boxes, the tables' rows are still single-line
   (`.market td` is `nowrap`, the name truncates, and figures use `priceShort`/`qtyShort` so a
   four-digit price cannot wrap a row into two), and the standing explanations are still `<details>`.
   **Sideways is a different matter** — a pane that overflows horizontally is a bug, not a scroll,
@@ -494,10 +494,12 @@ Five things earn their own view rather than sharing one:
   is how full it is instead.
 - **Summary** is derived from the other four and owns nothing. It exists so the answer to "how is the
   nation doing" is not four tabs of reading.
-- **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book, and it is ONE table.
+- **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book, split into two
+  narrow tables so the top dock stays compact: selected-market figures on the left, your own book
+  and export/import policy on the right.
   Prices and Goods were two tabs, then two tables stacked in one pane — which meant the price of coal
   was in one place and what you were doing with coal was in another, though both were the same
-  thirty-four rows in the same order. They are now the same row: the first group of columns is the
+  thirty-four rows in the same order. They now sit in parallel tables: the first group of columns is the
   market named in the header (price, drift, need, met, held — any nation on earth, chosen in the
   select), the second is your own book (made, burned, sold, balance, shipped out, bought in, per tick
   or for the whole game from `state.ledger`), and the `↗`/`↙` flags at the end are your policy.
@@ -572,8 +574,9 @@ Consequences worth knowing before editing the map:
   to different countries, so it can never disagree with who owns what. Labels sit on the centroids
   in `geography.js` — the same ones the freight matrix uses — so a name is drawn exactly where the
   game thinks the country is. Province boundaries are derived per tile from `places.js`, drawn in a
-  visible light stroke inside a country before national borders are drawn, and province names appear
-  at close zoom. The country label adds the derived city name at close zoom, and hover/Selected show
+  visible light stroke inside a country before national borders are drawn, and real subdivision names
+  appear at close zoom where a country has authored names. The country label adds the capital/city
+  name at close zoom, and hover/Selected show
   country → province → city. There is no Borders button now; frontiers and province lines are part
   of the map read.
 - Ownership is painted in **two tiers** — your own soil, and everybody else's. Every market on
