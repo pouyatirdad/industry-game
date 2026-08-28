@@ -546,8 +546,8 @@ export function createUiState(home = DEFAULT_HOME) {
     // which factory has its details unfolded. All view state, so none of it
     // rides along in the save file.
     tab: 'summary',
-    panelOpen: true,
-    leftOpen: true,
+    panelOpen: false,
+    leftOpen: false,
     openFactoryId: null,
     // Whether the commodity book reads the tick just run or the whole game, and
     // which column the nation table is ranked by. View preferences both.

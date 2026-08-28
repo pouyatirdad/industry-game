@@ -233,7 +233,7 @@ function defaultCountry(info) {
     demand: 1.2,
     pop,
     waters: { fishery: 0.18 },
-    deposits: {},
+    deposits: { farmland: 0.25, quarry: 0.25, hills: 0.25 },
   };
 }
 

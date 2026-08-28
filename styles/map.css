@@ -34,7 +34,7 @@
   position: absolute; z-index: 4; left: 12px; bottom: 12px;
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
 }
-.layout[data-left="true"] .maptools { left: 312px; }
+.layout[data-left="true"] .maptools { bottom: calc(min(280px, 42vh) + 20px); }
 .maptools__label {
   font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
 }
@@ -85,13 +85,12 @@
    deliberately not a modal that blocks: you can ignore it, and the same offers
    are in their tabs either way. */
 .inbox {
-  position: absolute; z-index: 6; right: 582px; top: 12px;
+  position: absolute; z-index: 6; right: 12px; top: 58px;
   display: flex; flex-direction: column; gap: 6px;
   width: 262px; max-height: 62vh; overflow-y: auto;
   pointer-events: none;
 }
-.layout:not([data-left="true"]) .inbox { right: 582px; }
-.panel--tabs[data-open="false"] ~ .inbox { right: 12px; }
+.panel--tabs[data-open="true"] ~ .inbox { top: calc(min(560px, 68vh) + 20px); }
 .layout[data-paused="true"] .post__ttl { animation-play-state: paused; }
 
 .post {

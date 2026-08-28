@@ -76,17 +76,24 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* One layer: the map fills it, and everything else floats above. */
 .layout { position: relative; flex: 1; min-height: 0; }
 
-/* Both panels are sticky modals over the map — same chrome, opposite edges. */
+/* Panels are docked over the map: the tabbed information panel hangs from the
+   top of the map and the build controls sit along the bottom like a strategy
+   game command bar. */
 .panel {
-  position: absolute; top: 10px; bottom: 10px; z-index: 5;
+  position: absolute; z-index: 5;
   display: flex; flex-direction: column; min-height: 0;
-  width: 290px; max-width: calc(100vw - 20px);
   background: #1c1f26f2; border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: 0 14px 40px #00000073;
   backdrop-filter: blur(8px);
 }
-.panel--left { left: 10px; }
-.panel--tabs { right: 10px; width: 560px; }
+.panel--left {
+  left: 10px; right: 10px; bottom: 10px;
+  height: min(280px, 42vh);
+}
+.panel--tabs {
+  left: 10px; right: 10px; top: 10px;
+  height: min(560px, 68vh);
+}
 .layout[data-left="false"] .panel--left { display: none; }
 .layout[data-left="true"] .rail { display: none; }
 
@@ -104,7 +111,7 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 
 /* The handle that brings the left panel back. */
 .rail {
-  position: absolute; top: 10px; left: 10px; z-index: 6;
+  position: absolute; left: 10px; bottom: 10px; z-index: 6;
   font-size: 12px; padding: 6px 10px;
   background: #1c1f26f2; border: 1px solid var(--line); color: var(--ink);
   backdrop-filter: blur(8px); box-shadow: 0 8px 24px #00000059;
@@ -163,7 +170,7 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* Messages hover over the bottom of the map rather than taking a row of layout
    away from it, so the world never shifts when one arrives. */
 .alerts {
-  position: absolute; z-index: 4; left: 50%; transform: translateX(-50%); top: 12px;
+  position: absolute; z-index: 4; left: 50%; transform: translateX(-50%); top: 54px;
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: 4px;
   width: min(560px, calc(100vw - 1080px)); min-width: 320px; pointer-events: none;
@@ -217,7 +224,6 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* On a narrow window the panels stay modals; they just take the width they need
    and the map runs on underneath. */
 @media (max-width: 1100px) {
-  .panel--tabs { width: min(560px, calc(100vw - 20px)); }
   .alerts { width: min(560px, calc(100vw - 40px)); }
 }
 

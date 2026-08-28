@@ -115,8 +115,10 @@ const ctx = {
   },
 
   onTogglePanel() { ctx.ui.panelOpen = !ctx.ui.panelOpen; render(); },
+  onPeekPanel() { if (!ctx.ui.panelOpen) { ctx.ui.panelOpen = true; render(); } },
 
   onToggleLeft() { ctx.ui.leftOpen = !ctx.ui.leftOpen; render(); },
+  onPeekLeft() { if (!ctx.ui.leftOpen) { ctx.ui.leftOpen = true; render(); } },
 
   // A row in the factory list is both a disclosure and a way to find the site:
   // it unfolds the numbers and puts the map over the tile they describe.

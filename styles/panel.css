@@ -1,4 +1,4 @@
-/* The side panel: one column, eight views.
+/* The top panel: one dock, eight views.
 
    Everything used to be stacked — market table, trade list, forty-six nations,
    inspector — which made all four hard to read and put the one you wanted
@@ -59,9 +59,14 @@
   display: flex; flex-direction: column; min-height: 0; flex: 1;
 }
 /* Folded away, the panel shrinks to the strip that unfolds it again. */
-.panel--tabs[data-open="false"] { bottom: auto; }
+.panel--tabs[data-open="false"] { height: auto; }
 .panel--tabs[data-open="false"] .panes { display: none; }
 .panel--tabs[data-open="false"] .tabs { border-bottom: 0; border-radius: var(--radius); }
+
+@media (min-width: 900px) {
+  .panel--tabs .summary__inner { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .panel--tabs .card--wide { grid-column: span 2; }
+}
 
 /* ---- summary ---- */
 

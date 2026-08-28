@@ -70,7 +70,7 @@ function renderLand(state, tile, mine) {
     return html(`
       <div class="inspect">
         <h3>${c ? `${what} &mdash; ${c.name} waters` : 'International waters'}</h3>
-        ${place ? `<p class="muted">${place.region} &middot; ${place.province} &middot; ${place.city}</p>` : ''}
+        ${place ? `<p class="muted">${place.province} &middot; ${place.city}</p>` : ''}
         <p class="muted">Tile (${tile.x}, ${tile.y})${mine ? ' &middot; your own waters' : ''}</p>
         <p>${c
           ? 'Territorial sea. Offshore oil, gas and fisheries here belong to that nation alone.'
@@ -101,7 +101,7 @@ function renderLand(state, tile, mine) {
     return html(`
       <div class="inspect">
         <h3>${TERRAIN_LABEL[tile.terrain] ?? tile.terrain} &mdash; ${c.name}</h3>
-        <p class="muted">${place.region} &middot; ${place.province} &middot; ${place.city}</p>
+        <p class="muted">${place.province} &middot; ${place.city}</p>
         <p class="muted">Your own soil &middot; tile (${tile.x}, ${tile.y})</p>
         <p class="muted">National deposits: ${found || 'none'}</p>
         <p class="muted">${served ? `Served by ${served} warehouse${served > 1 ? 's' : ''}.` : '⚠ No warehouse in range — nothing built here could move its goods.'}</p>
@@ -111,7 +111,7 @@ function renderLand(state, tile, mine) {
   return html(`
     <div class="inspect">
       <h3>${TERRAIN_LABEL[tile.terrain] ?? tile.terrain} &mdash; ${c.name}</h3>
-      <p class="muted">${place.region} &middot; ${place.province} &middot; ${place.city}</p>
+      <p class="muted">${place.province} &middot; ${place.city}</p>
       <p class="muted">Foreign soil &middot; tile (${tile.x}, ${tile.y})</p>
       <dl class="facts">
         <div><dt>Economy</dt><dd>${gov.demand.toFixed(1)}</dd></div>

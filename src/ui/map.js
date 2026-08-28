@@ -2,7 +2,7 @@ import { CONFIG } from '../core/config.js';
 import { BUILDINGS } from '../data/buildings.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { CENTROIDS } from '../data/geography.js';
-import { placeForCountry } from '../data/places.js';
+import { placeForCountry, provinceForTile } from '../data/places.js';
 import { SOURCE_W, SOURCE_H } from '../data/world.js';
 import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
@@ -62,6 +62,7 @@ const NEUTRAL_TINT = '#4a4f57';
 // and it costs one extra comparison per tile rather than a second data set.
 const BORDER_COLOR = '#0b0d12b3';
 const COAST_COLOR = '#0a1620cc';
+const PROVINCE_COLOR = '#ffffff2e';
 const GRATICULE = '#ffffff12';
 const MERIDIAN = '#ffffff26';
 
@@ -263,6 +264,7 @@ function draw(host, view, ctx) {
   const borders = ui.borders !== false;
   const frontiers = [];
   const coasts = [];
+  const provinces = [];
   if (glyphs) {
     g.font = `${Math.floor(tilePx * 0.74)}px system-ui, sans-serif`;
     g.textAlign = 'center';
@@ -309,8 +311,8 @@ function draw(host, view, ctx) {
       // frontier is recorded once rather than twice from either side.
       const right = x + 1 < w ? state.tiles[y * w + x + 1] : null;
       const below = y + 1 < h ? state.tiles[(y + 1) * w + x] : null;
-      edge(frontiers, coasts, tile, right, px + tilePx, py, px + tilePx, py + tilePx);
-      edge(frontiers, coasts, tile, below, px, py + tilePx, px + tilePx, py + tilePx);
+      edge(frontiers, coasts, provinces, tile, right, px + tilePx, py, px + tilePx, py + tilePx);
+      edge(frontiers, coasts, provinces, tile, below, px, py + tilePx, px + tilePx, py + tilePx);
     }
   }
 
@@ -320,6 +322,7 @@ function draw(host, view, ctx) {
   // tile the visible window is the whole planet, and a second pass over 180,000
   // tiles would double the worst-case draw.
   if (borders) {
+    strokeEdges(g, provinces, PROVINCE_COLOR, tilePx >= 8 ? 1 : 0.75);
     strokeEdges(g, frontiers, BORDER_COLOR, tilePx >= 5 ? 1.5 : 1);
     strokeEdges(g, coasts, COAST_COLOR, tilePx >= 5 ? 1.5 : 1);
     drawGraticule(g, state, tilePx, left, top, cssW, cssH);
@@ -365,8 +368,14 @@ function drawMultilineLabel(g, text, x, y, lineHeight) {
 // One edge between two tiles, or nothing. A shore is queued separately from an
 // inland frontier because the two want different colours, and switching
 // strokeStyle per segment would mean a path per edge instead of two paths.
-function edge(frontiers, coasts, tile, other, x1, y1, x2, y2) {
-  if (!other || tile.countryId === other.countryId) return;
+function edge(frontiers, coasts, provinces, tile, other, x1, y1, x2, y2) {
+  if (!other) return;
+  if (tile.countryId && tile.countryId === other?.countryId && !isSea(tile) && !isSea(other)
+    && provinceForTile(tile) !== provinceForTile(other)) {
+    provinces.push(x1, y1, x2, y2);
+    return;
+  }
+  if (tile.countryId === other.countryId) return;
   const wet = isSea(tile) || isSea(other);
   // Open ocean is nobody's, so the line between two stretches of it is not a
   // frontier — only a shore or a border between two claims is.
@@ -483,7 +492,7 @@ function tooltip(state, tile) {
 
 function placeName(countryId) {
   const place = placeForCountry(countryId);
-  return `${COUNTRIES[countryId].name} · ${place.region} · ${place.province} · ${place.city}`;
+  return `${COUNTRIES[countryId].name} · ${place.province} · ${place.city}`;
 }
 
 function describe(building, def) {

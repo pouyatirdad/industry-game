@@ -30,9 +30,9 @@
   </div>
 </header>
 
-<!-- The map is the page. Both panels float ON TOP of it rather than taking a
-     column out of it, so the world is never squeezed into a third of the
-     window, and either one can be folded away when you want the whole planet. -->
+<!-- The map is the page. The information panel docks at the top of it and the
+     build controls dock at the bottom, so the world is never squeezed into a
+     side column and either panel can fold away. -->
 <main class="layout" id="layout" data-left="true">
   <div id="map" class="map" role="img" aria-label="World map"></div>
 
@@ -68,10 +68,8 @@
     </div>
   </aside>
 
-  <!-- One panel, eight views. Everything used to be stacked in a single column,
-       which put the market table, the trade list, forty-six nations and the
-       inspector on screen at once and made all four hard to read. The tab strip
-       is the only thing that is always visible. -->
+  <!-- One top panel, eight views. The tab strip is the only thing visible when
+       it is folded away; hover or click it to open the active view. -->
   <aside class="panel panel--tabs" id="side-panel">
     <nav class="tabs" id="tabs" role="tablist" aria-label="Panels"></nav>
 

@@ -1,6 +1,6 @@
 import { setAttr, setText, html } from './format.js';
 
-// The eight views the side panel can show. `id` matches a `data-pane` in
+// The eight views the top panel can show. `id` matches a `data-pane` in
 // index.html and `ui.tab`; nothing else in the UI hardcodes the list, so adding
 // a view is a new entry here plus a <section class="pane"> in the markup.
 //
@@ -25,6 +25,7 @@ export function mountTabs(refs, ctx) {
       </button>`);
     btn.title = `${tab.title} Click it again to fold the panel away.`;
     btn.addEventListener('click', () => ctx.onSelectTab(tab.id));
+    btn.addEventListener('pointerenter', () => ctx.onPeekPanel());
     return btn;
   });
 
@@ -32,6 +33,7 @@ export function mountTabs(refs, ctx) {
   // screen the map is the thing worth the width.
   const collapse = html('<button type="button" class="tab tab--collapse" title="Show or hide this panel">▾</button>');
   collapse.addEventListener('click', () => ctx.onTogglePanel());
+  collapse.addEventListener('pointerenter', () => ctx.onPeekPanel());
 
   refs.tabs.replaceChildren(...buttons, collapse);
 
@@ -39,6 +41,7 @@ export function mountTabs(refs, ctx) {
   // controls: a close on the panel and a handle that brings it back.
   refs.leftClose.addEventListener('click', () => ctx.onToggleLeft());
   refs.leftToggle.addEventListener('click', () => ctx.onToggleLeft());
+  refs.leftToggle.addEventListener('pointerenter', () => ctx.onPeekLeft());
 }
 
 // Both floating panels, and the badge that says whether the factory list is

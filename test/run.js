@@ -1,4 +1,4 @@
-import { createInitialState, warehouseStock, siteWages, DEPOSIT_TERRAINS, WATER_TERRAINS, rehydrate,
+import { createInitialState, createUiState, warehouseStock, siteWages, DEPOSIT_TERRAINS, WATER_TERRAINS, rehydrate,
   appetite, buildingsOf, canTrade, isPlayer, projectedWages, packState,
   pushAlert, pruneAlerts, dismissAlert, recordFlow, ownFlows,
   pruneOffers, knowsTech, learnTech, techCount, contractsOf, exchangeOf } from '../src/core/state.js';
@@ -8,7 +8,7 @@ import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR } from '../src/data/countries.j
 import { WORLD_ROWS, WORLD_W, WORLD_H, SOURCE_ROWS, SOURCE_W, SOURCE_H,
   SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H, AREA_SCALE } from '../src/data/world.js';
 import { CENTROIDS, distanceBetween, haulShare, neighboursOf, MAX_DISTANCE } from '../src/data/geography.js';
-import { placeForCountry } from '../src/data/places.js';
+import { placeForCountry, provinceForTile } from '../src/data/places.js';
 import { BUILDINGS } from '../src/data/buildings.js';
 import { CONFIG } from '../src/core/config.js';
 import { build, canBuild, demolish,
@@ -108,6 +108,12 @@ const me = (state) => state.countries[state.home];
 
 // ---- world data integrity -------------------------------------------------
 
+test('the map panels start folded away', () => {
+  const ui = createUiState();
+  equal(ui.panelOpen, false, 'the top information dock starts closed');
+  equal(ui.leftOpen, false, 'the bottom build dock starts closed');
+});
+
 test('the world map is a complete rectangle of the declared size', () => {
   equal(WORLD_ROWS.length, WORLD_H, 'row count');
   assert(WORLD_W * WORLD_H >= 180_000, `the playable grid should be far larger than the source, got ${WORLD_W}x${WORLD_H}`);
@@ -195,16 +201,23 @@ test('a nations nearest neighbours are actually its neighbours', () => {
   assert(!near.includes('NZ'), 'New Zealand is not next door to Germany');
 });
 
-test('every country has a region province and city for the map', () => {
+test('every country has a province and city for the map', () => {
   for (const id of COUNTRY_IDS) {
     const place = placeForCountry(id);
-    assert(place.region, `${id} is missing a region`);
     assert(place.province, `${id} is missing a province`);
     assert(place.city, `${id} is missing a city`);
+    assert(place.provinces.length >= 1, `${id} is missing province labels`);
   }
   const spain = placeForCountry('ES');
-  equal(spain.region, 'Europe', 'Spain region');
   equal(spain.city, 'Madrid', 'Spain city');
+});
+
+test('large countries have multiple provinces on the map', () => {
+  const state = createInitialState();
+  const provinces = new Set(state.tiles
+    .filter((tile) => tile.countryId === 'AF')
+    .map((tile) => provinceForTile(tile)));
+  assert(provinces.size > 1, `Afghanistan should have visible provinces, got ${[...provinces].join(', ')}`);
 });
 
 test('deposits only ever land inside the country that owns them', () => {
@@ -214,6 +227,17 @@ test('deposits only ever land inside the country that owns them', () => {
       assert(tile.countryId, `deposit at (${tile.x},${tile.y}) sits on unowned land`);
     }
   }
+});
+
+test('every country has at least one land resource', () => {
+  const state = createInitialState();
+  const resource = new Set(DEPOSIT_TERRAINS.filter((terrain) => !WATER_TERRAINS.includes(terrain) && terrain !== 'desert'));
+  const seen = new Set();
+  for (const tile of state.tiles) {
+    if (tile.countryId && resource.has(tile.terrain)) seen.add(tile.countryId);
+  }
+  const missing = COUNTRY_IDS.filter((id) => !seen.has(id));
+  equal(missing.length, 0, `countries with no land resource: ${missing.join(', ')}`);
 });
 
 // Data-integrity guards over the industry tables. These are the failures that

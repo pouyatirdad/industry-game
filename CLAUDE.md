@@ -220,10 +220,10 @@ hardcoded quantity inside `src/systems/` is a bug, and so is a system that reads
 - `geography.js` — **derived** data: each country's centroid and the distance matrix between all of
   them, computed once from the ISO country grid with GeoJSON centroids as fallback for tiny
   countries. Freight reads this, so moving country ownership moves the freight bill with it.
-- `places.js` — **derived** map labels below the nation level. The repo does not carry province or
-  city boundary polygons, so every country gets a stable region/province/city label from its
-  centroid, with capital-name overrides for featured nations. It is presentation data only: do not
-  persist it on `state`.
+- `places.js` — **derived** map labels below the nation level. The repo does not carry real
+  administrative boundary polygons, so every country gets province labels from its own map footprint
+  and a stable city label, with capital-name overrides for featured nations. It is presentation data
+  only: do not persist it on `state`.
 
 **The live country source grid is 360×180; the playable grid is 720×360 — 259,200 tiles.**
 `world.js` upscales `SOURCE_COUNTRY_ROWS` at load, so tile ownership is real ISO country IDs rather
@@ -253,8 +253,8 @@ storage from production.
 ### Three silent traps when editing country data
 
 - **Land deposits are authored against the 360×180 ISO source and multiplied by `AREA_SCALE`.** Write
-  the number as a count of *source* cells. Fractions are allowed, but tiny countries may have only a
-  fallback cell, so default countries intentionally have no authored land deposits.
+  the number as a count of *source* cells. Fractions are allowed. Default countries intentionally get
+  a tiny baseline mix of farmland, quarry and hills so no country starts with nothing to build from.
 - **Water deposits (`waters`) are FRACTIONS of a country's territorial sea, not counts.** The sea is
   not in the source art, so there is nothing to scale against and a fraction is scale-free.
 - **A country's deposits must sum to no more than ~60% of the cells it owns.** `MAX_DEPOSIT_SHARE`
@@ -437,18 +437,19 @@ still over-commit, because penalties are the point of making a promise.
 `state.contractOffers` and `state.techOffers` are what other governments have put to you; both lapse
 if you never answer, and both also appear in the floating inbox over the map.
 
-### The map is the page; the panels float on top of it
+### The map is the page; panels dock over it
 
-`.layout` is ONE layer. The map is absolutely positioned to fill it, and both panels are modals over
-it — left `10px`, right `10px`, top to bottom — so the world is never squeezed into the middle third
-of the window. Neither the page nor the body scrolls: `body` is a flex column of a fixed topbar and
-the layout, and the only things that scroll are the map and the insides of the two panels.
+`.layout` is ONE layer. The map is absolutely positioned to fill it, and panels dock over it rather
+than taking columns out of it: the information tabs hang from the top of the map like an app bar, and
+the build controls sit along the bottom like a strategy-game command panel. The fixed `.topbar`
+above the layout does not move. Neither the page nor the body scrolls: `body` is a flex column of a
+fixed topbar and the layout, and the only things that scroll are the map and panel interiors.
 
 Consequences worth knowing:
 
-- **Both panels fold away**, and both keep a handle: the left one leaves the `☰ Build` rail
-  (`ui.leftOpen`, `B`), the right one leaves its tab strip (`ui.panelOpen`, or clicking the tab you
-  are already on).
+- **Both panels start folded away and open on hover or click.** The bottom build panel leaves the
+  `☰ Build` rail (`ui.leftOpen`, `B`), and the top information panel leaves its tab strip
+  (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
 - **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
   `overflow-y: hidden` on the principle that a table is read whole — which was true of the pane it
   was written for and false of every pane that grew since: the bottom of the Trade list, the Ranks
@@ -464,7 +465,7 @@ Consequences worth knowing:
   wheel, drag, trackpad and keyboard, so a box that can overflow must say `overflow: auto`;
   `hidden` now means "this genuinely cannot be reached", which is almost never what you want.
 
-### The side panel is one column with eight views
+### The top panel has eight tabbed views
 
 `index.html` declares a `<section class="pane" data-pane="…">` per view; `src/ui/tabs.js` owns the
 strip and the `TABS` list that names them. `ui.tab` says which is on screen, `ui.panelOpen` whether
@@ -566,9 +567,10 @@ Consequences worth knowing before editing the map:
   would double the worst-case draw. A frontier is simply an edge where two neighbouring tiles belong
   to different countries, so it can never disagree with who owns what. Labels sit on the centroids
   in `geography.js` — the same ones the freight matrix uses — so a name is drawn exactly where the
-  game thinks the country is. At close zoom the label adds the derived city name from `places.js`,
-  and hover/Selected show the full country → region → province → city chain. There is no Borders
-  button now; frontiers are part of the map read.
+  game thinks the country is. Province boundaries are derived per tile from `places.js` and stroked
+  inside a country before national borders are drawn; at close zoom the label adds the derived city
+  name, and hover/Selected show country → province → city. There is no Borders button now;
+  frontiers and province lines are part of the map read.
 - Ownership is painted in **two tiers** — your own soil, and everybody else's. Every market on
   earth is open now, so the map no longer has to answer "where may I sell"; only "what is mine".
 - **There are no scrollbars and no zoom buttons.** The map is PANNED by dragging it and ZOOMED with
