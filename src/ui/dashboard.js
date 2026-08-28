@@ -5,17 +5,67 @@ import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { distanceBetween, MAX_DISTANCE } from '../data/geography.js';
 import { TECHS } from '../data/technology.js';
 import { projectedWages, ownerName, ownFlows, knowsTech } from '../core/state.js';
+import { depotsByOwner } from '../systems/logistics.js';
+import { UNIT_TYPES, UNIT_IDS, unitAffordable, unitsOf } from '../systems/military.js';
 import { updateContracts } from './contracts.js';
 import { money, moneyShort, num, qtyShort, pct, setAttr, setText, setToggle, html } from './format.js';
 
+const BUILD_VIEWS = [
+  { id: 'basic', label: 'Basic' },
+  { id: 'extract', label: 'Extract' },
+  { id: 'power', label: 'Power' },
+  { id: 'process', label: 'Tier 1' },
+  { id: 'assembly', label: 'Tier 2+' },
+  { id: 'logistics', label: 'Logistics' },
+  { id: 'military', label: 'Military' },
+];
+
+const BUILD_CATEGORY = {
+  warehouse: 'logistics',
+  coalPlant: 'power',
+  gasPlant: 'power',
+  nuclearPlant: 'power',
+  refinery: 'process',
+  steelMill: 'process',
+  copperSmelter: 'process',
+  aluminiumPlant: 'process',
+  cementWorks: 'process',
+  sawmill: 'process',
+  paperMill: 'process',
+  glassworks: 'process',
+  chemicalWorks: 'process',
+  plasticsPlant: 'process',
+  fertiliserPlant: 'process',
+  foodPlant: 'basic',
+  cannery: 'basic',
+  machineWorks: 'assembly',
+  electronicsPlant: 'assembly',
+  batteryPlant: 'assembly',
+  semiconductorFab: 'assembly',
+  vehiclePlant: 'assembly',
+  shipyard: 'assembly',
+  aircraftPlant: 'assembly',
+};
+
 export function mountDashboard(refs, ctx) {
+  refs.buildTabs.replaceChildren(...BUILD_VIEWS.map((view) => {
+    const btn = html(`<button type="button" class="build-tab" data-view="${view.id}">${view.label}</button>`);
+    btn.addEventListener('click', () => ctx.onBuildView(view.id));
+    return btn;
+  }));
+
   refs.speeds.replaceChildren(...CONFIG.speeds.map((speed) => {
     const btn = html(`<button type="button" class="speed" data-speed="${speed}">${speed}x</button>`);
     btn.addEventListener('click', () => ctx.onSpeed(speed));
     return btn;
   }));
 
-  refs.buildMenu.replaceChildren(...BUILDING_IDS.map((id) => {
+  // Industries first, then the five FORMATIONS, which sit in the same dock and
+  // are picked up the same way. A unit is not a building — no site is laid, no
+  // treasury is charged, and the batch it costs comes out of the warehouses —
+  // so it carries `data-unit` rather than `data-type`, and every place that
+  // walks this menu branches on which one it is.
+  const industries = BUILDING_IDS.map((id) => {
     const def = BUILDINGS[id];
     // Two compact rows per industry: name/cost first, recipe/status second.
     // The full story is still on the tooltip, written in updateDashboard
@@ -31,7 +81,22 @@ export function mountDashboard(refs, ctx) {
       </button>`);
     item.addEventListener('click', () => ctx.onSelectTool(id));
     return item;
-  }));
+  });
+  const formations = UNIT_IDS.map((id) => {
+    const def = UNIT_TYPES[id];
+    const item = html(`
+      <button type="button" class="build build--unit" data-unit="${id}">
+        <span class="build__top">
+          <span class="build__glyph">${def.glyph}</span>
+          <span class="build__name">${def.name}</span>
+          <b class="build__cost"></b>
+        </span>
+        <span class="build__recipe">${bagLine(def.cost)} &rarr; ${bagLine(def.upkeep)}/t</span>
+      </button>`);
+    item.addEventListener('click', () => ctx.onSelectUnit(id));
+    return item;
+  });
+  refs.buildMenu.replaceChildren(...industries, ...formations);
 
   refs.countries.replaceChildren(...COUNTRY_IDS.map((id) => {
     const c = COUNTRIES[id];
@@ -92,8 +157,19 @@ export function updateDashboard(refs, ctx) {
   setText(refs.zoomLabel, `${CONFIG.zoomLevels[ui.zoom] ?? 1}px`);
 
   const mul = COUNTRIES[state.home].wageMul;
+  // The depot index once for the whole dock rather than once per formation:
+  // five units asking `unitAffordable` for themselves would be five scans of
+  // every building in the world, every render.
+  const depots = depotsByOwner(state).get(state.home) ?? [];
+  const fielded = new Map();
+  for (const unit of unitsOf(state, state.home)) {
+    fielded.set(unit.type, (fielded.get(unit.type) ?? 0) + 1);
+  }
   for (const btn of refs.buildMenu.children) {
+    if (btn.dataset.unit) { updateUnitBox(btn, ctx, depots, fielded); continue; }
     const def = BUILDINGS[btn.dataset.type];
+    const category = buildCategory(btn.dataset.type, def);
+    setAttr(btn, 'hidden', category === ui.buildView ? null : '');
     const wages = money(Math.round(def.wages * mul));
     // An industry you have not learned is still listed, greyed, with the tech it
     // wants written on it — a build menu that hid what you cannot build yet
@@ -107,7 +183,37 @@ export function updateDashboard(refs, ctx) {
     setAttr(btn, 'data-active', ui.tool === btn.dataset.type ? 'true' : null);
     setAttr(btn, 'data-affordable', !locked && me.cash >= def.cost ? 'true' : 'false');
   }
+  for (const btn of refs.buildTabs.children) {
+    setAttr(btn, 'data-active', btn.dataset.view === ui.buildView ? 'true' : null);
+  }
+}
 
+// A formation box: how many of these you have standing, what it costs to raise
+// one, and whether the warehouses can actually pay for it right now. There is
+// no lock and no money figure — a unit is gated by SUPPLIES, not by treasury or
+// technology, which is the whole difference between it and an industry.
+function updateUnitBox(btn, ctx, depots, fielded) {
+  const { state, ui } = ctx;
+  const id = btn.dataset.unit;
+  const def = UNIT_TYPES[id];
+  const standing = fielded.get(id) ?? 0;
+  const affordable = unitAffordable(state, state.home, id, depots);
+  setAttr(btn, 'hidden', ui.buildView === 'military' ? null : '');
+  setText(btn.querySelector('.build__cost'), standing ? `×${standing}` : '');
+  setAttr(btn, 'title', `${def.name} — raise for ${bagLine(def.cost)}, then ${bagLine(def.upkeep)} every tick for as long as it stands.`
+    + ` ${standing ? `${standing} in the field. ` : ''}Pick it up and click your own ground. ${def.blurb}`);
+  setAttr(btn, 'data-active', ui.unit === id ? 'true' : null);
+  setAttr(btn, 'data-affordable', affordable ? 'true' : 'false');
+}
+
+export function buildCategory(type, def = BUILDINGS[type]) {
+  // A formation has no building definition at all, and it always sits with the
+  // military tools.
+  if (!def) return UNIT_TYPES[type] ? 'military' : 'basic';
+  if (def.category) return def.category;
+  if (!def.recipe) return 'logistics';
+  if (!Object.keys(def.recipe.in).length) return type === 'farm' || type === 'fishingFleet' ? 'basic' : 'extract';
+  return BUILD_CATEGORY[type] ?? 'process';
 }
 
 export function updateTrade(refs, ctx) {
@@ -336,6 +442,12 @@ function plainRecipe(def) {
   const side = (bag) => Object.entries(bag).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ');
   const inputs = Object.keys(def.recipe.in).length ? side(def.recipe.in) : 'nothing';
   return `${inputs} -> ${side(def.recipe.out)} every ${def.recipe.ticks}t`;
+}
+
+// A unit has no recipe — it has a batch it costs and a bill it runs up — so the
+// two sides of its box are the same bag written twice, at two scales.
+function bagLine(bag) {
+  return Object.entries(bag).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ');
 }
 
 function recipeLine(def) {

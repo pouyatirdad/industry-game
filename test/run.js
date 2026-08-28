@@ -9,7 +9,7 @@ import { WORLD_ROWS, WORLD_W, WORLD_H, SOURCE_ROWS, SOURCE_W, SOURCE_H,
   SOURCE_COUNTRY_ROWS, SOURCE_COUNTRY_W, SOURCE_COUNTRY_H, AREA_SCALE } from '../src/data/world.js';
 import { CENTROIDS, distanceBetween, haulShare, neighboursOf, MAX_DISTANCE } from '../src/data/geography.js';
 import { placeForCountry, provinceForTile, provinceForPoint } from '../src/data/places.js';
-import { BUILDINGS } from '../src/data/buildings.js';
+import { BUILDINGS, BUILDING_IDS } from '../src/data/buildings.js';
 import { CONFIG } from '../src/core/config.js';
 import { build, canBuild, demolish,
   setResearch, setResearchShare, buyTech, canBuyTech, proposeContract, cancelContract,
@@ -26,11 +26,14 @@ import { runResearch, runTechTrade, licenceCost } from '../src/systems/research.
 import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice } from '../src/systems/contracts.js';
 import { runExchange, runLending, post, takeListing, borrow, repay, borrowLimit,
   suggestListing } from '../src/systems/exchange.js';
+import { canMilitaryEnter, createMilitaryUnit, defeatTerrorists, moveMilitaryUnit, relationOf, setRelation,
+  runMilitary, terroristForce, terroristStrength, unitsOf, upkeepOf, UNIT_TYPES, UNIT_IDS } from '../src/systems/military.js';
 import { createLoop } from '../src/core/loop.js';
 // The nation table's scoring is the one piece of UI with a rule in it rather
 // than a layout, and it reads only `state` — so it is tested here like anything
 // else. It must stay free of the DOM for this import to keep working headlessly.
 import { scoreNations } from '../src/ui/ranks.js';
+import { buildCategory } from '../src/ui/dashboard.js';
 
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
@@ -96,6 +99,11 @@ function claim(state, countryId, x, y, terrain) {
 
 function fixture() {
   const state = createInitialState();
+  state.buildings = [];
+  state.nextBuildingId = 1;
+  state.military.units = [];
+  state.military.nextUnitId = 1;
+  for (const tile of state.tiles) tile.buildingId = null;
   state.countries[state.home].cash = 1_000_000;
   // Almost every test below is about the economy rather than the tree, so the
   // nation being played already knows everything. The technology tests build
@@ -112,6 +120,34 @@ test('the information dock starts folded and the build dock starts open', () => 
   const ui = createUiState();
   equal(ui.panelOpen, false, 'the top information dock starts closed');
   equal(ui.leftOpen, true, 'the bottom build dock starts open');
+});
+
+test('build menu categories split economic and military tools', () => {
+  equal(buildCategory('farm'), 'basic', 'farms sit in basic food');
+  equal(buildCategory('ironMine'), 'extract', 'mines sit in extraction');
+  equal(buildCategory('steelMill'), 'process', 'tier 1 factories sit in processing');
+  equal(buildCategory('vehiclePlant'), 'assembly', 'tier 2 factories sit in assembly');
+  equal(buildCategory('warehouse'), 'logistics', 'warehouses sit in logistics');
+  // There is no military INDUSTRY: a formation is a unit, not a building, and
+  // `buildCategory` sends every one of the five to 'military' with no building
+  // definition behind it at all.
+  for (const id of UNIT_IDS) equal(buildCategory(id), 'military', `${id} sits in military`);
+});
+
+test('every country starts with a small default economy and no military industry', () => {
+  const state = createInitialState();
+  for (const id of COUNTRY_IDS) {
+    const mine = buildingsOf(state, id);
+    assert(mine.some((b) => b.type === 'warehouse'), `${id} starts with a warehouse`);
+    assert(mine.some((b) => b.type === 'farm' && state.tiles[b.tileId].terrain === 'farmland'), `${id} starts with farmland`);
+    assert(mine.some((b) => b.type === 'foodPlant'), `${id} starts with an economic factory`);
+    // The opening army is a FORMATION, not a factory, and there is no arms
+    // industry left to build at all — a formation is raised out of base
+    // commodities directly.
+    assert(state.military.units.some((u) => u.owner === id && u.type === 'infantry'), `${id} starts with infantry`);
+    assert(mine.length <= 3, `${id} starts small, not huge`);
+  }
+  assert(!BUILDING_IDS.some((id) => BUILDINGS[id].category === 'military'), 'no building is military industry any more');
 });
 
 test('the world map is a complete rectangle of the declared size', () => {
@@ -1643,6 +1679,216 @@ test('every nation may deal with every other, and none with itself', () => {
       equal(canTrade(state, a, b), true, `${a} and ${b} may deal — there is no permission left to buy`);
     }
   }
+});
+
+test('military movement needs access, alliance or war to enter foreign land', () => {
+  const state = fixture();
+  const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
+  const foreign = state.tiles.find((t) => t.countryId && t.countryId !== state.home && t.terrain !== 'water');
+  // A formation is raised out of SUPPLIES, not out of the treasury, and
+  // infantry eat and nothing else — so a depot with rations in it is the whole
+  // requirement. `own` is now the depot's tile, so the unit musters beside it.
+  const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
+  depot.store.food = UNIT_TYPES.infantry.cost.food * 2;
+  const muster = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.buildingId == null);
+  const created = createMilitaryUnit(state, state.home, 'infantry', muster.id);
+  assert(created.ok, `stocked rations can muster infantry (${created.reason ?? ''})`);
+  const unit = created.unit;
+  assert(canMilitaryEnter(state, unit, own), 'land units can move on home soil');
+  assert(!canMilitaryEnter(state, unit, foreign), 'neutral foreign land is closed');
+  assert(!moveMilitaryUnit(state, unit.id, foreign.id).ok, 'neutral foreign movement is rejected');
+  setRelation(state, state.home, foreign.countryId, 'access');
+  assert(canMilitaryEnter(state, unit, foreign), 'military access opens foreign land');
+  assert(moveMilitaryUnit(state, unit.id, foreign.id).ok, 'military access allows movement');
+  setRelation(state, state.home, foreign.countryId, 'war');
+  equal(relationOf(state, state.home, foreign.countryId), 'war', 'war is mutual diplomacy state');
+  assert(canMilitaryEnter(state, unit, foreign), 'war opens hostile land');
+});
+
+test('every formation is fed by a different bill, and infantry eat only food', () => {
+  equal(UNIT_IDS.length, 5, 'five formations: infantry, armoured car, tank, aircraft, artillery');
+  equal(Object.keys(UNIT_TYPES.infantry.upkeep).join(), 'food', 'infantry consume food and nothing else');
+  for (const id of UNIT_IDS) {
+    const def = UNIT_TYPES[id];
+    assert(Object.keys(def.upkeep).length > 0, `${id} runs on something`);
+    for (const commodity of Object.keys(def.upkeep)) {
+      assert(COMMODITIES[commodity], `${id} consumes a real commodity (${commodity})`);
+    }
+    for (const commodity of Object.keys(def.cost)) {
+      assert(COMMODITIES[commodity], `${id} is raised out of a real commodity (${commodity})`);
+    }
+  }
+  // The four mechanised formations are told apart by their fuel bill, and that
+  // ordering is the whole point of having four of them.
+  assert(UNIT_TYPES.armoredCar.upkeep.fuel < UNIT_TYPES.tank.upkeep.fuel,
+    'an armoured car burns less fuel than a tank');
+  assert(UNIT_TYPES.tank.upkeep.fuel < UNIT_TYPES.aircraft.upkeep.fuel,
+    'a tank burns less fuel than an aircraft');
+  assert(!UNIT_TYPES.artillery.upkeep.fuel, 'artillery burn no fuel at all');
+  assert(UNIT_TYPES.artillery.upkeep.food < UNIT_TYPES.infantry.upkeep.food,
+    'artillery eat less than infantry');
+  for (const dear of ['ore', 'power']) {
+    assert(UNIT_TYPES.armoredCar.upkeep[dear] < UNIT_TYPES.tank.upkeep[dear],
+      `an armoured car uses less ${dear} than a tank`);
+  }
+});
+
+test('a formation is raised out of warehouse stock, not out of the treasury', () => {
+  const state = fixture();
+  const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
+  const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
+  const ground = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.buildingId == null);
+  const cash = me(state).cash;
+
+  equal(createMilitaryUnit(state, state.home, 'tank', ground.id).ok, false,
+    'an empty depot cannot raise a tank');
+  Object.assign(depot.store, UNIT_TYPES.tank.cost);
+  const raised = createMilitaryUnit(state, state.home, 'tank', ground.id);
+  assert(raised.ok, `a stocked depot can (${raised.reason ?? ''})`);
+  equal(me(state).cash, cash, 'the treasury is untouched — an army is supplies, not capital');
+  for (const [commodity, qty] of Object.entries(UNIT_TYPES.tank.cost)) {
+    assert(depot.store[commodity] < qty, `${commodity} came out of the warehouse`);
+  }
+  equal(createMilitaryUnit(state, state.home, 'tank', ground.id).ok, false,
+    'two formations cannot hold the same ground');
+});
+
+test('a standing formation eats every tick and wastes away unsupplied', () => {
+  const state = fixture();
+  const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
+  const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
+  const ground = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.buildingId == null);
+  depot.store.food = UNIT_TYPES.infantry.cost.food + 3;
+  assert(createMilitaryUnit(state, state.home, 'infantry', ground.id).ok, 'infantry raised');
+  equal(Object.keys(upkeepOf(state, state.home)).join(), 'food', 'the standing bill is rations');
+
+  const held = depot.store.food;
+  runMilitary(state);
+  assert(depot.store.food < held, 'a supplied tick draws rations out of the depot');
+  const unit = unitsOf(state, state.home)[0];
+  equal(unit.supplied, true, 'and the unit reads as supplied');
+
+  depot.store.food = 0;
+  const full = unit.strength;
+  runMilitary(state);
+  equal(unit.supplied, false, 'an empty depot leaves it unsupplied');
+  assert(unit.strength < full, 'and it loses strength for the tick');
+  for (let i = 0; i < 200; i++) runMilitary(state);
+  equal(unitsOf(state, state.home).length, 0, 'a formation nobody feeds is eventually gone');
+});
+
+test('a terrorist cell is infantry and a few cars, never grows, and moves slowly toward a target', () => {
+  const state = fixture();
+  const host = COUNTRY_IDS.find((id) => id !== state.home);
+  const camp = state.tiles.find((t) => t.countryId === host && t.terrain !== 'water');
+  // Far enough away that closing the gap takes several move ticks — the whole
+  // point of `moveTiles` being small — so the target must survive the first one.
+  const far = state.tiles.find((t) => t.countryId === host && t.terrain !== 'water'
+    && Math.abs(t.x - camp.x) + Math.abs(t.y - camp.y) >= CONFIG.terrorism.moveTiles * 4);
+  const target = placeIn(state, host, 'warehouse', far.x, far.y, 'plain');
+  const before = state.buildings.length;
+  const active = {
+    id: 'terror-test', name: 'ISIS cell', countryId: host,
+    tileId: camp.id, x: camp.x, y: camp.y,
+    infantry: CONFIG.terrorism.startInfantry,
+    spawnedAt: 0, movedAt: 0, targetId: null, destroyed: 0,
+  };
+  active.strength = terroristStrength(active);
+  state.terrorism.active = active;
+
+  const force = terroristForce(active);
+  equal(force.infantry, CONFIG.terrorism.startInfantry, 'a cell is counted in riflemen');
+  assert(force.armoredCar < force.infantry, 'and it always has fewer cars than men');
+
+  // `runMilitary` rather than `runTick`, so nothing else in the world builds or
+  // demolishes while this is being measured — only the clock is walked forward
+  // by hand, which is enough to trigger `moveEvery`.
+  state.tick = CONFIG.terrorism.moveEvery;
+  runMilitary(state);
+  equal(active.destroyed, 0, 'one move tick does not close a distant target');
+  assert(state.buildings.some((b) => b.id === target.id), 'so the target survives the first step');
+  const stepped = Math.abs(active.x - camp.x) + Math.abs(active.y - camp.y);
+  assert(stepped > 0 && stepped <= CONFIG.terrorism.moveTiles * 2, 'it closed at most a couple of tiles');
+  equal(terroristForce(active).infantry, CONFIG.terrorism.startInfantry,
+    'and it never gains a formation it has no industry for — the force is fixed');
+
+  // Walk the clock forward until it must have arrived and struck.
+  for (let i = 1; i <= 60 && active.destroyed === 0; i++) {
+    state.tick += CONFIG.terrorism.moveEvery;
+    runMilitary(state);
+  }
+  equal(active.destroyed, 1, 'it eventually reaches and destroys the site');
+  equal(state.buildings.length, before - 1, 'and builds nothing to replace it');
+  equal(state.buildings.some((b) => b.id === target.id), false, 'the site it reached is gone');
+  equal(state.tiles[target.tileId].buildingId, null, 'and the ground it stood on is cleared');
+});
+
+test('a matched defence clears a terrorist cell and pays a bounty', () => {
+  const state = fixture();
+  const camp = state.tiles.find((t) => t.countryId === state.home && t.terrain !== 'water');
+  const depotTile = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.id !== camp.id);
+  place(state, 'warehouse', depotTile.x, depotTile.y, depotTile.terrain).store.food = 500;
+
+  const active = {
+    id: 'terror-test', name: 'ISIS cell', countryId: state.home,
+    tileId: camp.id, x: camp.x, y: camp.y,
+    infantry: CONFIG.terrorism.startInfantry, spawnedAt: 0, movedAt: 0, targetId: null, destroyed: 0,
+  };
+  active.strength = terroristStrength(active);
+  state.terrorism.active = active;
+  state.military.units.push({
+    id: state.military.nextUnitId++, type: 'infantry', owner: state.home, domain: 'land',
+    tileId: camp.id, x: camp.x, y: camp.y, strength: active.strength, supplied: true,
+  });
+
+  const cashBefore = me(state).cash;
+  runMilitary(state);
+  equal(state.terrorism.active, null, 'a matched defending force clears the presence');
+  equal(me(state).cash, cashBefore + CONFIG.terrorism.bounty, 'and the bounty lands straight in the treasury');
+});
+
+test('a defence weaker than the cell does not clear it', () => {
+  const state = fixture();
+  const camp = state.tiles.find((t) => t.countryId === state.home && t.terrain !== 'water');
+  const depotTile = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.id !== camp.id);
+  place(state, 'warehouse', depotTile.x, depotTile.y, depotTile.terrain).store.food = 500;
+
+  const active = {
+    id: 'terror-test', name: 'ISIS cell', countryId: state.home,
+    tileId: camp.id, x: camp.x, y: camp.y,
+    infantry: CONFIG.terrorism.startInfantry, spawnedAt: 0, movedAt: 0, targetId: null, destroyed: 0,
+  };
+  active.strength = terroristStrength(active);
+  state.terrorism.active = active;
+  state.military.units.push({
+    id: state.military.nextUnitId++, type: 'infantry', owner: state.home, domain: 'land',
+    tileId: camp.id, x: camp.x, y: camp.y, strength: active.strength - 1, supplied: true,
+  });
+
+  runMilitary(state);
+  assert(state.terrorism.active, 'an under-strength defence does not clear the presence');
+});
+
+test('terrorists spawn only after 600 ticks and never duplicate while active', () => {
+  const state = fixture();
+  for (let i = 0; i < 599; i++) runTick(state);
+  equal(state.terrorism.active, null, 'no terrorists before tick 600');
+  runTick(state);
+  assert(state.terrorism.active, 'terrorists appear at tick 600');
+  const first = state.terrorism.active.id;
+  for (let i = 0; i < 220; i++) runTick(state);
+  equal(state.terrorism.active.id, first, 'no second terrorist area appears while one is active');
+  defeatTerrorists(state);
+  equal(state.terrorism.active, null, 'defeat removes the active presence');
+  for (let i = 0; i < 599; i++) runTick(state);
+  equal(state.terrorism.active, null, 'respawn waits 600 more ticks after defeat');
+  runTick(state);
+  assert(state.terrorism.active, 'terrorists respawn after the cooldown');
 });
 
 test('every nation starts solvent with a treasury and no debt', () => {

@@ -114,3 +114,34 @@
 .post__meta { margin: 0; font-size: 10px; }
 .post__act { display: flex; gap: 4px; margin-top: 2px; }
 .post__act button { flex: 1; padding: 3px 8px; font-size: 11px; }
+
+/* THE TERRORIST CARD.
+   One red card, top-left over the map, standing for as long as a cell is. It is
+   not an alert — it does not expire and it cannot be dismissed, because it is a
+   situation rather than news — and the whole card is a button: clicking it puts
+   the camp in the middle of the map.
+   `[hidden]` needs its own rule here because the `display: flex` below is an
+   author style and would otherwise beat the user agent's hidden rule. */
+.terror-popup {
+  position: absolute; z-index: 100; left: 12px; top: 58px;
+  display: flex; width: 236px;
+}
+.terror-popup[hidden] { display: none; }
+
+.terror {
+  flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px;
+  text-align: left; padding: 8px 10px;
+  border: 1px solid #ff5a4d; border-radius: var(--radius);
+  background: #2a1315f2; backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px #00000073;
+  animation: terror-in .2s ease-out;
+}
+.terror:hover { background: #38181af2; border-color: #ff8078; }
+.terror[data-home="true"] { box-shadow: 0 0 0 1px #ff5a4d66, 0 10px 30px #00000073; }
+@keyframes terror-in { from { opacity: 0; transform: translateX(-12px); } }
+
+.terror__mark { flex: none; font-size: 16px; line-height: 1.2; color: #ff6f62; }
+.terror__body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.terror__name { font-size: 12px; color: #ffd9d5; }
+.terror__where, .terror__force { font-size: 10px; color: #e0b3ae; line-height: 1.35; }
+.terror__hint { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: #ff8078; }

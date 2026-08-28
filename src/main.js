@@ -6,12 +6,14 @@ import { runTick } from './systems/index.js';
 import { build, canBuild, demolish, toggleExport, toggleImport,
   setAllExports, setAllImports, setSpeed, togglePause, setResearch, setResearchShare, buyTech, acceptTechOffer, declineTechOffer,
   proposeContract, acceptContractOffer, declineContractOffer, cancelContract,
-  postListing, cancelListing, take, takeLoan, repayLoan } from './actions.js';
+  postListing, cancelListing, take, takeLoan, repayLoan, changeRelation,
+  deployUnit, standDown, standDownUnit, orderMove } from './actions.js';
 import { suggestListing } from './systems/exchange.js';
 import { sellersOf } from './systems/research.js';
 import { COUNTRIES } from './data/countries.js';
 import { createRenderer } from './ui/render.js';
 import { TABS } from './ui/tabs.js';
+import { buildCategory } from './ui/dashboard.js';
 
 const ctx = {
   state: createInitialState(),
@@ -19,6 +21,27 @@ const ctx = {
 
   onTileClick(tileId) {
     const tile = ctx.state.tiles[tileId];
+    // An order for a formation you already have takes priority over everything
+    // else the pointer could mean: it was put into "move" mode from the
+    // Selected pane, and this click is where it goes.
+    if (ctx.ui.moveUnit != null) {
+      orderMove(ctx.state, ctx.ui.moveUnit, tile);
+      ctx.ui.moveUnit = null;
+      ctx.ui.selectedTileId = tileId;
+      render();
+      return;
+    }
+    // A formation in hand is the same gesture as a building in hand: click your
+    // own ground and it appears there — paid for out of your WAREHOUSES rather
+    // than out of the treasury, because an army is supplies, not capital. It
+    // announces itself, so laying out a line of them does not throw you out of
+    // the tab you are working in.
+    if (ctx.ui.unit) {
+      deployUnit(ctx.state, ctx.ui.unit, tile);
+      ctx.ui.selectedTileId = tileId;
+      render();
+      return;
+    }
     if (ctx.ui.tool) {
       const check = canBuild(ctx.state, ctx.ui.tool, tile);
       if (check.ok) {
@@ -39,13 +62,48 @@ const ctx = {
     render();
   },
 
+  // Right-click clears a tile: a building is demolished for half its cost, and
+  // a formation standing on bare ground is stood down. One gesture, because
+  // from the map's point of view they are the same question.
   onTileRightClick(tileId) {
-    demolish(ctx.state, ctx.state.tiles[tileId]);
+    const tile = ctx.state.tiles[tileId];
+    if (tile.buildingId != null) demolish(ctx.state, tile);
+    else standDown(ctx.state, tile);
     render();
   },
 
   onSelectTool(type) {
     ctx.ui.tool = ctx.ui.tool === type ? null : type;
+    ctx.ui.unit = null;
+    ctx.ui.moveUnit = null;
+    render();
+  },
+  // Picking up a formation puts down whatever building was in hand, and the
+  // other way round: the pointer only ever carries one thing.
+  onSelectUnit(type) {
+    ctx.ui.unit = ctx.ui.unit === type ? null : type;
+    ctx.ui.tool = null;
+    ctx.ui.moveUnit = null;
+    render();
+  },
+  onBuildView(view) {
+    ctx.ui.buildView = view;
+    if (ctx.ui.tool && buildCategory(ctx.ui.tool) !== view) ctx.ui.tool = null;
+    if (ctx.ui.unit && view !== 'military') ctx.ui.unit = null;
+    render();
+  },
+  // Put a standing formation into "move" mode from the Selected pane. The next
+  // tile click is the order; picking up a build tool or another formation
+  // cancels it, same as it cancels any other pointer mode.
+  onMoveUnit(unitId) {
+    ctx.ui.moveUnit = unitId;
+    ctx.ui.tool = null;
+    ctx.ui.unit = null;
+    render();
+  },
+  onStandDownUnit(unitId) {
+    standDownUnit(ctx.state, unitId);
+    if (ctx.ui.moveUnit === unitId) ctx.ui.moveUnit = null;
     render();
   },
 
@@ -161,6 +219,18 @@ const ctx = {
 
   onBookFilter(filter) { ctx.ui.bookFilter = filter; render(); },
 
+  // The red card over the map is a way to GET there: clicking it puts the cell
+  // in the middle of the screen and selects the ground it is standing on.
+  onFocusTerror() {
+    const active = ctx.state.terrorism?.active;
+    if (!active) return;
+    ctx.ui.selectedTileId = active.tileId;
+    renderer.centerOn(active.x, active.y);
+    render();
+  },
+
+  onRelation(countryId, relation) { changeRelation(ctx.state, countryId, relation); render(); },
+
   onToggleExport(commodityId) { toggleExport(ctx.state, commodityId); render(); },
   onToggleImport(commodityId) { toggleImport(ctx.state, commodityId); render(); },
   onSetAllExports(on) { setAllExports(ctx.state, on); render(); },
@@ -192,7 +262,7 @@ function opening(home) {
 }
 
 function replaceState(next, message) {
-  const { zoom, tab, panelOpen, leftOpen, goodsView, rankSort } = ctx.ui;
+  const { zoom, tab, panelOpen, leftOpen, buildView, goodsView, rankSort } = ctx.ui;
   ctx.state = next;
   ctx.state.paused = true;
   ctx.ui = createUiState(next.home);
@@ -201,6 +271,7 @@ function replaceState(next, message) {
   ctx.ui.tab = tab;
   ctx.ui.panelOpen = panelOpen;
   ctx.ui.leftOpen = leftOpen;
+  ctx.ui.buildView = buildView;
   ctx.ui.goodsView = goodsView;
   ctx.ui.rankSort = rankSort;
   renderer.remountMap();
@@ -222,7 +293,7 @@ const loop = createLoop({
 document.addEventListener('keydown', (event) => {
   if (event.target.matches('input, textarea, select')) return;
   if (event.code === 'Space') { event.preventDefault(); ctx.onTogglePause(); }
-  if (event.key === 'Escape') { ctx.ui.tool = null; render(); }
+  if (event.key === 'Escape') { ctx.ui.tool = null; ctx.ui.unit = null; ctx.ui.moveUnit = null; render(); }
   if (event.key === 'b' || event.key === 'B') ctx.onToggleLeft();
   if (event.key === '+' || event.key === '=') ctx.onZoom(Math.min(CONFIG.zoomLevels.length - 1, ctx.ui.zoom + 1));
   if (event.key === '-' || event.key === '_') ctx.onZoom(Math.max(0, ctx.ui.zoom - 1));

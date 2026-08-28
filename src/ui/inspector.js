@@ -6,6 +6,7 @@ import { placeForCountry, provinceForTile } from '../data/places.js';
 import { buildingOnTile, warehouseUsed, siteWages, countryDeposits, WATER_TERRAINS,
   ownerName, ownerColor, isPlayer } from '../core/state.js';
 import { warehousesServing } from '../systems/logistics.js';
+import { UNIT_TYPES, unitOnTile } from '../systems/military.js';
 import { money, num, price, pct, html } from './format.js';
 
 const STATUS_LABEL = {
@@ -37,13 +38,19 @@ export function updateInspector(host, ctx) {
   const { state, ui } = ctx;
   const tile = ui.selectedTileId == null ? null : state.tiles[ui.selectedTileId];
   const building = tile ? buildingOnTile(state, tile) : null;
+  // A unit and a building can never share a tile (both `canBuild` and
+  // `canDeployUnit` refuse occupied ground), so this is an either/or, not a
+  // priority order.
+  const unit = tile && !building ? unitOnTile(state, tile.id) : null;
   const mine = tile ? isPlayer(state, tile.countryId) : false;
 
   const sig = tile
     ? [tile.id, tile.countryId ?? '', mine ? 'm' : '',
        building?.owner ?? '', building?.status, building?.progress,
        JSON.stringify(building?.input), JSON.stringify(building?.output),
-       JSON.stringify(building?.store)].join('|')
+       JSON.stringify(building?.store),
+       unit?.id ?? '', unit?.strength.toFixed(1) ?? '', unit?.supplied,
+       ui.moveUnit === unit?.id].join('|')
     : 'none';
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
@@ -55,7 +62,36 @@ export function updateInspector(host, ctx) {
 
   host.replaceChildren(building
     ? renderBuilding(state, tile, building)
-    : renderLand(state, tile, mine));
+    : unit
+      ? renderUnit(state, tile, unit, ctx)
+      : renderLand(state, tile, mine));
+}
+
+function renderUnit(state, tile, unit, ctx) {
+  const def = UNIT_TYPES[unit.type];
+  const mine = isPlayer(state, unit.owner);
+  const moving = ctx.ui.moveUnit === unit.id;
+  const owner = `<p class="owner" style="--swatch:${ownerColor(unit.owner)}">
+      <i class="swatch"></i>${mine ? 'Yours' : ownerName(unit.owner)}
+    </p>`;
+  const el = html(`
+    <div class="inspect">
+      <h3>${def.glyph} ${def.name}</h3>
+      ${owner}
+      <p class="muted">Tile (${tile.x}, ${tile.y}) &middot; strength ${unit.strength.toFixed(1)} / ${def.strength}</p>
+      <p class="status" data-status="${unit.supplied === false ? 'starved' : 'running'}">${unit.supplied === false ? 'Unsupplied — wasting away' : 'Supplied'}</p>
+      ${mine ? `
+        <p class="muted">Upkeep ${Object.entries(def.upkeep).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ')}/tick, drawn from any of your own warehouses.</p>
+        <div class="inspect__actions">
+          <button type="button" class="unit-move" data-active="${moving}">${moving ? 'Click a tile to move…' : 'Move'}</button>
+          <button type="button" class="unit-standdown">Stand down</button>
+        </div>` : ''}
+    </div>`);
+  if (mine) {
+    el.querySelector('.unit-move').addEventListener('click', () => ctx.onMoveUnit(moving ? null : unit.id));
+    el.querySelector('.unit-standdown').addEventListener('click', () => ctx.onStandDownUnit(unit.id));
+  }
+  return el;
 }
 
 function renderLand(state, tile, mine) {

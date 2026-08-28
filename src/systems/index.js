@@ -8,6 +8,7 @@ import { runContracts, runContractDiplomacy } from './contracts.js';
 import { runExchange, runLending } from './exchange.js';
 import { runResearch, runTechTrade } from './research.js';
 import { openLedger } from './ledger.js';
+import { runMilitary } from './military.js';
 
 // Tick phase order is a GAME DESIGN decision, not an implementation detail.
 //
@@ -75,6 +76,7 @@ export const PIPELINE = [
   ['exchange', runExchange],
   ['licensing', runTechTrade],
   ['dealing', runContractDiplomacy],
+  ['security', runMilitary],
 ];
 
 export function runTick(state) {

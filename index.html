@@ -47,6 +47,11 @@
        costs you the pane you were reading. -->
   <div id="inbox" class="inbox"></div>
 
+  <!-- One red card, over everything, for as long as a terrorist cell is standing.
+       It is not an alert: it does not expire, and clicking it jumps the map to
+       the camp. There is only ever one presence, so there is only ever one card. -->
+  <div id="terror" class="terror-popup" hidden></div>
+
   <ul id="alerts" class="alerts"></ul>
 
   <button type="button" id="btn-left" class="rail" title="Show the build panel (B)">☰ Build</button>
@@ -61,6 +66,7 @@
       <div id="nation-card" class="nation-card"></div>
 
       <h2>Build</h2>
+      <div id="build-tabs" class="build-tabs" role="tablist" aria-label="Build categories"></div>
       <div id="build-menu" class="build-menu"></div>
       <details class="hint">
         <summary>How building works</summary>
@@ -203,6 +209,11 @@
         <h2>Nations</h2>
         <div id="country-list" class="countries"></div>
         <p class="hint hint--tight">Every market on earth is open to you. Click a nation to see what its people pay and what it is sitting on.</p>
+      </section>
+
+      <section class="pane" data-pane="diplomacy" role="tabpanel" aria-labelledby="tab-diplomacy">
+        <div id="diplomacy-head" class="diplomacy__head"></div>
+        <div id="diplomacy-list" class="diplomacy"></div>
       </section>
 
       <section class="pane" data-pane="ranks" role="tabpanel" aria-labelledby="tab-ranks">

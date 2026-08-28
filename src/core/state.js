@@ -7,7 +7,7 @@ import { WORLD_COUNTRY_INFO } from '../data/worldCountries.js';
 import { STARTING_TECHS } from '../data/technology.js';
 
 const SAVE_KEY = 'industry-game.save.v9';
-const SAVE_VERSION = 10;
+const SAVE_VERSION = 11;
 
 // You are a NATION, not a firm. There is no separate player object: the country
 // you picked is an entry in `state.countries` exactly like the other forty-five,
@@ -119,10 +119,10 @@ export function generateWorld(seed) {
   COUNTRY_IDS.forEach((id, countryIndex) => {
     const rand = mulberry32((seed ^ Math.imul(countryIndex + 1, 0x9e3779b1)) >>> 0);
     const pool = shuffle(owned[id].slice(), rand);
-    // At least one tile stays plain even in a one-tile country, so `budget` is
-    // floored to pool.length - 1 rather than to a share of it.
+    // A few tiles stay plain so the default depot and starter factories have
+    // legal ground even in tiny countries.
     const budget = Math.min(
-      pool.length ? pool.length - 1 : 0,
+      Math.max(0, pool.length - 4),
       Math.floor(pool.length * MAX_DEPOSIT_SHARE),
     );
     const wanted = {};
@@ -131,10 +131,29 @@ export function generateWorld(seed) {
       wanted[terrain] = Math.round((COUNTRIES[id].deposits[terrain] ?? 0) * AREA_SCALE);
     }
     layDeposits(tiles, pool, budget, DEPOSIT_ORDER, wanted, id, rand);
+    ensureFarmland(tiles, pool);
   });
 
   layOffshoreDeposits(tiles, seed);
   return tiles;
+}
+
+// Every country gets somewhere to put its opening farm, and that has to happen
+// HERE rather than where the opening assets are placed. Nothing may mutate
+// terrain after generation — that invariant is the whole reason a save can drop
+// a million tiles and regenerate them from the seed — so a starter that stamped
+// farmland on the map made every save rehydrate into a different world, silently.
+// Inside this deterministic pass it is reproduced exactly.
+//
+// It only fires for a country whose deposits left it with no farmland at all,
+// so the hand-authored proportions in countries.js are untouched.
+function ensureFarmland(tiles, pool) {
+  for (const index of pool) if (tiles[index].terrain === 'farmland') return;
+  for (const index of pool) {
+    if (tiles[index].terrain !== 'plain') continue;
+    tiles[index].terrain = 'farmland';
+    return;
+  }
 }
 
 function ensureVisibleCountries(tiles, owned) {
@@ -450,6 +469,18 @@ export function createLedger() {
   return { tick, total };
 }
 
+// The relation table starts EMPTY, and that is a save-size decision as much as a
+// tidiness one. Neutral is the default `relationOf` returns for a pair it has
+// never heard of, so writing all 258x257 of them down said nothing and cost over
+// a megabyte of the save on its own — comfortably past what localStorage will
+// take. Only a pair somebody has actually changed is stored.
+//
+// `lastWarAt` is -1 rather than -Infinity because everything on `state` has to
+// survive a JSON round trip, and `JSON.stringify(-Infinity)` is `null`.
+export function createDiplomacy() {
+  return { relations: {}, lastWarAt: -1 };
+}
+
 // Written from four different systems, so it tolerates a state built without a
 // ledger rather than making every caller check.
 export function noteLedger(state, commodityId, field, qty) {
@@ -466,7 +497,7 @@ export function createInitialState(seed = CONFIG.seed, home = DEFAULT_HOME) {
     imports_[id] = true;
     history.prices[id] = [];
   }
-  return {
+  const state = {
     version: SAVE_VERSION,
     seed,
     tick: 0,
@@ -500,11 +531,117 @@ export function createInitialState(seed = CONFIG.seed, home = DEFAULT_HOME) {
     // The global exchange: an open book of asks and bids that anybody may take,
     // and the clearing fund its fee builds up. See systems/exchange.js.
     exchange: { listings: [], nextListingId: 1, fund: 0, lent: 0, fees: 0 },
+    diplomacy: createDiplomacy(),
+    military: { units: [], nextUnitId: 1 },
+    terrorism: { active: null, nextSpawnTick: CONFIG.terrorism.firstAt, defeated: 0 },
     ledger: createLedger(),
     warnedHungry: false,
     history,
     alerts: [],
   };
+  seedDefaultAssets(state);
+  return state;
+}
+
+function seedDefaultAssets(state) {
+  const byCountry = new Map(COUNTRY_IDS.map((id) => [id, []]));
+  for (const tile of state.tiles) {
+    if (tile.countryId && byCountry.has(tile.countryId) && tile.terrain !== 'water') {
+      byCountry.get(tile.countryId).push(tile);
+    }
+  }
+  for (const id of COUNTRY_IDS) {
+    const land = byCountry.get(id) ?? [];
+    const nearCapital = nearCountryCentre(id, land);
+    const plain = nearCapital.filter((tile) => tile.terrain === 'plain');
+    const warehouseTile = plain[0] ?? nearCapital.find((tile) => BUILDINGS.warehouse.terrain.includes(tile.terrain));
+    if (!warehouseTile) continue;
+
+    const warehouse = addInitialBuilding(state, id, 'warehouse', warehouseTile);
+    warehouse.store = starterStock();
+
+    // The farm goes on ground that is ALREADY farmland. NOTHING here may stamp
+    // terrain: the opening position is buildings and formations, and the moment
+    // it edits the map a save stops round-tripping, because tiles are dropped
+    // from the save and regenerated from the seed. `generateWorld` guarantees
+    // every country has somewhere to put this (`ensureFarmland`).
+    const farmTile = nearCapital.find((tile) => tile.buildingId == null && tile.terrain === 'farmland');
+    if (farmTile) addInitialBuilding(state, id, 'farm', farmTile);
+
+    const foodTile = plain.find((tile) => tile.buildingId == null);
+    if (foodTile) addInitialBuilding(state, id, 'foodPlant', foodTile);
+
+    // The opening military asset is a FORMATION, not a factory. An arms works
+    // in every country on earth put a standing world demand for steel behind
+    // industry nobody had built yet; a squad of riflemen eats food, which is
+    // the one thing every one of these openings can already make.
+    //
+    // It stands on bare ground beside the depot rather than on top of it, so
+    // right-clicking the warehouse still demolishes the warehouse.
+    const musterTile = nearCapital.find((tile) => tile.buildingId == null && tile.terrain !== 'water');
+    if (musterTile) {
+      state.military.units.push({
+        id: state.military.nextUnitId++,
+        type: 'infantry',
+        owner: id,
+        domain: 'land',
+        tileId: musterTile.id,
+        x: musterTile.x,
+        y: musterTile.y,
+        strength: 6,
+        supplied: true,
+      });
+    }
+  }
+}
+
+function nearCountryCentre(countryId, tiles) {
+  const info = WORLD_COUNTRY_INFO.find((row) => row.id === countryId);
+  if (!info) return tiles;
+  const cx = (info.centre.lon + 180) * WORLD_W / 360;
+  const cy = (90 - info.centre.lat) * WORLD_H / 180;
+  return tiles.slice().sort((a, b) =>
+    ((a.x - cx) ** 2 + (a.y - cy) ** 2) - ((b.x - cx) ** 2 + (b.y - cy) ** 2));
+}
+
+function starterStock() {
+  const stock = emptyBag();
+  Object.assign(stock, {
+    grain: 60,
+    food: 36,
+    coal: 12,
+    ore: 8,
+    steel: 4,
+    fuel: 4,
+  });
+  return stock;
+}
+
+function emptyBag() {
+  return Object.fromEntries(COMMODITY_IDS.map((id) => [id, 0]));
+}
+
+function addInitialBuilding(state, owner, type, tile) {
+  const def = BUILDINGS[type];
+  const building = {
+    id: state.nextBuildingId++,
+    type,
+    owner,
+    x: tile.x,
+    y: tile.y,
+    tileId: tile.id,
+    progress: 0,
+    status: def.recipe ? 'idle' : 'store',
+    uptime: 0,
+    shortage: [],
+    staffed: true,
+    input: def.recipe && Object.keys(def.recipe.in).length ? emptyBag() : null,
+    output: def.recipe ? emptyBag() : null,
+    store: def.recipe ? null : emptyBag(),
+  };
+  state.buildings.push(building);
+  tile.buildingId = building.id;
+  return building;
 }
 
 // --- nations --------------------------------------------------------------
@@ -637,6 +774,15 @@ export function createUiState(home = DEFAULT_HOME) {
   // preferences and must not ride along in the save file.
   return {
     tool: null,
+    // The FORMATION in hand, if any. A unit is not a building — it is raised by
+    // clicking your own ground — so it is a second kind of thing the pointer can
+    // be carrying, and picking one up puts the other down.
+    unit: null,
+    // The id of an ALREADY-STANDING formation waiting for its next order, set
+    // from the Move button in the Selected pane. The next tile click is that
+    // order rather than a selection or a build — a third and separate thing the
+    // pointer can be carrying, mutually exclusive with `tool` and `unit` above.
+    moveUnit: null,
     selectedTileId: null,
     hoveredTileId: null,
     zoom: CONFIG.defaultZoom,
@@ -647,6 +793,7 @@ export function createUiState(home = DEFAULT_HOME) {
     tab: 'summary',
     panelOpen: false,
     leftOpen: true,
+    buildView: 'basic',
     openFactoryId: null,
     // Whether the commodity book reads the tick just run or the whole game, and
     // which column the nation table is ranked by. View preferences both.
@@ -858,6 +1005,47 @@ function packBag(bag) {
   return out;
 }
 
+// Every nation prices every commodity itself, so `state.markets` is 258 books of
+// 34 lines and it is by far the biggest thing in the save. Written out as
+// objects it is three-quarters of a megabyte of REPEATED KEY NAMES —
+// "soldLastTick" written nine thousand times — which on its own put a fresh save
+// past what localStorage will take. A line goes out as a fixed tuple in
+// `MARKET_FIELDS` order and comes back as the object the systems mutate in
+// place, exactly as a commodity bag does.
+const MARKET_FIELDS = ['price', 'soldLastTick', 'importedLastTick', 'soldTotal'];
+
+function packMarkets(markets) {
+  if (!markets) return markets;
+  const out = {};
+  for (const [countryId, book] of Object.entries(markets)) {
+    const lines = {};
+    for (const id of COMMODITY_IDS) {
+      const line = book[id];
+      if (!line) continue;
+      lines[id] = MARKET_FIELDS.map((field) => Math.round((line[field] ?? 0) * 100) / 100);
+    }
+    out[countryId] = lines;
+  }
+  return out;
+}
+
+function unpackMarkets(markets) {
+  if (!markets) return createMarkets();
+  const out = {};
+  for (const [countryId, book] of Object.entries(markets)) {
+    const lines = {};
+    for (const id of COMMODITY_IDS) {
+      const packed = book[id];
+      const line = {};
+      MARKET_FIELDS.forEach((field, i) => { line[field] = packed?.[i] ?? 0; });
+      if (!packed) line.price = COMMODITIES[id].basePrice;
+      lines[id] = line;
+    }
+    out[countryId] = lines;
+  }
+  return out;
+}
+
 function unpackBag(bag) {
   if (!bag) return bag;
   const out = {};
@@ -882,6 +1070,7 @@ export function packState(state) {
   return {
     ...rest,
     ledger: packLedger(state.ledger),
+    markets: packMarkets(state.markets),
     buildings: state.buildings.map((b) => ({
       ...b,
       // Uptime is an exponential average, so it is a full-precision float on
@@ -905,6 +1094,10 @@ export function saveState(state) {
 
 export function rehydrate(saved) {
   const state = { ...saved, tiles: generateWorld(saved.seed) };
+  state.markets = unpackMarkets(saved.markets);
+  state.diplomacy ??= createDiplomacy();
+  state.military ??= { units: [], nextUnitId: 1 };
+  state.terrorism ??= { active: null, nextSpawnTick: (state.tick ?? 0) + CONFIG.terrorism.cooldown, defeated: 0 };
   state.buildings = state.buildings.map((b) => ({
     ...b,
     input: unpackBag(b.input),

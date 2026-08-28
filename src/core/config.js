@@ -259,5 +259,35 @@ export const CONFIG = {
   stateDepotHeadroom: 0.35,
   // ...and at most one depot per this many sites, whatever else is going on.
   stateSitesPerDepot: 6,
+
+  // TERRORISM is deliberately one pressure point, not world chaos. There is
+  // never more than one active presence, and everything below is tuned so that
+  // it is a problem you go and deal with rather than a fire that spreads while
+  // you are reading a market.
+  terrorism: {
+    // Ticks between one presence being destroyed and the next appearing, and
+    // the tick the first one may appear on at all.
+    cooldown: 600,
+    firstAt: 600,
+    // A cell is INFANTRY and a few armoured cars, and NOTHING ELSE — it cannot
+    // build, cannot trade, and cannot field a tank, an aircraft or a gun, and it
+    // never grows past this. `carsPer` is one armoured car per this many
+    // riflemen, which is what keeps "fewer cars than men" true at any size.
+    startInfantry: 3,
+    carsPer: 3,
+    // It does not sit still. Every `moveEvery` ticks it takes one step of up to
+    // `moveTiles` toward the nearest site of its host nation, and when it
+    // reaches one it destroys it and picks the next nearest. That cadence is
+    // the whole reason it reads as SLOW: a camp on the far side of a large
+    // country takes a long time to arrive, which is what makes moving your own
+    // army to intercept it worth doing.
+    moveEvery: 50,
+    moveTiles: 2,
+    // What defeating it pays the government whose soldiers did it — real money,
+    // landed straight in the treasury, for the same reason the clearing fund's
+    // fee is real: a reward with no substance behind it teaches a player nothing.
+    bounty: 60_000,
+  },
+
   seed: 20260826,
 };

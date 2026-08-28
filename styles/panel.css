@@ -107,6 +107,28 @@
 .chip[data-status="starved"], .chip[data-status="unstaffed"] { color: var(--bad); background: #e2685f1c; }
 .chip[data-status="blocked"] { color: var(--accent); background: #f0a04b1c; }
 
+.diplomacy__head {
+  margin-bottom: 8px; color: var(--muted); font-size: 12px;
+}
+.diplomacy {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px;
+}
+.diplomacy__row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 132px;
+  align-items: center; gap: 8px; padding: 4px 6px;
+  background: #ffffff08; border: 1px solid transparent; border-radius: 6px;
+}
+.diplomacy__name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px;
+}
+.diplomacy__relation {
+  width: 100%; min-width: 0; font-size: 11px;
+}
+.diplomacy__row[data-relation="alliance"] { border-color: #5fbf7f66; }
+.diplomacy__row[data-relation="access"] { border-color: #4a91d666; }
+.diplomacy__row[data-relation="war"] { border-color: #e2685f99; background: #e2685f14; }
+
 .bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .bars li { display: grid; grid-template-columns: 82px 1fr 38px; align-items: center; gap: 7px; font-size: 11px; }
 .bars b { text-align: right; font-variant-numeric: tabular-nums; }

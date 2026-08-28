@@ -8,6 +8,8 @@ import { buildingOnTile, exchangeOf, pushAlert, isOwnSoil, isPlayer, ownerById, 
 import { licenceCost, clampShare } from './systems/research.js';
 import { canSignContract, signContract, quotePrice, describe as describeContract } from './systems/contracts.js';
 import { post, withdraw, takeListing, borrow, repay } from './systems/exchange.js';
+import { setRelation, canDeployUnit, createMilitaryUnit, disbandUnit, unitOnTile,
+  moveMilitaryUnit, canMilitaryEnter, UNIT_TYPES } from './systems/military.js';
 
 // Money in an alert, spelled the way the panels spell it. Actions cannot import
 // the UI's formatter — src/ui is the layer above this one — and a bare 18000 in
@@ -105,6 +107,77 @@ export function demolish(state, tile, owner = state.home) {
     pushAlert(state, `${def.name} at (${tile.x}, ${tile.y}) demolished — ${cash(refund)} back.`, 'info');
   }
   return { ok: true, refund };
+}
+
+// --- the army -------------------------------------------------------------
+
+// Raising a formation. There is no barracks and no build queue: you pick a unit
+// out of the same dock the industries are in, click your own ground, and the
+// batch it costs comes straight out of your warehouses. From then on it draws
+// its upkeep every tick until it is disbanded or it starves — see
+// `systems/military.js`, which owns every quantity involved.
+export function deployUnit(state, type, tile, owner = state.home) {
+  const check = canDeployUnit(state, owner, type, tile);
+  if (!check.ok) {
+    if (isPlayer(state, owner)) pushAlert(state, check.reason, 'warn');
+    return check;
+  }
+  const result = createMilitaryUnit(state, owner, type, tile.id);
+  if (result.ok && isPlayer(state, owner)) {
+    const def = UNIT_TYPES[type];
+    pushAlert(state, `${def.name} raised at (${tile.x}, ${tile.y}) for ${describeBag(def.cost)}.`, 'good');
+  }
+  return result;
+}
+
+// Standing one down. The supplies that raised it are spent, so nothing comes
+// back — what you get is the upkeep you stop paying.
+export function standDown(state, tile, owner = state.home) {
+  const unit = unitOnTile(state, tile.id);
+  if (!unit) return { ok: false, reason: 'No formation here.' };
+  return standDownUnit(state, unit.id, owner);
+}
+
+export function standDownUnit(state, unitId, owner = state.home) {
+  const unit = (state.military?.units ?? []).find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (unit.owner !== owner) {
+    const reason = `That formation belongs to ${ownerName(unit.owner)}.`;
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  const result = disbandUnit(state, unit.id);
+  if (result.ok && isPlayer(state, owner)) {
+    pushAlert(state, `${UNIT_TYPES[unit.type].name} at (${unit.x}, ${unit.y}) stood down.`, 'info');
+  }
+  return result;
+}
+
+// Ordering a formation you already have to a new tile. The map asks for this
+// once a unit is picked up in "move" mode and a destination is clicked — the
+// same access rules as raising one apply (`canMilitaryEnter`), so a unit can
+// only cross into land its government has a reason to be on.
+export function orderMove(state, unitId, tile, owner = state.home) {
+  const unit = (state.military?.units ?? []).find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (unit.owner !== owner) {
+    const reason = `That formation belongs to ${ownerName(unit.owner)}.`;
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  if (!tile) return { ok: false, reason: 'No such tile.' };
+  if (!canMilitaryEnter(state, unit, tile)) {
+    const reason = 'No military access to that ground.';
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  const result = moveMilitaryUnit(state, unitId, tile.id);
+  if (!result.ok) { if (isPlayer(state, owner)) pushAlert(state, result.reason, 'warn'); return result; }
+  return result;
+}
+
+function describeBag(bag) {
+  return Object.entries(bag).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ');
 }
 
 // --- the exchange ---------------------------------------------------------
@@ -383,4 +456,10 @@ export function setSpeed(state, speed) {
 
 export function togglePause(state) {
   state.paused = !state.paused;
+}
+
+export function changeRelation(state, countryId, relation) {
+  const result = setRelation(state, state.home, countryId, relation);
+  if (result.ok) pushAlert(state, `${ownerName(countryId)} relation set to ${relation}.`, 'info');
+  return result;
 }

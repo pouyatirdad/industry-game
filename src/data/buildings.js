@@ -258,6 +258,12 @@ export const BUILDINGS = {
     blurb: 'Airframes. Nothing on the board sells for more per unit, and nothing needs as much industry standing beneath it.',
   },
 
+  // There is no military INDUSTRY any more. A formation is raised straight out
+  // of base commodities (see `systems/military.js`'s `UNIT_TYPES`) — no arms
+  // factory, no munitions plant, no armor plant standing between a warehouse
+  // and a standing army. The `military` build category still exists, but only
+  // the five formations live in it now.
+
   // --- logistics -----------------------------------------------------------
   warehouse: {
     name: 'Warehouse', glyph: '▥', cost: 12_000, wages: 60,

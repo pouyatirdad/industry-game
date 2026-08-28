@@ -120,6 +120,15 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 .panel--left .panel__body > h2 { display: none; }
 .panel--left .build-menu { flex: 1; min-height: 0; }
 .panel--left .hint { display: none; }
+.build-tabs {
+  flex: none; display: flex; gap: 4px; margin-bottom: 5px;
+}
+.build-tab {
+  flex: 0 0 auto; padding: 3px 10px; font-size: 11px; border-radius: 6px;
+}
+.build-tab[data-active="true"] {
+  background: var(--accent); color: #221606; border-color: transparent; font-weight: 600;
+}
 
 /* The handle that brings the left panel back. */
 .rail {
@@ -157,8 +166,23 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   align-content: start; gap: 3px; text-align: left; overflow: hidden;
   padding: 4px 6px; border-color: transparent; background: #ffffff06;
 }
+/* THIS RULE IS LOAD-BEARING and it is not obvious why.
+   `.build` above sets `display: grid`, and an AUTHOR rule beats the user
+   agent's `[hidden] { display: none }` whatever their specificity — so the
+   `hidden` attribute updateDashboard sets on every box outside the current
+   category did nothing at all, every industry in the game was on screen at
+   once, and the category tabs in the bottom dock read as broken. Any element
+   that is both hidden by attribute and given a `display` by class needs its own
+   `[hidden]` rule like this one. */
+.build[hidden] { display: none; }
 .build[data-active="true"] { border-color: var(--accent); background: #2b2418; }
 .build[data-affordable="false"] { opacity: .45; }
+/* A formation is picked up the same way an industry is, but it is not a
+   building: it costs supplies rather than money, so its selected state is the
+   blue the map highlights deployable ground in rather than the build amber. */
+.build--unit { background: #7fa8ff0f; }
+.build--unit[data-active="true"] { border-color: #7fa8ff; background: #1b2436; }
+.build--unit .build__cost { color: #a8c2ff; }
 .build__top {
   display: grid; grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center; gap: 5px; min-width: 0;
@@ -248,6 +272,11 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 .bag ul { list-style: none; margin: 0; padding: 0; }
 .bag li { display: flex; justify-content: space-between; font-size: 12px; padding: 1px 0; }
 .bag b { font-variant-numeric: tabular-nums; }
+
+/* A selected FORMATION's own two actions, in the Selected pane. */
+.inspect__actions { display: flex; gap: 6px; }
+.inspect__actions button { flex: 1; padding: 4px 8px; font-size: 12px; }
+.unit-move[data-active="true"] { background: #7fa8ff; color: #0b1626; border-color: transparent; font-weight: 600; }
 
 /* On a narrow window the panels stay modals; they just take the width they need
    and the map runs on underneath. */

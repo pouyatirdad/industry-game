@@ -12,6 +12,7 @@ export const TABS = [
   { id: 'factories', label: 'Factories', title: 'Every site you own — what it takes in, turns out, and how hard it is working.' },
   { id: 'market', label: 'Market', title: 'The global exchange — every ask and bid on earth, and the clearing fund you can borrow from.' },
   { id: 'trade', label: 'Trade', title: 'Your contracts, what they are worth, and the nations you are dealing with.' },
+  { id: 'diplomacy', label: 'Diplomacy', title: 'Relations, access, alliances and wars.' },
   { id: 'tech', label: 'Tech', title: 'The technology tree — what you may build, what you are studying, and what you can licence.' },
   { id: 'ranks', label: 'Ranks', title: 'All forty-six nations scored against each other.' },
   { id: 'selected', label: 'Selected', title: 'Whatever you last clicked on the map.' },
@@ -74,7 +75,8 @@ export function updatePanels(refs, ctx) {
     const count = id === 'factories' ? mine.length
       : id === 'trade' ? waiting
         : id === 'market' ? listings
-          : id === 'tech' ? licences : 0;
+          : id === 'diplomacy' ? activeDiplomacy(state, state.home)
+            : id === 'tech' ? licences : 0;
     setText(badge, count ? String(count) : id === 'tech' && idleLab ? '!' : '');
     setAttr(badge, 'data-alarm', (id === 'factories' && troubled) || (id === 'trade' && waiting)
       || (id === 'tech' && (licences || idleLab)) ? 'true' : null);
@@ -86,4 +88,9 @@ export function updatePanels(refs, ctx) {
   for (const pane of refs.panes.children) {
     setAttr(pane, 'data-active', String(pane.dataset.pane === ui.tab));
   }
+}
+
+function activeDiplomacy(state, home) {
+  return Object.values(state.diplomacy?.relations?.[home] ?? {})
+    .filter((relation) => relation !== 'neutral').length;
 }

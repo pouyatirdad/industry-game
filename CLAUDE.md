@@ -512,6 +512,90 @@ still over-commit, because penalties are the point of making a promise.
 `state.contractOffers` and `state.techOffers` are what other governments have put to you; both lapse
 if you never answer, and both also appear in the floating inbox over the map.
 
+### Military and diplomacy are restrained
+
+`state.diplomacy.relations` is a symmetric country-pair table with four values: `neutral`,
+`alliance`, `access`, and `war`. Military movement may enter your own land, unclaimed space, allied
+land, access-granted land, or enemy land during war; it must not treat open trade as open borders.
+War is a diplomatic state, not a random default AI action.
+
+### An army is SUPPLIES, not capital
+
+`UNIT_TYPES` in `systems/military.js` is the unit data, exactly as `buildings.js` is the industry
+data — five formations, each with a `cost` (the batch that raises one) and an `upkeep` (what it draws
+every tick for as long as it stands). A quantity belongs there and never in the code that spends it,
+and no system reads a unit type by name. **There is no military industry at all** — no arms factory,
+no munitions plant, no armor plant; a formation is raised straight out of base commodities, and
+`BUILDINGS` has nothing in the `military` category any more.
+
+- **A unit is not a building.** There is no barracks and no build queue: you pick a formation out of
+  the same bottom dock the industries are in and click your own ground. Nothing is charged to the
+  treasury — the batch comes out of your WAREHOUSES — so a nation with money and no depot cannot
+  field anything. `ui.unit` is the formation in hand and `ui.tool` the building; picking one up puts
+  the other down, because the pointer only ever carries one thing.
+- **Deployment is asked in two halves, and that split is a performance decision.**
+  `deployableTile` is cheap (terrain, ownership, occupancy) because the map asks it of every visible
+  tile on every draw while a formation is in hand; `unitAffordable` costs a depot scan and is asked
+  ONCE per render. `canDeployUnit` is the authoritative answer and is only asked when a tile is
+  actually clicked.
+- **A standing formation can be MOVED**, and that is a third thing entirely — not a building, not a
+  formation waiting to be raised. Clicking a unit (with no tool or unit-to-raise in hand) selects its
+  tile and opens Selected, which shows a Move button; pressing it sets `ui.moveUnit` to that unit's id,
+  and the next tile click is the order (`actions.js`'s `orderMove`, gated by the same
+  `canMilitaryEnter` access rule as everything else military). `ui.moveUnit` is a third pointer mode,
+  mutually exclusive with `ui.tool` and `ui.unit` — picking up either of those, or pressing Escape,
+  cancels a pending move order. The map highlights valid destinations the same blue as a deployable
+  tile while an order is pending.
+- **The five are told apart by what they consume**, and that ordering is covered by a test:
+  infantry eat food and nothing else; an armoured car burns less fuel than a tank, and a tank less
+  than an aircraft; artillery burn no fuel at all and eat less than infantry.
+- **A formation that goes unsupplied wastes away**, half a point of strength a tick, and is gone when
+  it runs out. Recovery is the same rate, so intermittent supply keeps an army alive. `supplyUnits`
+  indexes depots ONCE for the world's armies, like `collect` and `contracts`.
+- Upkeep is drawn in the `security` phase, at the END of the tick, so an army eats what its nation's
+  contracts, its factories and its people have already left behind.
+
+Terrorism is deliberately a single pressure point, not world chaos, and every number in it is in
+`CONFIG.terrorism`. `state.terrorism.active` starts null and `runMilitary` spawns one presence only
+if none exists, no earlier than `firstAt` (600 ticks into a fresh game); destroying it clears it and
+schedules the next after `cooldown` (also 600). Do not spawn parallel terrorist areas while one is
+already active.
+
+- **A cell is INFANTRY and a few armoured cars, and nothing else — and it is FIXED at spawn.**
+  `terroristForce` derives the cars from the rifleman count (`carsPer`) rather than storing them, so
+  "fewer cars than men" can never disagree with itself, and there is no third entry: a cell has no
+  industry, so it cannot field a tank, an aircraft or a gun. Unlike your own army it never grows
+  stronger the longer it stands — a cell that gained power the longer you ignored it would be a
+  losing condition, not a problem you go and deal with.
+- **It does not sit still.** `runTerrorists` walks it toward the nearest site of its host nation,
+  `moveTiles` at a time, once every `moveEvery` ticks — both deliberately small, which is the whole
+  reason it reads as slow rather than as an ambush. Reaching (or coming adjacent to) its target
+  destroys that one site and picks the next nearest; it never leaves the country it appeared in,
+  because every target comes from that one nation's buildings. **It builds nothing, buys nothing, and
+  sells nothing** — the only thing it does is walk and wreck.
+- **Your own army can defeat it, and defeating it PAYS.** `resolveTerrorCombat` runs every tick before
+  the cell gets to spawn a replacement or take a step: any government whose units, stacked on the
+  cell's own tile, together match or exceed its strength clears the presence immediately and is paid
+  `CONFIG.terrorism.bounty` straight into its treasury — real money, for the same reason the clearing
+  fund's fee is real. Reaching a cell on FOREIGN soil still needs the ordinary access/alliance/war
+  relation; reaching one on your own soil needs nothing but marching your own units there.
+- The red card over the map (`src/ui/terror.js`) is driven from `terrorism.active` and does NOT
+  expire — it is a standing situation, not news. Clicking it centres the map on the camp. The one-off
+  spawn alert beside it expires like every other message.
+
+Every new game seeds each country with a SMALL starter base near its capital/atlas centre: one
+warehouse with modest stock, one farm on farmland, one Food Plant, and one small infantry unit on
+bare ground beside the depot. These are opening conditions, not AI construction decisions: they are
+added without treasury charges or alerts. **The opening military asset is a FORMATION, not a
+factory** — there is no military industry left to build at all, so an opening arms works was never an
+option to begin with. Do not turn this into huge free industry; test fixtures may clear the starter
+assets when they need an empty scratch economy.
+
+**Nothing in `seedDefaultAssets` may stamp terrain.** Tiles are dropped from the save and regenerated
+from the seed, so an opening position that edits the map makes every save rehydrate into a different
+world, silently. The farm needs farmland, so `generateWorld` guarantees it (`ensureFarmland`, inside
+the same deterministic pass) and the starter merely finds it.
+
 ### The map is the page; panels dock over it
 
 `.layout` is ONE layer. The map is absolutely positioned to fill it, and panels dock over it rather
@@ -527,13 +611,25 @@ Consequences worth knowing:
   rail, or close button back to it: `ui.leftOpen` starts true and the CSS keeps the dock rendered even
   if old code sets it false. Its header carries the home-nation name and a small map-target button
   that recentres the map on the nation's centroid, because at high zoom it is easy to lose your own
-  country.
+  country. The build menu is filtered by `ui.buildView` through `buildCategory()`: Basic, Extract,
+  Power, Tier 1, Tier 2+, Logistics, and Military. There is no military INDUSTRY, so the Military
+  view holds only the five FORMATIONS: they carry `data-unit` instead of `data-type`, are picked up
+  with `onSelectUnit` rather than `onSelectTool`, and are gated by warehouse supplies rather than by
+  technology or treasury.
+
+- **An author `display` beats the user agent's `[hidden]`, whatever the specificity.** The category
+  filter sets the `hidden` attribute on every box outside the current view — and `.build` sets
+  `display: grid`, so for a long time `hidden` did nothing at all, every industry in the game was on
+  screen at once, and the tabs in the bottom dock read as broken with no error anywhere. `.build[hidden]`
+  and `.terror-popup[hidden]` exist for that reason. **Any element that is both hidden by attribute
+  and given a `display` by class needs its own `[hidden] { display: none }` rule.**
 
 - **The top information panel starts folded away and opens on hover or click.** Moving the pointer
   out closes it again; the collapse control or active-tab click do the same explicitly. It leaves its
   tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
-- **Messages sit above every panel.** Alerts and inbox cards use the high overlay layer (`z-index:
-  100`) so a popup is visible even when the top or bottom dock is open.
+- **Messages sit above every panel.** Alerts, inbox cards and the red terrorist card use the high
+  overlay layer (`z-index: 100`) so a popup is visible even when the top or bottom dock is open. All
+  three are repainted on every render, outside the pane dispatch, because they are always visible.
 - **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
   `overflow-y: hidden` on the principle that a table is read whole — which was true of the pane it
   was written for and false of every pane that grew since: the bottom of the Trade list, the Ranks
@@ -554,7 +650,7 @@ Consequences worth knowing:
   wheel, drag, trackpad and keyboard, so a box that can overflow must say `overflow: auto`;
   `hidden` now means "this genuinely cannot be reached", which is almost never what you want.
 
-### The top panel has eight tabbed views
+### The top panel has nine tabbed views
 
 `index.html` declares a `<section class="pane" data-pane="…">` per view; `src/ui/tabs.js` owns the
 strip and the `TABS` list that names them. `ui.tab` says which is on screen, `ui.panelOpen` whether
@@ -562,7 +658,7 @@ the panel is unfolded at all, `ui.leftOpen` whether the build panel is, `ui.open
 has its numbers unfolded, `ui.goodsView` whether the commodity book reads the tick or the game,
 `ui.rankSort` which column the nation table is ranked by, `ui.bookFilter` whether the exchange shows
 everybody's terms or only yours, and `ui.draft` the contract you are writing but have not signed —
-all on `ui`, so none of it reaches the save file. Eight tabs do not fit one row of the panel, so
+all on `ui`, so none of it reaches the save file. Nine tabs do not fit one row of the panel, so
 **the strip wraps**: a tab you cannot read is not a tab you will click.
 
 **Only the visible pane is repainted.** `src/ui/render.js` dispatches through `PANES` and returns
@@ -603,6 +699,9 @@ Five things earn their own view rather than sharing one:
   `src/ui/ranks.js`) is the one piece of UI with a rule rather than a layout in it, so it is covered
   by the suite — which means it must stay free of the DOM, like a system. Its measures are
   normalised against the best in the world, so a score is a standing rather than a unit.
+- **Diplomacy** shows `state.diplomacy.relations` from your nation's point of view and is where
+  neutral, alliance, military-access and war states are changed. Military movement checks those
+  relation values; trade still uses `canTrade` and remains open to every non-self country.
 - **Selected** is the old inspector. Clicking the map lands there only when no build tool is in hand:
   laying out a chain must not yank the panel away from the list you were reading.
 
@@ -734,9 +833,21 @@ per commodity and quantities go fractional once spoilage and part-filled orders 
 serialises as twenty-one entries, most of them zero, several of them seventeen digits long — roughly
 ten times the necessary size at a thousand sites. `packBag` drops zeros and rounds; `rehydrate`
 restores the full bag, and that restore is **required**: the systems subtract from these keys in
-place, and a missing key produces `NaN` rather than an error. A save runs about 80KB fresh and 640KB
-after a thousand ticks — it is dominated by buildings, so it grew when the governments started
-building two sites a decision, and it is worth re-measuring if that changes again.
+place, and a missing key produces `NaN` rather than an error.
+
+**Markets are packed the same way, and they are the biggest thing in the save.** Every nation prices
+every commodity itself, so `state.markets` is 258 books of 34 lines; written out as objects it is
+three quarters of a megabyte of REPEATED KEY NAMES — `"soldLastTick"` nine thousand times — which on
+its own put a fresh save past what localStorage will take. `packMarkets` writes each line as a fixed
+tuple in `MARKET_FIELDS` order and `unpackMarkets` restores the object the systems mutate in place.
+
+**The relation table starts EMPTY for the same reason.** `relationOf` returns `neutral` for a pair it
+has never heard of, so writing all 258×257 of them down said nothing and cost another megabyte. Only
+a pair somebody actually changed is stored, and `lastWarAt` is `-1` rather than `-Infinity` because
+`JSON.stringify(-Infinity)` is `null`.
+
+A save runs about 350KB fresh — it is dominated by the markets, the opening buildings and the world's
+standing armies, and it is worth re-measuring whenever any of those three changes.
 
 **Building `status` is a closed vocabulary** (`running`, `starved`, `blocked`, `unstaffed`, `store`,
 `idle`) set in `src/systems/production.js` and consumed in five places: styled by attribute selectors

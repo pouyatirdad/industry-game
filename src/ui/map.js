@@ -7,6 +7,7 @@ import { SOURCE_COUNTRY_W, SOURCE_COUNTRY_H } from '../data/world.js';
 import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
 import { depotsByOwner, servedBy } from '../systems/logistics.js';
+import { UNIT_TYPES, deployableTile, terroristForce, unitAffordable, canMilitaryEnter } from '../systems/military.js';
 
 // The map is drawn to a CANVAS, not to DOM nodes.
 //
@@ -302,8 +303,24 @@ function draw(host, view, ctx) {
   const byTile = new Map();
   for (const b of state.buildings) byTile.set(b.tileId, b);
   const depots = depotsByOwner(state);
+  // ...and so are the standing formations, for exactly the same reason. There
+  // are far fewer of them than buildings, but the tile loop is the whole
+  // viewport and it must not search a list per square.
+  const unitsByTile = new Map();
+  for (const u of state.military?.units ?? []) unitsByTile.set(u.tileId, u);
+  const terror = state.terrorism?.active ?? null;
 
   const tool = ui.tool;
+  // Whether a formation is in hand, and whether the warehouses could actually
+  // pay for one. The affordability half costs a depot scan, so it is asked ONCE
+  // here rather than per tile — `deployableTile` below is the cheap half.
+  const unitTool = ui.unit;
+  const canRaise = unitTool ? unitAffordable(state, state.home, unitTool, depots.get(state.home) ?? []) : false;
+  // A formation already standing, waiting for its next order — set from the
+  // Move button in the Selected pane. Valid destinations light up the same way
+  // a deployable tile does, since both answer the same question: where may
+  // this unit be.
+  const moveUnit = ui.moveUnit != null ? (state.military?.units ?? []).find((u) => u.id === ui.moveUnit) : null;
   const glyphs = tilePx >= 10;
   // Frontier segments, gathered as the tiles are painted and stroked once at
   // the end. Flat arrays of x1,y1,x2,y2 rather than objects: at one pixel a tile
@@ -357,9 +374,14 @@ function draw(host, view, ctx) {
         runFrom = x;
       }
 
+      const unit = unitsByTile.get(tile.id);
+      const camp = terror && terror.tileId === tile.id;
       const buildable = !building && tool && tile.countryId && canBuild(state, tool, tile).ok;
+      const raisable = !building && !unit && canRaise && deployableTile(state, state.home, unitTool, tile);
+      const movable = !building && !unit && moveUnit && tile.id !== moveUnit.tileId
+        && canMilitaryEnter(state, moveUnit, tile);
       const selected = ui.selectedTileId === tile.id;
-      if (building || buildable || selected) flush(x + 1, py);
+      if (building || unit || camp || buildable || raisable || movable || selected) flush(x + 1, py);
 
       if (building) {
         const stranded = building.output && !servedBy(depots.get(building.owner) ?? [], building.x, building.y);
@@ -376,11 +398,16 @@ function draw(host, view, ctx) {
           g.fillText(BUILDINGS[building.type].glyph, px + tilePx / 2, py + tilePx / 2);
         }
         if (stranded) drawStrandedBadge(g, px, py, tilePx);
-      } else if (buildable) {
-        g.strokeStyle = '#5fbf7f';
+      } else if (buildable || raisable || movable) {
+        g.strokeStyle = raisable || movable ? '#7fa8ff' : '#5fbf7f';
         g.lineWidth = 1;
         g.strokeRect(px + 0.5, py + 0.5, tilePx - 1, tilePx - 1);
       }
+
+      // A formation is drawn ON TOP of whatever ground it holds rather than
+      // recolouring it: an army occupies land, it does not replace it.
+      if (unit) drawUnit(g, unit, px, py, tilePx, glyphs, isPlayer(state, unit.owner));
+      if (camp) drawCamp(g, px, py, tilePx, glyphs);
 
       if (selected) {
         g.strokeStyle = '#f0b34b';
@@ -624,6 +651,57 @@ function statusColor(building) {
   }
 }
 
+// A standing formation: a disc in its owner's colour, with the unit's glyph on
+// it once there is room to read one. A unit that went unsupplied last tick wears
+// a red rim, because "why is my army melting" has to be answerable from the map.
+function drawUnit(g, unit, px, py, tilePx, glyphs, mine) {
+  const def = UNIT_TYPES[unit.type];
+  if (!def) return;
+  g.save();
+  const radius = Math.max(2, Math.min(tilePx * 0.42, 11));
+  const cx = px + tilePx / 2;
+  const cy = py + tilePx / 2;
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.fillStyle = mine ? '#e9f0ff' : '#8d95a4';
+  g.fill();
+  g.lineWidth = tilePx >= 8 ? 2 : 1;
+  g.strokeStyle = unit.supplied === false ? '#e22929' : '#0b0d12cc';
+  g.stroke();
+  if (glyphs) {
+    g.fillStyle = '#12151c';
+    g.font = `${Math.floor(tilePx * 0.6)}px system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(def.glyph, cx, cy);
+  }
+  g.restore();
+}
+
+// The terrorist camp. Deliberately the loudest thing on the map: there is only
+// ever one, and the whole mechanic is that you go and deal with it.
+function drawCamp(g, px, py, tilePx, glyphs) {
+  g.save();
+  const radius = Math.max(3, Math.min(tilePx * 0.5, 13));
+  const cx = px + tilePx / 2;
+  const cy = py + tilePx / 2;
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.fillStyle = '#e2292988';
+  g.fill();
+  g.lineWidth = 2;
+  g.strokeStyle = '#ff5a4d';
+  g.stroke();
+  if (glyphs) {
+    g.fillStyle = '#fff';
+    g.font = `700 ${Math.floor(tilePx * 0.62)}px system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('☠', cx, cy);
+  }
+  g.restore();
+}
+
 function drawStrandedBadge(g, px, py, tilePx) {
   g.save();
   const radius = Math.max(3, Math.min(8, tilePx * 0.34));
@@ -648,6 +726,19 @@ function tooltip(state, tile) {
   const where = tile.countryId
     ? placeName(tile)
     : tile.terrain === 'water' ? 'International waters' : 'Unclaimed territory';
+  const active = state.terrorism?.active;
+  if (active && active.tileId === tile.id) {
+    const force = terroristForce(active);
+    return `${active.name} — ${force.infantry} infantry, ${force.armoredCar} armoured car${force.armoredCar === 1 ? '' : 's'}`
+      + ` · ${active.destroyed ?? 0} site${(active.destroyed ?? 0) === 1 ? '' : 's'} destroyed · ${where}`;
+  }
+  const unit = (state.military?.units ?? []).find((u) => u.tileId === tile.id);
+  if (unit && !building) {
+    const def = UNIT_TYPES[unit.type];
+    const whose = isPlayer(state, unit.owner) ? 'yours' : ownerName(unit.owner);
+    return `${def.name} (${whose}) — strength ${unit.strength.toFixed(1)}/${def.strength}`
+      + `${unit.supplied === false ? ' · UNSUPPLIED' : ''} · ${where}`;
+  }
   if (building) {
     const def = BUILDINGS[building.type];
     const whose = isPlayer(state, building.owner) ? 'yours' : ownerName(building.owner);
