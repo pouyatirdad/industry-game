@@ -1,4 +1,4 @@
-import { mountMap, updateMap, centerMapOn } from './map.js';
+import { mountMap, updateMap, centerMapOn, centerMapOnCountry } from './map.js';
 import { mountDashboard, updateDashboard, updateTrade, updateAlerts } from './dashboard.js';
 import { mountTabs, updatePanels } from './tabs.js';
 import { updateSummary } from './summary.js';
@@ -24,7 +24,7 @@ const ID_MAP = {
   ranksHead: 'ranks-head', ranksCols: 'ranks-cols', ranksBody: 'ranks-body',
   techHead: 'tech-head', techOffers: 'tech-offers', techTree: 'tech-tree',
   contractOffers: 'contract-offers', contractDraft: 'contract-draft', contractList: 'contract-list',
-  nationName: 'nation-name', nationCard: 'nation-card',
+  nationName: 'nation-name', nationCard: 'nation-card', homeMap: 'btn-home-map',
   speeds: 'speed-buttons', cash: 'stat-cash', net: 'stat-net',
   wages: 'stat-wages', trade: 'stat-trade', supply: 'stat-supply', demand: 'stat-demand',
   tick: 'stat-tick', pause: 'btn-pause', save: 'btn-save',
@@ -74,6 +74,7 @@ export function createRenderer(ctx) {
     refs,
     remountMap() { mapView.dispose?.(); mapView = mountMap(refs.map, ctx); },
     centerOn(x, y) { centerMapOn(refs.map, mapView, ctx, x, y); },
+    centerOnCountry(countryId) { centerMapOnCountry(refs.map, mapView, ctx, countryId); },
     render() {
       updateDashboard(refs, ctx);
       updatePanels(refs, ctx);

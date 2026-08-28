@@ -53,6 +53,8 @@ When the user asks you to commit and push, update this file in the same change i
 new repo rule, run the relevant tests first, commit only the files you intentionally changed, and
 push the current branch. Do not leave a requested push as a reminder.
 
+Important: all pushes and commits must be on the `develop` branch.
+
 The same suite also runs in the browser at `test.html` (add `?only=<substring>` to filter), which
 is the path to use when you need a DOM.
 
@@ -521,10 +523,15 @@ topbar and the layout, and the only things that scroll are the map and panel int
 
 Consequences worth knowing:
 
-- **Both panels start folded away and open on hover or click.** Moving the pointer out closes the
-  panel again; the close button, `B`, collapse control, or active-tab click do the same explicitly. The
-  bottom build panel leaves the `☰ Build` rail (`ui.leftOpen`, `B`), and the top information panel
-  leaves its tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
+- **The bottom build panel is always visible and spans the bottom edge.** Do not add a hide state,
+  rail, or close button back to it: `ui.leftOpen` starts true and the CSS keeps the dock rendered even
+  if old code sets it false. Its header carries the home-nation name and a small map-target button
+  that recentres the map on the nation's centroid, because at high zoom it is easy to lose your own
+  country.
+
+- **The top information panel starts folded away and opens on hover or click.** Moving the pointer
+  out closes it again; the collapse control or active-tab click do the same explicitly. It leaves its
+  tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
 - **Messages sit above every panel.** Alerts and inbox cards use the high overlay layer (`z-index:
   100`) so a popup is visible even when the top or bottom dock is open.
 - **A pane should still be READABLE in one look, but it may now scroll.** `.panes` was
@@ -652,6 +659,10 @@ Consequences worth knowing before editing the map:
   ~40ms, measured. A run is flushed **before** anything is drawn on top of a tile inside it — a
   status ring, a buildable highlight, the selection — or the fill would paint over what it was meant
   to sit under. That ordering is the whole correctness argument; keep it if you touch the loop.
+- **Factories with no warehouse in range get a red `!` badge on the map.** Compute that from
+  owner-scoped logistics (`depotsByOwner` + `servedBy`) during the draw, not from a DOM overlay and
+  not from cross-owner depots. The marker belongs on producers only (`building.output`), never on
+  warehouses themselves.
 - **Frontiers, coastlines, a graticule and country names are painted over the terrain**, and the
   border segments are COLLECTED during the tile loop rather than found in a sweep of their own: at
   one pixel a tile the visible window is the whole planet, and a second pass over a million tiles

@@ -34,7 +34,7 @@
   position: absolute; z-index: 4; left: 12px; bottom: 12px;
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
 }
-.layout[data-left="true"] .maptools { bottom: calc(min(156px, 25vh) + 18px); }
+.maptools { bottom: calc(min(156px, 25vh) + 12px); }
 .maptools__label {
   font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
 }

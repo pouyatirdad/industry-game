@@ -77,8 +77,8 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 .layout { position: relative; flex: 1; min-height: 0; }
 
 /* Panels are docked over the map: the tabbed information panel hangs from the
-   top of the map and the build controls sit along the bottom like a strategy
-   game command bar. */
+   top of the map and the build controls sit along the full bottom edge like a
+   strategy game command bar. */
 .panel {
   position: absolute; z-index: 5;
   display: flex; flex-direction: column; min-height: 0;
@@ -87,26 +87,28 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   backdrop-filter: blur(8px);
 }
 .panel--left {
-  left: 50%; right: auto; bottom: 8px; transform: translateX(-50%);
-  width: min(860px, calc(100vw - 20px)); height: min(156px, 25vh);
+  left: 0; right: 0; bottom: 0; transform: none;
+  width: 100%; height: min(156px, 25vh);
+  border-left: 0; border-right: 0; border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
 }
 .panel--tabs {
   left: 50%; right: auto; top: 8px; transform: translateX(-50%);
   width: min(980px, calc(100vw - 20px)); height: min(286px, 38vh);
 }
-.layout[data-left="false"] .panel--left { display: none; }
-.layout[data-left="true"] .rail { display: none; }
+.layout[data-left="false"] .panel--left { display: flex; }
+.rail, .panel--left .panel__close { display: none; }
 
 .panel__head {
   flex: none; display: flex; align-items: center; gap: 8px;
   padding: 7px 8px 6px 12px; border-bottom: 1px solid var(--line);
 }
 .panel__head h2 { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.panel__close, .rail {
+.panel__action, .panel__close, .rail {
   flex: none; padding: 2px 8px; font-size: 15px; line-height: 1.3;
   background: transparent; border: 0; color: var(--muted); border-radius: 6px;
 }
-.panel__close:hover { background: var(--panel-2); color: var(--ink); border: 0; }
+.panel__action:hover, .panel__close:hover { background: var(--panel-2); color: var(--ink); border: 0; }
 .panel__body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 10px; }
 .panel--left .panel__body {
   display: flex; flex-direction: column; gap: 5px; overflow: hidden;
