@@ -6,7 +6,7 @@ import { distanceBetween, MAX_DISTANCE } from '../data/geography.js';
 import { TECHS } from '../data/technology.js';
 import { projectedWages, ownerName, ownFlows, knowsTech } from '../core/state.js';
 import { depotsByOwner } from '../systems/logistics.js';
-import { UNIT_TYPES, UNIT_IDS, unitAffordable, unitsOf } from '../systems/military.js';
+import { UNIT_TYPES, UNIT_IDS, unitsOf, armyCostOf, unitShortfall } from '../systems/military.js';
 import { updateContracts } from './contracts.js';
 import { money, moneyShort, num, qtyShort, pct, setAttr, setText, setToggle, html } from './format.js';
 
@@ -91,7 +91,7 @@ export function mountDashboard(refs, ctx) {
           <span class="build__name">${def.name}</span>
           <b class="build__cost"></b>
         </span>
-        <span class="build__recipe">${bagLine(def.cost)} &rarr; ${bagLine(def.upkeep)}/t</span>
+        <span class="build__recipe">${bagLine(def.cost)} &middot; no upkeep</span>
       </button>`);
     item.addEventListener('click', () => ctx.onSelectUnit(id));
     return item;
@@ -122,6 +122,17 @@ export function mountDashboard(refs, ctx) {
   refs.save.addEventListener('click', ctx.onSave);
   refs.load.addEventListener('click', ctx.onLoad);
   refs.reset.addEventListener('click', ctx.onReset);
+  // The overflow sheet. It holds the SAME buttons the bar does on a desktop —
+  // this only decides whether they are on screen — so nothing here duplicates a
+  // handler; the four above still do all the work.
+  refs.menu.addEventListener('click', ctx.onToggleMenu);
+  // Choosing something out of the sheet is finishing with the sheet. Save, Load
+  // and New game each act and close; the speeds and the nation select do too,
+  // because a menu you have to dismiss by hand is a menu covering the map.
+  refs.controlsMore.addEventListener('click', (event) => {
+    if (event.target.closest('button, select')) ctx.onCloseMenu();
+  });
+  refs.controlsMore.addEventListener('change', () => ctx.onCloseMenu());
 }
 
 export function updateDashboard(refs, ctx) {
@@ -144,8 +155,17 @@ export function updateDashboard(refs, ctx) {
   setToggle(refs.supply, 'is-negative', me.supply < CONFIG.growth.pivot);
   setText(refs.demand, `${me.demand.toFixed(1)} / ${COUNTRIES[state.home].demand}`);
   setToggle(refs.demand, 'is-negative', me.demand < COUNTRIES[state.home].demand);
+  updateStanding(refs, state);
   setText(refs.tick, num(state.tick));
   setText(refs.pause, state.paused ? '▶ Run' : '❚❚ Pause');
+
+  // `data-open`, NOT `hidden`. Whether these controls are on screen is a
+  // BREAKPOINT decision, not a state one: on a desktop they are simply on the
+  // bar and there is no sheet to close, so a `hidden` attribute written from
+  // here would take Save and the nation select off a desktop bar as well. The
+  // flag is published and the media query decides what it means.
+  setAttr(refs.controlsMore, 'data-open', String(Boolean(ui.menuOpen)));
+  setAttr(refs.menu, 'aria-expanded', String(Boolean(ui.menuOpen)));
 
   updateNationCard(refs, ctx, me, wages);
 
@@ -158,7 +178,7 @@ export function updateDashboard(refs, ctx) {
 
   const mul = COUNTRIES[state.home].wageMul;
   // The depot index once for the whole dock rather than once per formation:
-  // five units asking `unitAffordable` for themselves would be five scans of
+  // five units asking `unitShortfall` for themselves would be five scans of
   // every building in the world, every render.
   const depots = depotsByOwner(state).get(state.home) ?? [];
   const fielded = new Map();
@@ -197,13 +217,25 @@ function updateUnitBox(btn, ctx, depots, fielded) {
   const id = btn.dataset.unit;
   const def = UNIT_TYPES[id];
   const standing = fielded.get(id) ?? 0;
-  const affordable = unitAffordable(state, state.home, id, depots);
+  // Three states, not two, because "you have the goods" and "you would have to
+  // buy them in" are different answers and one of them is far dearer.
+  const { short, cash } = unitShortfall(state, state.home, id, depots);
+  const stocked = cash <= 0;
+  const affordable = stocked || state.countries[state.home].cash >= cash;
   setAttr(btn, 'hidden', ui.buildView === 'military' ? null : '');
   setText(btn.querySelector('.build__cost'), standing ? `×${standing}` : '');
-  setAttr(btn, 'title', `${def.name} — raise for ${bagLine(def.cost)}, then ${bagLine(def.upkeep)} every tick for as long as it stands.`
+  // The recipe line says what it costs YOU right now: the batch if the shelves
+  // can cover it, the money if they cannot.
+  setText(btn.querySelector('.build__recipe'), stocked
+    ? `${bagLine(def.cost)} · no upkeep`
+    : `${bagLine(def.cost)} · or ${moneyShort(cash)}`);
+  setAttr(btn, 'title', `${def.name} — raise for ${bagLine(def.cost)} out of your warehouses. It costs nothing to keep once it stands.`
+    + (stocked ? '' : ` You are short of ${Object.keys(short).map((c) => COMMODITIES[c].name).join(' and ')},`
+      + ` so raising one now would buy that in for ${money(cash)} — procurement costs ${CONFIG.army.cashMarkup}× the market, which is why building the industry is the better answer.`)
+    + ` Moves ${def.speed} tile${def.speed === 1 ? '' : 's'} a tick and strikes ${def.range} tile${def.range === 1 ? '' : 's'} out.`
     + ` ${standing ? `${standing} in the field. ` : ''}Pick it up and click your own ground. ${def.blurb}`);
   setAttr(btn, 'data-active', ui.unit === id ? 'true' : null);
-  setAttr(btn, 'data-affordable', affordable ? 'true' : 'false');
+  setAttr(btn, 'data-affordable', affordable ? (stocked ? 'true' : 'cash') : 'false');
 }
 
 export function buildCategory(type, def = BUILDINGS[type]) {
@@ -305,16 +337,41 @@ function updateTradeGoods(refs, ctx) {
   }));
 }
 
+// Where the nation stands with the rest of the world, on the fixed bar. It says
+// the most alarming true thing and nothing else: a war being fought outranks a
+// war being declared, which outranks the pacts you hold. A player who has to
+// open a tab to discover that fighting starts in twelve ticks has been told too
+// late.
+function updateStanding(refs, state) {
+  const relations = state.diplomacy?.relations?.[state.home] ?? {};
+  const wars = Object.values(relations).filter((r) => r === 'war').length;
+  const allies = Object.values(relations).filter((r) => r === 'alliance').length;
+  const looming = (state.diplomacy?.ultimatums ?? [])
+    .filter((u) => u.from === state.home || u.to === state.home)
+    .reduce((soonest, u) => Math.min(soonest, u.beginsAt - state.tick), Infinity);
+  const text = wars ? `At war (${wars})`
+    : Number.isFinite(looming) ? `War in ${Math.max(0, looming)}t`
+      : allies ? `${allies} all${allies === 1 ? 'y' : 'ies'}` : 'At peace';
+  setText(refs.standing, text);
+  setAttr(refs.standing, 'data-war', wars ? 'true' : null);
+  setAttr(refs.standing, 'data-looming', !wars && Number.isFinite(looming) ? 'true' : null);
+}
+
 function updateNationCard(refs, ctx, me, wages) {
   const { state } = ctx;
   const def = COUNTRIES[state.home];
   const sites = state.buildings.reduce((n, b) => n + (b.owner === state.home ? 1 : 0), 0);
   const contracts = (state.contracts ?? []).reduce((n, c) =>
     n + (c.seller === state.home || c.buyer === state.home ? 1 : 0), 0);
+  // What the standing army is, and what it took to raise. A TOTAL, not a rate:
+  // a formation draws its batch once and nothing afterwards, so this is what
+  // has been spent on the army rather than what it is costing you.
+  const army = unitsOf(state, state.home);
+  const raisedFor = armyCostOf(state, state.home);
   // Rebuilt only when something on it actually changed — this panel is cheap,
   // but it is repainted every tick and the meter animates if it churns.
   const sig = [state.home, Math.round(me.cash), me.report.net, wages, sites, contracts,
-               me.demand.toFixed(2), me.supply.toFixed(3)].join('|');
+               army.length, me.demand.toFixed(2), me.supply.toFixed(3)].join('|');
   if (refs.nationCard.dataset.sig === sig) return;
   refs.nationCard.dataset.sig = sig;
 
@@ -329,6 +386,8 @@ function updateNationCard(refs, ctx, me, wages) {
       <dl class="facts">
         <div><dt>Wages</dt><dd>&times;${def.wageMul.toFixed(2)}</dd></div>
         <div><dt>Sites</dt><dd>${num(sites)}</dd></div>
+        <div><dt title="Formations standing, and the goods they were raised out of. A formation costs nothing to keep — this is what it took to field, not a running bill.">Army</dt>
+          <dd>${army.length ? `${num(army.length)} <span class="muted">&middot; ${bagLine(raisedFor)}</span>` : 'none'}</dd></div>
       </dl>
     </div>`));
 }

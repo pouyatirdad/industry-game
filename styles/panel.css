@@ -24,6 +24,7 @@
   padding: 6px 6px; font-size: 11px; letter-spacing: .03em;
   border-radius: 6px 6px 0 0; border-bottom-color: transparent;
   background: transparent; color: var(--muted); min-width: 0;
+  position: relative;
 }
 .tab:hover { color: var(--ink); background: var(--panel-2); }
 .tab[data-active="true"] {
@@ -31,8 +32,24 @@
   border-color: var(--line); border-bottom-color: var(--panel-2);
   margin-bottom: -1px;
 }
+/* The active tab gets a bright edge along its top. Nine tabs in two wrapped
+   rows all shaded the same colour made "which one am I on" a question you had
+   to answer by reading, and the answer should be visible from the map. */
+.tab[data-active="true"]::before {
+  content: ''; position: absolute; left: 6px; right: 6px; top: 0; height: 2px;
+  background: var(--accent); border-radius: 2px;
+}
+/* The number that opens it. Printed rather than left to folklore: a shortcut
+   nobody can see is a shortcut nobody uses. */
+.tab__key {
+  flex: none; font-size: 9px; line-height: 1; opacity: .45;
+  font-variant-numeric: tabular-nums;
+}
+.tab[data-active="true"] .tab__key { opacity: .8; }
 .tab__label { overflow: hidden; text-overflow: ellipsis; }
-.tab--collapse { flex: 0 0 auto; padding: 6px 8px; }
+.tab--collapse, .tab--grow { flex: 0 0 auto; padding: 6px 8px; }
+.tab--grow[data-active="true"] { color: var(--accent); background: var(--panel-2); }
+.tab--grow[data-active="true"]::before { display: none; }
 
 /* How many sites you own, and whether any of them wants looking at. */
 .tab__badge:empty { display: none; }
@@ -42,6 +59,15 @@
   background: var(--line); color: var(--ink);
 }
 .tab__badge[data-alarm="true"] { background: var(--bad); color: #2a0b08; font-weight: 700; }
+/* A war, or a declaration counting down toward one, is the one thing on this
+   strip worth interrupting whatever you are reading. */
+.tab[data-urgent="true"] { color: var(--bad); }
+.tab[data-urgent="true"] .tab__badge { animation: tab-pulse 1.6s ease-in-out infinite; }
+@keyframes tab-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .tab[data-urgent="true"] .tab__badge { animation: none; }
+  .panel--tabs { transition: none; }
+}
 
 /* The pane takes whatever height the panel has and SCROLLS when its content
    outruns the window. It used to say `hidden`, on the principle that a table is
@@ -107,27 +133,82 @@
 .chip[data-status="starved"], .chip[data-status="unstaffed"] { color: var(--bad); background: #e2685f1c; }
 .chip[data-status="blocked"] { color: var(--accent); background: #f0a04b1c; }
 
-.diplomacy__head {
-  margin-bottom: 8px; color: var(--muted); font-size: 12px;
+.diplomacy__head { margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.dip__head .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dip__warning {
+  margin: 6px 0 0; padding: 5px 8px; font-size: 11px;
+  border: 1px solid #e2685f99; background: #e2685f16; border-radius: 6px; color: var(--ink);
 }
-.diplomacy {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px;
+.dip__calloff { padding: 1px 8px; font-size: 11px; }
+
+/* Anything waiting on YOUR answer, at the top of the pane. The same offers
+   appear in the floating inbox and both call the same action. */
+.dip__offers:empty { display: none; }
+.dip__offers { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.dip__offer {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 11px; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel-2);
 }
-.diplomacy__row {
-  display: grid; grid-template-columns: minmax(0, 1fr) 132px;
-  align-items: center; gap: 8px; padding: 4px 6px;
+.dip__offer[data-kind="in"] { border-color: var(--accent); }
+.dip__offer-act { display: flex; gap: 4px; flex: none; }
+.dip__offer-act button { padding: 1px 8px; font-size: 11px; }
+
+/* 257 nations, two to a row. The name is a button (it shows that nation on the
+   map), the middle says where the two of you stand, and the four moves sit at
+   the end in a fixed order so the same button is always in the same place. */
+.diplomacy { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.dip {
+  display: grid; grid-template-columns: minmax(0, 1fr) 62px 104px auto;
+  align-items: center; gap: 6px; padding: 2px 5px;
   background: #ffffff08; border: 1px solid transparent; border-radius: 6px;
 }
-.diplomacy__name {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 11px;
+.dip__name {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  background: transparent; border: 0; padding: 2px 0; font-size: 11px; color: var(--ink);
+  text-align: left;
 }
-.diplomacy__relation {
-  width: 100%; min-width: 0; font-size: 11px;
+.dip__name:hover { background: transparent; border: 0; color: var(--accent); }
+.dip__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dip__state {
+  font-size: 10px; color: var(--muted); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.diplomacy__row[data-relation="alliance"] { border-color: #5fbf7f66; }
-.diplomacy__row[data-relation="access"] { border-color: #4a91d666; }
-.diplomacy__row[data-relation="war"] { border-color: #e2685f99; background: #e2685f14; }
+.dip__opinion {
+  display: grid; grid-template-columns: 54px minmax(32px, 1fr);
+  align-items: center; gap: 5px;
+  color: var(--muted); font-size: 10px;
+}
+.dip__opinion-word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dip__opinion-bar {
+  display: block; height: 4px; border-radius: 2px;
+  background: #ffffff12; overflow: hidden;
+}
+.dip__opinion-bar::after {
+  content: ""; display: block; width: var(--opinion, 0%); height: 100%;
+  background: var(--muted);
+}
+.dip__opinion[data-tone="good"] .dip__opinion-bar::after { background: var(--good); }
+.dip__opinion[data-tone="bad"] .dip__opinion-bar::after { background: var(--bad); }
+.dip__acts { display: flex; gap: 2px; flex: none; }
+.dip__act {
+  padding: 1px 5px; font-size: 10px; border-radius: 4px;
+  background: #ffffff0c; color: var(--muted);
+}
+.dip__act:hover:not(:disabled) { color: var(--ink); }
+.dip__act:disabled { opacity: .25; cursor: default; }
+.dip__act[data-danger="true"]:hover:not(:disabled) { color: var(--bad); border-color: #e2685f80; }
+
+.dip[data-relation="alliance"] { border-color: #5fbf7f66; }
+.dip[data-relation="alliance"] .dip__state { color: var(--good); }
+.dip[data-relation="access"] { border-color: #4a91d666; }
+.dip[data-relation="war"] { border-color: #e2685f99; background: #e2685f14; }
+.dip[data-relation="war"] .dip__state { color: var(--bad); font-weight: 700; }
+/* A declaration counting down is not yet a war and must not read as one — it is
+   the one state on this list you can still do something about. */
+.dip[data-pending="war"] { border-color: var(--accent); background: #f0a04b12; }
+.dip[data-pending="war"] .dip__state { color: var(--accent); font-weight: 700; }
+.dip[data-pending="proposal"] .dip__state { color: var(--accent); }
 
 .bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .bars li { display: grid; grid-template-columns: 82px 1fr 38px; align-items: center; gap: 7px; font-size: 11px; }
@@ -456,11 +537,50 @@
 .pane[data-pane="trade"] #country-list,
 .pane[data-pane="trade"] .hint--tight { grid-column: 2; }
 
-@media (max-width: 760px) {
+/* THE PHONE. Same 820px as base.css — one number means "this is a phone".
+   The two-column panes stack (this rule was written at 760px and moved here so
+   there is only one breakpoint), and the tab strip stops wrapping. */
+@media (max-width: 820px) {
   .pane[data-active="true"][data-pane="market"],
   .pane[data-active="true"][data-pane="trade"] { grid-template-columns: 1fr; }
   .pane[data-pane="market"] > *,
   .pane[data-pane="trade"] > * { grid-column: 1 !important; }
+
+  /* TEN TABS SCROLL, THEY DO NOT WRAP. Wrapping is right on a desktop, where
+     three short rows cost 90px of a 286px panel; on a phone the same ten tabs
+     wrap to three rows of a 60vh sheet and the pane underneath is a slot. One
+     scrolling row costs one row at any width. */
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding: 6px 4px 0 8px; }
+  .tab { flex: 0 0 auto; min-height: 38px; padding: 6px 10px; }
+  /* ...but the two chrome buttons must never scroll away: they are the only way
+     to close the sheet other than reaching past it to the map. */
+  .tab--collapse, .tab--grow {
+    position: sticky; right: 0; background: var(--panel);
+    min-width: 36px; padding: 6px;
+  }
+  .tab--grow { right: 36px; }
+
+  .panes { padding: 8px 8px 10px; }
+
+  /* 257 nations two to a row is two truncated names. */
+  .diplomacy { grid-template-columns: minmax(0, 1fr); }
+  .dip {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name acts"
+      "state opinion";
+    padding: 4px 6px;
+  }
+  .dip__name { grid-area: name; }
+  .dip__state { grid-area: state; text-align: left; }
+  .dip__opinion { grid-area: opinion; grid-template-columns: 48px 36px; }
+  .dip__acts { grid-area: acts; }
+  .dip__acts { gap: 3px; }
+
+  .draft__grid { grid-template-columns: 1fr; }
+  .dip__head .facts, .facts--four, .card .facts,
+  .market__head .facts--four, .fund__inner .facts--four,
+  .tech__head .facts--four, .factories__head .facts { grid-template-columns: 1fr; }
 }
 
 /* ---- the exchange ---- */
@@ -503,3 +623,31 @@
 .fund__act button { flex: 1; padding: 4px 8px; font-size: 11px; }
 .fund__act button[disabled] { opacity: .4; cursor: not-allowed; }
 .fund .hint { margin: 0; }
+
+/* ---- notifications ---- */
+
+/* The world's news. One line an event, newest first, and the whole list scrolls
+   inside the pane — it can run to a few hundred lines on a busy tick and the
+   pane itself must never grow to fit them. */
+.events { display: flex; flex-direction: column; gap: 2px; }
+.ev {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) 34px;
+  align-items: baseline; gap: 7px;
+  font-size: 11px; padding: 3px 7px; border-radius: 5px;
+  background: #ffffff06; border-left: 2px solid transparent;
+}
+.ev__body { min-width: 0; }
+.ev__age {
+  text-align: right; color: var(--muted); font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* Three tones only. A list where everything is urgent is a list where nothing
+   is, so most rows are plain and the border is the whole signal. */
+.ev[data-tone="bad"] { border-left-color: var(--bad); background: #e2685f12; }
+.ev[data-tone="good"] { border-left-color: var(--good); }
+.ev[data-tone="warn"] { border-left-color: var(--accent); }
+/* Anything you were a party to reads brighter than the rest of the world's
+   business, which is what makes the World filter usable at all. */
+.ev[data-mine="false"] .ev__body { color: var(--muted); }
+.ev[data-mine="true"] { background: #ffffff0f; }
+.ev[data-mine="true"] .ev__body b { color: var(--accent); }

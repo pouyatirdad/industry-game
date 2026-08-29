@@ -8,7 +8,10 @@ import { runContracts, runContractDiplomacy } from './contracts.js';
 import { runExchange, runLending } from './exchange.js';
 import { runResearch, runTechTrade } from './research.js';
 import { openLedger } from './ledger.js';
+import { pruneEvents } from '../core/state.js';
 import { runMilitary } from './military.js';
+import { runRelations } from './relations.js';
+import { runStateMilitary } from './stateMilitary.js';
 
 // Tick phase order is a GAME DESIGN decision, not an implementation detail.
 //
@@ -57,8 +60,26 @@ import { runMilitary } from './military.js';
 //                            It sits with the other decisions at the bottom
 //                            because it is one: a government funds it on
 //                            settled numbers, as it builds on settled numbers.
+// relations before army, army before security -> a declaration of war matures
+//                            into a war, THEN governments decide what to raise
+//                            and where to send it, THEN the shooting happens.
+//                            Any other order costs a tick somewhere.
+//                            `army` was MOVED to sit before `domestic` once, on
+//                            the theory that a government should requisition
+//                            before the shops open and that the late slot was
+//                            what left the world unarmed. Measured, it changed
+//                            nothing: a large nation's depots hold zero food at
+//                            EVERY phase of the tick, because it is a net
+//                            consumer of food by a factor of three and nothing
+//                            ever accumulates. The ordering was reverted — the
+//                            constraint is the economy, not the phase — and this
+//                            note is here so the same move is not made twice.
 export const PIPELINE = [
   ['ledger', openLedger],
+  // Beside the ledger fold and for the same reason: everything that writes into
+  // the world log sees only its own slice of the tick, so the sweep cannot live
+  // inside any of them.
+  ['events', pruneEvents],
   ['collect', collect],
   ['produce', produce],
   ['wages', payWages],
@@ -76,6 +97,8 @@ export const PIPELINE = [
   ['exchange', runExchange],
   ['licensing', runTechTrade],
   ['dealing', runContractDiplomacy],
+  ['relations', runRelations],
+  ['army', runStateMilitary],
   ['security', runMilitary],
 ];
 

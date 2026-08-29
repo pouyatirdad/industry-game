@@ -1,7 +1,8 @@
 import { createInitialState, createUiState, warehouseStock, siteWages, DEPOSIT_TERRAINS, WATER_TERRAINS, rehydrate,
   appetite, buildingsOf, canTrade, isPlayer, projectedWages, packState,
   pushAlert, pruneAlerts, dismissAlert, recordFlow, ownFlows,
-  pruneOffers, knowsTech, learnTech, techCount, contractsOf, exchangeOf } from '../src/core/state.js';
+  pruneOffers, knowsTech, learnTech, techCount, contractsOf, exchangeOf, spareRates,
+  noteEvent, eventsFor, isAlive, setTileOwner, opinionOf, nudgeOpinion, decayOpinions } from '../src/core/state.js';
 import { TECHS, TECH_IDS, STARTING_TECHS, canResearch, availableTechs, techChain } from '../src/data/technology.js';
 import { COMMODITIES, COMMODITY_IDS } from '../src/data/commodities.js';
 import { COUNTRIES, COUNTRY_IDS, COUNTRY_BY_CHAR } from '../src/data/countries.js';
@@ -15,7 +16,7 @@ import { build, canBuild, demolish,
   setResearch, setResearchShare, buyTech, canBuyTech, proposeContract, cancelContract,
   acceptContractOffer, postListing, take, takeLoan, repayLoan, toggleExport, toggleImport,
   setAllExports, setAllImports } from '../src/actions.js';
-import { runTick } from '../src/systems/index.js';
+import { runTick, PIPELINE } from '../src/systems/index.js';
 import { produce } from '../src/systems/production.js';
 import { payWages } from '../src/systems/economy.js';
 import { movePrices, growEconomies } from '../src/systems/market.js';
@@ -26,8 +27,14 @@ import { runResearch, runTechTrade, licenceCost } from '../src/systems/research.
 import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice } from '../src/systems/contracts.js';
 import { runExchange, runLending, post, takeListing, borrow, repay, borrowLimit,
   suggestListing } from '../src/systems/exchange.js';
-import { canMilitaryEnter, createMilitaryUnit, defeatTerrorists, moveMilitaryUnit, relationOf, setRelation,
-  runMilitary, terroristForce, terroristStrength, unitsOf, upkeepOf, UNIT_TYPES, UNIT_IDS } from '../src/systems/military.js';
+import { canMilitaryEnter, createMilitaryUnit, defeatTerrorists, moveMilitaryUnit, relationOf, setRelation, ticksToTerror,
+  runMilitary, terroristForce, terroristStrength, unitsOf, armyCostOf, UNIT_TYPES, UNIT_IDS,
+  canGroup, joinGroup, leaveGroup, groupMembers, groupSpeed, speedOf, rangeOf,
+  unitShortfall, unitInStock, unitOnTile } from '../src/systems/military.js';
+import { runRelations, proposeRelation, canPropose, answerProposal, declareWar, canDeclareWar,
+  callOffWar, ultimatumBetween, ticksToWar, proposalsTo, relationAppetite, alliesOf,
+  diplomacyOf, PROPOSABLE, warAppetite } from '../src/systems/relations.js';
+import { runStateMilitary, armyTarget, atWar, mobilising } from '../src/systems/stateMilitary.js';
 import { createLoop } from '../src/core/loop.js';
 // The nation table's scoring is the one piece of UI with a rule in it rather
 // than a layout, and it reads only `state` — so it is tested here like anything
@@ -597,6 +604,25 @@ test('nothing on the state survives a JSON round trip as anything but data', () 
   const back = JSON.parse(JSON.stringify(saved));
   equal(JSON.stringify(back), JSON.stringify(saved),
     'a Map, Set or class instance on the state would silently vanish here');
+});
+
+test('opinion is sparse, asymmetric and survives a save round trip', () => {
+  const state = createInitialState(7, 'BR');
+  nudgeOpinion(state, 'BR', 'AR', 12.345);
+  nudgeOpinion(state, 'AR', 'BR', -9);
+
+  equal(opinionOf(state, 'BR', 'AR') > 0, true, 'Brazil can like Argentina');
+  equal(opinionOf(state, 'AR', 'BR') < 0, true, 'without being liked back');
+
+  const saved = packState(state);
+  equal(saved.version, 15, 'the save version moves with the new state shape');
+  equal(saved.diplomacy.opinion.BR.AR, 12.3, 'opinion is rounded on the way out');
+  const back = rehydrate(JSON.parse(JSON.stringify(saved)));
+  equal(opinionOf(back, 'BR', 'AR'), 12.3, 'positive opinion comes back');
+  equal(opinionOf(back, 'AR', 'BR'), -9, 'negative opinion comes back too');
+
+  nudgeOpinion(back, 'BR', 'AR', -12.3);
+  equal(opinionOf(back, 'BR', 'AR'), 0, 'near-neutral opinions are dropped from the sparse table');
 });
 
 // ---- you are a nation ------------------------------------------------------
@@ -1541,6 +1567,32 @@ test('a seller that cannot deliver pays the buyer a penalty', () => {
   close(mine - me(state).cash, fee, 0.01, 'the defaulter pays');
   close(state.countries[partner].cash - theirs, fee, 0.01, 'and the other side is paid');
   assert(signed.contract.missed > 0, 'the miss is on the record');
+  assert(opinionOf(state, partner, state.home) < CONFIG.diplomacy.opinion.signed,
+    'and the buyer thinks less of the seller that defaulted');
+});
+
+test('signing and completing a contract improves opinion on both sides', () => {
+  const state = fixture();
+  const partner = COUNTRY_IDS.find((id) => id !== state.home);
+  place(state, 'warehouse', 20, 20, 'plain');
+  const theirs = placeIn(state, partner, 'warehouse', 60, 60, 'plain');
+  theirs.store.coal = 100;
+  me(state).cash = 5_000_000;
+  state.countries[partner].cash = 5_000_000;
+
+  const signed = signContract(state, {
+    seller: partner, buyer: state.home, commodity: 'coal', qty: 1, every: 1, term: 0,
+  });
+  assert(signed.ok, 'the one-off contract signs');
+  equal(opinionOf(state, state.home, partner), CONFIG.diplomacy.opinion.signed,
+    'signing warms the buyer toward the seller');
+  state.tick = signed.contract.started;
+  runContracts(state);
+
+  assert(opinionOf(state, state.home, partner) > CONFIG.diplomacy.opinion.signed,
+    'completion warms the buyer further');
+  assert(opinionOf(state, partner, state.home) > CONFIG.diplomacy.opinion.signed,
+    'and the seller too');
 });
 
 test('a buyer that cannot pay defaults just as a seller that cannot deliver does', () => {
@@ -1606,6 +1658,42 @@ test('the world writes contracts of its own', () => {
     assert(c.seller !== c.buyer, 'nobody contracts with itself');
     assert(canTrade(state, c.seller, c.buyer), 'and only with a partner it may trade with');
   }
+});
+
+test('world sellers undercut a standing ask when they sign a direct contract', () => {
+  const state = fixture();
+  const buyer = other(state);
+  const seller = other(state, [buyer]);
+  const standing = other(state, [buyer, seller]);
+  for (const id of COUNTRY_IDS) state.countries[id].solvent = false;
+  for (const id of [buyer, seller, standing]) {
+    state.countries[id].solvent = true;
+    state.countries[id].cash = 50_000_000;
+  }
+
+  const buyerTile = state.tiles.find((t) => t.countryId === buyer && t.terrain !== 'water');
+  const sellerTile = state.tiles.find((t) => t.countryId === seller && t.terrain !== 'water');
+  const standingTile = state.tiles.find((t) => t.countryId === standing && t.terrain !== 'water');
+  placeIn(state, buyer, 'warehouse', buyerTile.x, buyerTile.y, 'plain');
+  placeIn(state, buyer, 'coalPlant', buyerTile.x + 1, buyerTile.y, 'plain');
+  placeIn(state, seller, 'warehouse', sellerTile.x, sellerTile.y, 'plain').store.coal = 5000;
+  placeIn(state, standing, 'warehouse', standingTile.x, standingTile.y, 'plain').store.coal = 5000;
+  state.markets[seller].coal.price = 200;
+  state.markets[standing].coal.price = 200;
+  post(state, { from: standing, side: 'sell', commodity: 'coal', qty: 10, price: 100 });
+
+  const seekers = CONFIG.contracts.seekersPerTick;
+  try {
+    CONFIG.contracts.seekersPerTick = COUNTRY_IDS.length * 2;
+    state.tick = CONFIG.contracts.every;
+    runContractDiplomacy(state);
+  } finally {
+    CONFIG.contracts.seekersPerTick = seekers;
+  }
+
+  const made = state.contracts.find((c) => c.buyer === buyer && c.seller === seller && c.commodity === 'coal');
+  assert(made, 'the buyer found the stocked seller');
+  equal(made.price, 98, 'and the seller quoted under the best standing ask');
 });
 
 // ---- feedstock, at the scale the world actually needs ----------------------
@@ -1706,48 +1794,60 @@ test('military movement needs access, alliance or war to enter foreign land', ()
   assert(canMilitaryEnter(state, unit, foreign), 'war opens hostile land');
 });
 
-test('every formation is fed by a different bill, and infantry eat only food', () => {
+test('every formation is built out of a different bill, and infantry out of food alone', () => {
   equal(UNIT_IDS.length, 5, 'five formations: infantry, armoured car, tank, aircraft, artillery');
-  equal(Object.keys(UNIT_TYPES.infantry.upkeep).join(), 'food', 'infantry consume food and nothing else');
+  equal(Object.keys(UNIT_TYPES.infantry.cost).join(), 'food', 'infantry are raised out of rations and nothing else');
   for (const id of UNIT_IDS) {
     const def = UNIT_TYPES[id];
-    assert(Object.keys(def.upkeep).length > 0, `${id} runs on something`);
-    for (const commodity of Object.keys(def.upkeep)) {
-      assert(COMMODITIES[commodity], `${id} consumes a real commodity (${commodity})`);
-    }
+    assert(Object.keys(def.cost).length > 0, `${id} is made of something`);
     for (const commodity of Object.keys(def.cost)) {
       assert(COMMODITIES[commodity], `${id} is raised out of a real commodity (${commodity})`);
     }
+    // A formation costs its batch and NOTHING else, ever. This is the whole
+    // shape of an army in this game: capital bought in goods, not a running
+    // subscription — so a running bill is not merely unused data, it is a
+    // contradiction of the rule.
+    equal(def.upkeep, undefined, `${id} has no upkeep — a standing formation consumes nothing`);
   }
-  // The four mechanised formations are told apart by their fuel bill, and that
-  // ordering is the whole point of having four of them.
-  assert(UNIT_TYPES.armoredCar.upkeep.fuel < UNIT_TYPES.tank.upkeep.fuel,
-    'an armoured car burns less fuel than a tank');
-  assert(UNIT_TYPES.tank.upkeep.fuel < UNIT_TYPES.aircraft.upkeep.fuel,
-    'a tank burns less fuel than an aircraft');
-  assert(!UNIT_TYPES.artillery.upkeep.fuel, 'artillery burn no fuel at all');
-  assert(UNIT_TYPES.artillery.upkeep.food < UNIT_TYPES.infantry.upkeep.food,
-    'artillery eat less than infantry');
+  // The four mechanised formations are still told apart by their fuel, and that
+  // ordering is the whole point of having four of them. It just lives in what
+  // they are BUILT from now rather than in what they burn.
+  assert(UNIT_TYPES.armoredCar.cost.fuel < UNIT_TYPES.tank.cost.fuel,
+    'an armoured car takes less fuel to build than a tank');
+  assert(UNIT_TYPES.tank.cost.fuel < UNIT_TYPES.aircraft.cost.fuel,
+    'and a tank less than an aircraft');
+  assert(!UNIT_TYPES.artillery.cost.fuel, 'artillery need no oil at all');
+  assert(UNIT_TYPES.artillery.cost.food < UNIT_TYPES.infantry.cost.food,
+    'and less food than infantry');
   for (const dear of ['ore', 'power']) {
-    assert(UNIT_TYPES.armoredCar.upkeep[dear] < UNIT_TYPES.tank.upkeep[dear],
-      `an armoured car uses less ${dear} than a tank`);
+    assert(UNIT_TYPES.armoredCar.cost[dear] < UNIT_TYPES.tank.cost[dear],
+      `an armoured car takes less ${dear} than a tank`);
   }
 });
 
-test('a formation is raised out of warehouse stock, not out of the treasury', () => {
+test('a formation is raised out of warehouse stock before it is out of the treasury', () => {
   const state = fixture();
   const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
   const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
   const ground = state.tiles.find((t) => t.countryId === state.home
     && t.terrain !== 'water' && t.buildingId == null);
-  const cash = me(state).cash;
 
+  // An empty depot AND an empty treasury is the only combination that fields
+  // nothing. Money alone can buy the batch in — dearly — which is what the
+  // shortfall test above covers.
+  me(state).cash = 0;
   equal(createMilitaryUnit(state, state.home, 'tank', ground.id).ok, false,
-    'an empty depot cannot raise a tank');
+    'nothing on the shelf and nothing in the bank raises nothing');
+
+  // With the goods on the shelf, the goods are what get spent: the treasury is
+  // never touched when the warehouse can cover it.
+  me(state).cash = 1_000_000;
+  const cash = me(state).cash;
   Object.assign(depot.store, UNIT_TYPES.tank.cost);
   const raised = createMilitaryUnit(state, state.home, 'tank', ground.id);
   assert(raised.ok, `a stocked depot can (${raised.reason ?? ''})`);
-  equal(me(state).cash, cash, 'the treasury is untouched — an army is supplies, not capital');
+  equal(raised.cash, 0, 'and nothing had to be bought in');
+  equal(me(state).cash, cash, 'so the treasury is untouched — goods are always the cheaper route');
   for (const [commodity, qty] of Object.entries(UNIT_TYPES.tank.cost)) {
     assert(depot.store[commodity] < qty, `${commodity} came out of the warehouse`);
   }
@@ -1755,29 +1855,293 @@ test('a formation is raised out of warehouse stock, not out of the treasury', ()
     'two formations cannot hold the same ground');
 });
 
-test('a standing formation eats every tick and wastes away unsupplied', () => {
+test('a treasury can buy in what the warehouses have not got, at a markup', () => {
   const state = fixture();
   const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
   const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
   const ground = state.tiles.find((t) => t.countryId === state.home
     && t.terrain !== 'water' && t.buildingId == null);
-  depot.store.food = UNIT_TYPES.infantry.cost.food + 3;
+
+  // Nothing on the shelves at all: the whole batch has to be bought in.
+  const whole = unitShortfall(state, state.home, 'infantry', [depot]);
+  equal(Object.keys(whole.short).join(), 'food', 'it is short of exactly what infantry are made of');
+  assert(whole.cash > 0, `and that has a price (${whole.cash})`);
+  // Dearer than the goods are worth, which is the entire point — producing it
+  // yourself has to stay the better answer.
+  assert(whole.cash > UNIT_TYPES.infantry.cost.food * COMMODITIES.food.basePrice,
+    'procurement costs more than the goods are worth');
+
+  // Too poor to buy and nothing to draw on: refused, and told why.
+  me(state).cash = whole.cash - 1;
+  const broke = createMilitaryUnit(state, state.home, 'infantry', ground.id);
+  equal(broke.ok, false, 'a treasury that cannot cover it is refused');
+  assert(/buying it in/.test(broke.reason), `and the refusal says so: ${broke.reason}`);
+
+  // Rich enough, and it is raised out of MONEY with no depot stock at all.
+  me(state).cash = whole.cash + 500_000;
+  const before = me(state).cash;
+  const bought = createMilitaryUnit(state, state.home, 'infantry', ground.id);
+  assert(bought.ok, `a full treasury can field one (${bought.reason ?? ''})`);
+  equal(bought.cash, whole.cash, 'and pays the quoted price');
+  equal(me(state).cash, before - whole.cash, 'straight out of the treasury');
+
+  // No contract, no counterparty, nothing crossed a border: this is procurement,
+  // not trade, and that distinction is the whole rule.
+  equal((state.contracts ?? []).length, 0, 'buying goods in writes no contract');
+  equal((state.contractOffers ?? []).length, 0, 'and puts no offer to anybody');
+});
+
+test('goods are cheaper than money, and part-stocked means part-paid', () => {
+  const state = fixture();
+  const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
+  const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
+  const ground = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.buildingId == null);
+  me(state).cash = 5_000_000;
+
+  const empty = unitShortfall(state, state.home, 'infantry', [depot]).cash;
+  // Half the batch on the shelf halves what has to be bought.
+  depot.store.food = UNIT_TYPES.infantry.cost.food / 2;
+  const half = unitShortfall(state, state.home, 'infantry', [depot]).cash;
+  assert(half > 0 && half < empty, `part-stocked costs part-price (${half} vs ${empty})`);
+
+  // Fully stocked costs nothing at all — goods are always the cheaper route.
+  depot.store.food = UNIT_TYPES.infantry.cost.food;
+  equal(unitShortfall(state, state.home, 'infantry', [depot]).cash, 0,
+    'a full shelf costs no money whatever');
+  assert(unitInStock(state, state.home, 'infantry', [depot]), 'and reads as in stock');
+
+  const cashBefore = me(state).cash;
+  const raised = createMilitaryUnit(state, state.home, 'infantry', ground.id);
+  assert(raised.ok, 'it is raised');
+  equal(me(state).cash, cashBefore, 'and the treasury is untouched when the goods were there');
+  equal(depot.store.food, 0, 'the goods went instead');
+});
+
+test('a standing formation costs its batch once and nothing ever again', () => {
+  const state = fixture();
+  const own = state.tiles.find((t) => t.countryId === state.home && t.terrain === 'plain');
+  const depot = place(state, 'warehouse', own.x, own.y, own.terrain);
+  const ground = state.tiles.find((t) => t.countryId === state.home
+    && t.terrain !== 'water' && t.buildingId == null);
+  depot.store.food = UNIT_TYPES.infantry.cost.food + 40;
+  const before = depot.store.food;
   assert(createMilitaryUnit(state, state.home, 'infantry', ground.id).ok, 'infantry raised');
-  equal(Object.keys(upkeepOf(state, state.home)).join(), 'food', 'the standing bill is rations');
+  equal(depot.store.food, before - UNIT_TYPES.infantry.cost.food, 'the batch came out of the depot');
+  equal(Object.keys(armyCostOf(state, state.home)).join(), 'food',
+    'and the army is accounted for in what it was built from');
 
-  const held = depot.store.food;
-  runMilitary(state);
-  assert(depot.store.food < held, 'a supplied tick draws rations out of the depot');
+  // An army is CAPITAL, not a subscription. Whatever is left in the depot after
+  // the batch is still there a thousand ticks later.
+  const kept = depot.store.food;
   const unit = unitsOf(state, state.home)[0];
-  equal(unit.supplied, true, 'and the unit reads as supplied');
+  for (let i = 0; i < 400; i++) runMilitary(state);
+  equal(depot.store.food, kept, 'a standing formation draws nothing at all, ever');
+  equal(unit.strength, UNIT_TYPES.infantry.strength, 'and never wastes away');
+  equal(unitsOf(state, state.home).length, 1, 'so an empty treasury cannot disband it');
 
+  // ...and an empty depot changes nothing either, which is the point.
   depot.store.food = 0;
-  const full = unit.strength;
+  for (let i = 0; i < 400; i++) runMilitary(state);
+  equal(unitsOf(state, state.home).length, 1, 'nor can an empty warehouse');
+  equal(unit.strength, UNIT_TYPES.infantry.strength, 'the only thing that can hurt it is an enemy');
+});
+
+// ---- how fast a formation moves and how far it reaches ---------------------
+
+// A straight run of home soil, so a march can be measured in TILES rather than
+// left to the shape of the real world. `claim` is the same tool the economy
+// tests use to give a nation room next to a depot it just stamped.
+function marchLane(state, length) {
+  const start = state.tiles.find((t) => t.countryId === state.home && t.terrain !== 'water'
+    && t.x + length + 1 < state.grid.w && t.y + 9 < state.grid.h);
+  const lane = [];
+  for (let i = 0; i <= length; i++) lane.push(claim(state, state.home, start.x + i, start.y, 'plain'));
+  // Deliberately NO depot: a standing formation draws nothing, so a lane needs
+  // no logistics behind it, and an empty lane is one where the only thing that
+  // can move a unit's strength is an enemy.
+  return lane;
+}
+
+// A formation put straight on the map. Raising one properly is tested above;
+// these tests are about what it does once it is standing.
+function station(state, type, tile, owner = state.home) {
+  const def = UNIT_TYPES[type];
+  const unit = {
+    id: state.military.nextUnitId++, type, owner, domain: def.domain,
+    tileId: tile.id, x: tile.x, y: tile.y, strength: def.strength,
+    engaged: false, orderTileId: null, groupId: null,
+  };
+  state.military.units.push(unit);
+  return unit;
+}
+
+test('every formation moves at its own pace and reaches only as far as it should', () => {
+  // The five are told apart on the map by exactly two numbers, and both are
+  // DATA — a system that hardcoded either would be the bug this asserts against.
+  equal(UNIT_TYPES.infantry.speed, 1, 'infantry march a tile a tick');
+  equal(UNIT_TYPES.artillery.speed, 1, 'and guns are no faster');
+  equal(UNIT_TYPES.tank.speed, 2, 'a tank makes two');
+  equal(UNIT_TYPES.armoredCar.speed, 3, 'a wheeled car three');
+  equal(UNIT_TYPES.aircraft.speed, 20, 'and an aircraft twenty');
+  assert(UNIT_TYPES.armoredCar.speed > UNIT_TYPES.tank.speed,
+    'the light thing outruns the heavy one it is lighter than');
+  assert(UNIT_TYPES.aircraft.speed > UNIT_TYPES.armoredCar.speed * 5,
+    'and nothing on the ground is in the same class as an aircraft');
+
+  for (const id of UNIT_IDS) {
+    const def = UNIT_TYPES[id];
+    assert(Number.isInteger(def.speed) && def.speed >= 1, `${id} covers whole tiles`);
+    assert(Number.isInteger(def.range) && def.range >= 1, `${id} reaches at least the ground it touches`);
+    equal(def.range, id === 'artillery' ? 3 : 1,
+      `${id} strikes ${id === 'artillery' ? 'three tiles out' : 'only what it can touch'}`);
+  }
+});
+
+test('a move order is a march, not a teleport — a tile a tick for infantry', () => {
+  const state = fixture();
+  const lane = marchLane(state, 6);
+  const unit = station(state, 'infantry', lane[0]);
+
+  const order = moveMilitaryUnit(state, unit.id, lane[5].id);
+  assert(order.ok, `the order is accepted (${order.reason ?? ''})`);
+  equal(unit.x, lane[0].x, 'and nothing has moved yet — an order is not an arrival');
+
   runMilitary(state);
-  equal(unit.supplied, false, 'an empty depot leaves it unsupplied');
-  assert(unit.strength < full, 'and it loses strength for the tick');
-  for (let i = 0; i < 200; i++) runMilitary(state);
-  equal(unitsOf(state, state.home).length, 0, 'a formation nobody feeds is eventually gone');
+  equal(unit.x, lane[1].x, 'one tick covers exactly one tile');
+  runMilitary(state);
+  equal(unit.x, lane[2].x, 'and the next covers one more');
+  for (let i = 0; i < 3; i++) runMilitary(state);
+  equal(unit.tileId, lane[5].id, 'it arrives on the tile it was ordered to');
+  equal(unit.orderTileId, null, 'and the order is spent');
+  runMilitary(state);
+  equal(unit.tileId, lane[5].id, 'a formation with no order stays where it is');
+});
+
+test('a tank covers two tiles a tick, a car three, and an aircraft twenty', () => {
+  const state = fixture();
+  const lane = marchLane(state, 24);
+  const paces = { tank: 2, armoredCar: 3, aircraft: 20 };
+  for (const [type, pace] of Object.entries(paces)) {
+    const unit = station(state, type, lane[0]);
+    assert(moveMilitaryUnit(state, unit.id, lane[24].id).ok, `${type} takes the order`);
+    runMilitary(state);
+    equal(unit.x - lane[0].x, pace, `${type} covers ${pace} tiles in one tick`);
+    // Take it off the board again so the next one starts from the same ground.
+    state.military.units = state.military.units.filter((u) => u.id !== unit.id);
+  }
+});
+
+// ---- grouping --------------------------------------------------------------
+
+test('land formations group with land, and aircraft only with aircraft', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const foot = station(state, 'infantry', lane[0]);
+  const guns = station(state, 'artillery', lane[1]);
+  const plane = station(state, 'aircraft', lane[2]);
+  const wing = station(state, 'aircraft', lane[3]);
+  const foreign = COUNTRY_IDS.find((id) => id !== state.home);
+  const theirs = station(state, 'infantry', lane[4], foreign);
+
+  assert(canGroup(foot, guns), 'riflemen and guns march together');
+  assert(canGroup(plane, wing), 'and aircraft fly with aircraft');
+  equal(canGroup(foot, plane), false, 'but an aircraft does not march with infantry');
+  equal(canGroup(plane, guns), false, 'nor with a gun battery');
+  equal(canGroup(foot, theirs), false, 'and two governments’ armies are not one army');
+
+  assert(joinGroup(state, foot.id, guns.id).ok, 'a land group forms');
+  equal(joinGroup(state, foot.id, plane.id).ok, false, 'an aircraft cannot join it');
+  equal(joinGroup(state, foot.id, theirs.id).ok, false, 'and neither can a foreign formation');
+  equal(groupMembers(state, foot.groupId).length, 2, 'the group is the two who could');
+});
+
+test('a group moves together, at the pace of its slowest member', () => {
+  const state = fixture();
+  const lane = marchLane(state, 12);
+  const car = station(state, 'armoredCar', lane[0]);
+  const foot = station(state, 'infantry', lane[0]);
+  assert(joinGroup(state, car.id, foot.id).ok, 'the column forms');
+  equal(groupSpeed(state, car.groupId), 1,
+    'and it moves at the rifleman’s pace, not the car’s');
+
+  // The order is given to the CAR, and the whole column takes it.
+  const order = moveMilitaryUnit(state, car.id, lane[3].id);
+  assert(order.ok, 'the order is accepted');
+  equal(order.ordered.length, 2, 'and it is given to both of them');
+  equal(foot.orderTileId, lane[3].id, 'the rifleman has the same destination');
+
+  runMilitary(state);
+  equal(car.x - lane[0].x, 1, 'the car is held to one tile a tick');
+  equal(foot.x - lane[0].x, 1, 'and the rifleman keeps up with it');
+  for (let i = 0; i < 2; i++) runMilitary(state);
+  equal(car.tileId, lane[3].id, 'they arrive together');
+  equal(foot.tileId, lane[3].id, 'on the same ground');
+
+  // Cut loose, the car is itself again.
+  assert(leaveGroup(state, car.id).ok, 'a formation can leave the column');
+  equal(car.groupId, null, 'and stops being part of it');
+  equal(foot.groupId, null, 'a group of one is no group at all — the last member is freed too');
+  assert(moveMilitaryUnit(state, car.id, lane[9].id).ok, 'the car takes its own order');
+  runMilitary(state);
+  equal(car.x - lane[3].x, speedOf(car), 'and moves at its own three tiles a tick again');
+  equal(foot.tileId, lane[3].id, 'while the rifleman it left behind stays put');
+});
+
+// ---- what a formation can reach --------------------------------------------
+
+test('artillery shells a cell three tiles out; everything else must stand on it', () => {
+  const state = fixture();
+  const lane = marchLane(state, 8);
+  const camp = lane[0];
+
+  const raid = () => {
+    const active = {
+      id: 'terror-test', name: 'ISIS cell', countryId: state.home,
+      tileId: camp.id, x: camp.x, y: camp.y,
+      infantry: CONFIG.terrorism.startInfantry, spawnedAt: 0, movedAt: 0,
+      targetId: null, destroyed: 0,
+    };
+    active.strength = terroristStrength(active);
+    state.terrorism.active = active;
+    return active;
+  };
+
+  // Did the cell take anything off it this tick? That, rather than whether it
+  // was cleared outright, is the question about REACH — a cell is worn down
+  // now, so "did it feel that" is the honest signal.
+  const hurts = () => {
+    const was = terroristStrength(state.terrorism.active);
+    runMilitary(state);
+    return !state.terrorism.active || terroristStrength(state.terrorism.active) < was;
+  };
+
+  // A gun battery three tiles out shells the camp without ever standing on it —
+  // the whole reason for dragging one around.
+  const active = raid();
+  const guns = station(state, 'artillery', lane[3]);
+  guns.strength = active.strength;
+  equal(rangeOf(guns), 3, 'a gun reaches three tiles');
+  assert(hurts(), 'and hits the camp from where it stands');
+
+  // A tile further out and it is only watching.
+  state.military.units = [];
+  raid();
+  station(state, 'artillery', lane[4]).strength = terroristStrength(state.terrorism.active);
+  equal(hurts(), false, 'four tiles is out of range even for a gun');
+
+  // Riflemen at the same distance do nothing at all...
+  state.military.units = [];
+  const still = raid();
+  const foot = station(state, 'infantry', lane[3]);
+  foot.strength = still.strength;
+  equal(hurts(), false, 'infantry three tiles away cannot touch it');
+
+  // ...but adjacent is inside their one tile of reach.
+  foot.x = lane[1].x;
+  foot.y = lane[1].y;
+  foot.tileId = lane[1].id;
+  assert(hurts(), 'a rifleman on the next tile can');
 });
 
 test('a terrorist cell is infantry and a few cars, never grows, and moves slowly toward a target', () => {
@@ -1842,13 +2206,912 @@ test('a matched defence clears a terrorist cell and pays a bounty', () => {
   state.terrorism.active = active;
   state.military.units.push({
     id: state.military.nextUnitId++, type: 'infantry', owner: state.home, domain: 'land',
-    tileId: camp.id, x: camp.x, y: camp.y, strength: active.strength, supplied: true,
+    tileId: camp.id, x: camp.x, y: camp.y, strength: active.strength, engaged: false,
   });
 
   const cashBefore = me(state).cash;
+  // Fighting a cell is a FIGHT, not a threshold: a matched force wears it down
+  // over a run of ticks rather than clearing it in one stroke. The old rule was
+  // all-or-nothing, and that is exactly what left a lone formation standing on a
+  // camp for two thousand ticks doing nothing at all.
   runMilitary(state);
-  equal(state.terrorism.active, null, 'a matched defending force clears the presence');
+  assert(state.terrorism.active, 'one tick does not settle it');
+  assert(terroristForce(state.terrorism.active).infantry < CONFIG.terrorism.startInfantry
+    || terroristStrength(state.terrorism.active) < active.strength,
+    'but the cell has taken losses');
+
+  let ticks = 1;
+  while (state.terrorism.active && ticks < 400) { runMilitary(state); ticks++; }
+  equal(state.terrorism.active, null, `a matched defending force does clear it (${ticks} ticks)`);
   equal(me(state).cash, cashBefore + CONFIG.terrorism.bounty, 'and the bounty lands straight in the treasury');
+});
+
+test('a cell wears its attackers down too, and destroys one it outmatches', () => {
+  const state = fixture();
+  const camp = state.tiles.find((t) => t.countryId === state.home && t.terrain !== 'water');
+  const active = {
+    id: 'terror-test', name: 'ISIS cell', countryId: state.home,
+    tileId: camp.id, x: camp.x, y: camp.y,
+    infantry: CONFIG.terrorism.startInfantry, spawnedAt: 0, movedAt: 0, targetId: null, destroyed: 0,
+  };
+  active.strength = terroristStrength(active);
+  state.terrorism.active = active;
+  // One rifleman against a whole cell — the case that used to be a permanent
+  // stalemate, with the unit standing on the camp for ever.
+  state.military.units.push({
+    id: state.military.nextUnitId++, type: 'infantry', owner: state.home, domain: 'land',
+    tileId: camp.id, x: camp.x, y: camp.y, strength: UNIT_TYPES.infantry.strength, engaged: false,
+  });
+
+  // Snapshot the NUMBER: `active` is the live cell, so reading `active.strength`
+  // after the fight would be comparing it against itself.
+  const wasStrength = active.strength;
+  let ticks = 0;
+  while (state.military.units.length && ticks < 400) { runMilitary(state); ticks++; }
+  equal(state.military.units.length, 0, `an outmatched formation is destroyed (${ticks} ticks)`);
+  assert(state.terrorism.active, 'and it does not clear the cell on its own');
+  assert(terroristStrength(state.terrorism.active) < wasStrength,
+    'though it does real damage on the way down — several such attacks add up');
+});
+
+// ---- the world log ---------------------------------------------------------
+
+test('the world log records what other governments do, and forgets it after 50 ticks', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 400; i++) runTick(state);
+
+  const log = state.events ?? [];
+  assert(log.length > 0, 'the world has been doing things and they are written down');
+  // Every row is DATA, not a sentence — that is what keeps the save small and
+  // keeps presentation text out of `src/systems`.
+  for (const e of log) {
+    assert(typeof e.kind === 'string' && e.kind.length, 'each row names what happened');
+    assert(COUNTRIES[e.who], `and who did it (${e.who})`);
+    equal(typeof e.text, 'undefined', 'and carries no formatted sentence');
+  }
+  // Bounded twice over: nothing older than the TTL, and never more than the cap.
+  const oldest = Math.min(...log.map((e) => e.tick));
+  assert(state.tick - oldest <= CONFIG.events.ttl,
+    `nothing survives past ${CONFIG.events.ttl} ticks (oldest was ${state.tick - oldest} ago)`);
+  assert(log.length <= CONFIG.events.max, `and the list is capped at ${CONFIG.events.max}`);
+
+  // It is the WORLD's news, not only yours — that is the entire point.
+  assert(log.some((e) => e.who !== state.home), 'other governments appear in it');
+});
+
+test('the log finds a nation under either name, and filters to it', () => {
+  const state = fixture();
+  const them = other(state);
+  const third = other(state, [them]);
+  state.tick = 10;
+  noteEvent(state, 'pact', them, { about: third, what: 'access' });
+  noteEvent(state, 'army', state.home, { what: 'infantry', qty: 0 });
+
+  equal(eventsFor(state, 'all').length, 2, 'the world sees both');
+  equal(eventsFor(state, state.home).length, 1, 'yours sees only yours');
+  // `about` counts as much as `who`: a pact put TO a nation is that nation's
+  // news as much as the proposer's.
+  equal(eventsFor(state, third).length, 1, 'a nation appears under `about` too');
+  equal(eventsFor(state, third)[0].who, them, 'attributed to whoever acted');
+  // Newest first — a log you have to scroll to the bottom of is a log nobody
+  // reads.
+  state.tick = 20;
+  noteEvent(state, 'war', them, { about: third });
+  equal(eventsFor(state, 'all')[0].kind, 'war', 'newest first');
+});
+
+test('a burst is capped even before the sweep runs', () => {
+  const state = fixture();
+  // Every nation acting on one decision tick is the real case: the sweep runs
+  // once a tick, so the cap has to hold WITHIN a tick as well as between them.
+  for (let i = 0; i < CONFIG.events.max * 2; i++) {
+    noteEvent(state, 'army', state.home, { what: 'infantry', qty: 0 });
+  }
+  equal(state.events.length, CONFIG.events.max, 'the cap holds inside a single tick');
+  // ...and the ones kept are the NEWEST, or a burst would bury the news it
+  // arrived with.
+  const ids = state.events.map((e) => e.id);
+  equal(ids[ids.length - 1], Math.max(...ids), 'and the newest are the ones kept');
+});
+
+// ---- diplomacy is asked for; war is declared -------------------------------
+
+const other = (state, skip = []) => COUNTRY_IDS.find((id) => id !== state.home && !skip.includes(id));
+
+test('alliance, access and peace are requests — war is the one thing that is not', () => {
+  const state = fixture();
+  const them = other(state);
+
+  for (const relation of PROPOSABLE) {
+    assert(relation !== 'war', 'war is not on the list of things one government may ask another for');
+  }
+  const refused = canPropose(state, state.home, them, 'war');
+  equal(refused.ok, false, 'and it cannot be proposed even by name');
+  assert(/declared/.test(refused.reason), `the refusal says why: ${refused.reason}`);
+
+  const put = proposeRelation(state, state.home, them, 'access');
+  assert(put.ok, `access can be asked for (${put.reason ?? ''})`);
+  equal(relationOf(state, state.home, them), 'neutral',
+    'and asking changes nothing — a proposal is not a relation');
+
+  equal(proposeRelation(state, state.home, them, 'alliance').ok, false,
+    'only one thing on the table with one nation at a time');
+
+  assert(answerProposal(state, put.proposal.id, true, them).ok, 'they can agree');
+  equal(relationOf(state, state.home, them), 'access', 'and THAT is what changes the relation');
+  equal(diplomacyOf(state).proposals.length, 0, 'an answered proposal leaves the table');
+});
+
+test('a declaration of war waits its hundred ticks, then begins', () => {
+  const state = fixture();
+  const them = other(state);
+  setRelation(state, state.home, them, 'alliance');
+
+  const declared = declareWar(state, state.home, them);
+  assert(declared.ok, `war can be declared without asking (${declared.reason ?? ''})`);
+  equal(relationOf(state, state.home, them), 'neutral',
+    'the alliance is torn up on the spot — you cannot be an ally and be marching on them');
+  equal(ticksToWar(state, state.home, them), CONFIG.diplomacy.warDelay,
+    'and the clock starts at the full delay');
+
+  // Walk it to one tick short of the deadline.
+  for (let i = 0; i < CONFIG.diplomacy.warDelay - 1; i++) {
+    state.tick++;
+    runRelations(state);
+  }
+  equal(relationOf(state, state.home, them), 'neutral', 'ninety-nine ticks in, nobody is at war');
+  equal(ticksToWar(state, state.home, them), 1, 'but it is one tick away');
+
+  state.tick++;
+  runRelations(state);
+  equal(relationOf(state, state.home, them), 'war', 'on the hundredth tick the war begins');
+  equal(ultimatumBetween(state, state.home, them), null, 'and the declaration is spent');
+});
+
+test('a declaration can be called off while it is still only a declaration', () => {
+  const state = fixture();
+  const them = other(state);
+  const declared = declareWar(state, state.home, them);
+  assert(declared.ok, 'war declared');
+
+  for (let i = 0; i < 30; i++) { state.tick++; runRelations(state); }
+  assert(callOffWar(state, declared.ultimatum.id, state.home).ok, 'the government that declared it can call it off');
+  equal(ultimatumBetween(state, state.home, them), null, 'the declaration is gone');
+
+  for (let i = 0; i < CONFIG.diplomacy.warDelay * 2; i++) { state.tick++; runRelations(state); }
+  equal(relationOf(state, state.home, them), 'neutral', 'and no war ever starts');
+});
+
+test('the defender’s allies are dragged in — with their own hundred ticks', () => {
+  const state = fixture();
+  const them = other(state);
+  const friend = other(state, [them]);
+  setRelation(state, them, friend, 'alliance');
+  equal(alliesOf(state, them).includes(friend), true, 'they have an ally');
+
+  declareWar(state, state.home, them);
+  for (let i = 0; i < CONFIG.diplomacy.warDelay; i++) { state.tick++; runRelations(state); }
+  equal(relationOf(state, state.home, them), 'war', 'the first war has begun');
+  equal(relationOf(state, state.home, friend), 'neutral',
+    'and their ally is NOT instantly at war — there is no back door round the delay');
+  equal(ticksToWar(state, state.home, friend), CONFIG.diplomacy.warDelay,
+    'it has declared, and its own hundred ticks are running');
+
+  for (let i = 0; i < CONFIG.diplomacy.warDelay; i++) { state.tick++; runRelations(state); }
+  equal(relationOf(state, state.home, friend), 'war', 'then it joins');
+});
+
+test('peace has to be agreed, and it holds for a while afterwards', () => {
+  const state = fixture();
+  const them = other(state);
+  setRelation(state, state.home, them, 'war');
+
+  equal(canPropose(state, state.home, them, 'alliance').ok, false,
+    'you do not ask a nation you are shelling for an alliance');
+  const suit = proposeRelation(state, state.home, them, 'neutral');
+  assert(suit.ok, `but you may sue for peace (${suit.reason ?? ''})`);
+  equal(relationOf(state, state.home, them), 'war', 'asking is not peace');
+
+  answerProposal(state, suit.proposal.id, false, them);
+  equal(relationOf(state, state.home, them), 'war', 'and a refusal leaves the war standing');
+
+  const again = proposeRelation(state, state.home, them, 'neutral');
+  equal(again.ok, false, 'nor can you ask the same thing again straight away');
+
+  // Walk past the cooldown and try once more, this time accepted.
+  state.tick += CONFIG.diplomacy.cooldown;
+  const accepted = proposeRelation(state, state.home, them, 'neutral');
+  assert(accepted.ok, 'after the cooldown it can be put again');
+  answerProposal(state, accepted.proposal.id, true, them);
+  equal(relationOf(state, state.home, them), 'neutral', 'and agreed peace ends the war');
+  equal(canDeclareWar(state, state.home, them).ok, false,
+    'the peace holds — you cannot declare again on the same tick you signed it');
+  state.tick += CONFIG.diplomacy.peaceCooldown;
+  assert(canDeclareWar(state, state.home, them).ok, 'but it is not permanent');
+});
+
+test('the world answers what is put to it, and the same save answers the same way', () => {
+  const play = (seed) => {
+    const state = fixture();
+    state.seed = seed;
+    const them = other(state);
+    proposeRelation(state, state.home, them, 'access');
+    for (let i = 0; i < CONFIG.diplomacy.every * 2; i++) { state.tick++; runRelations(state); }
+    return relationOf(state, state.home, them);
+  };
+  const first = play(CONFIG.seed);
+  assert(first === 'access' || first === 'neutral', 'a proposal put to the world gets an answer');
+  equal(diplomacyOf(fixture()).proposals.length, 0, 'and nothing is left on the table');
+  equal(play(CONFIG.seed), first, 'a replayed save answers identically — diplomacy is deterministic');
+});
+
+test('a government wants a near neighbour more than a stranger', () => {
+  const state = createInitialState();
+  // Neighbours and antipodes, measured with the same `haulShare` freight is.
+  const near = relationAppetite(state, 'FR', 'DE', 'access');
+  const far = relationAppetite(state, 'FR', 'NZ', 'access');
+  assert(near > far, `geography decides diplomacy too (${near.toFixed(2)} vs ${far.toFixed(2)})`);
+  // An alliance is a promise to fight somebody else's war, so it is wanted less
+  // freely than a landing strip, all else being equal.
+  assert(relationAppetite(state, 'FR', 'DE', 'alliance') < relationAppetite(state, 'FR', 'DE', 'access'),
+    'and an alliance is a bigger ask than access');
+});
+
+test('opinion changes diplomatic appetite and decays toward neutral', () => {
+  const state = createInitialState();
+  const cold = relationAppetite(state, 'FR', 'DE', 'access');
+  nudgeOpinion(state, 'FR', 'DE', 50);
+  const warm = relationAppetite(state, 'FR', 'DE', 'access');
+  assert(warm > cold, 'liking a government makes a pact more attractive');
+
+  const before = opinionOf(state, 'FR', 'DE');
+  decayOpinions(state);
+  assert(opinionOf(state, 'FR', 'DE') < before, 'and opinion fades toward neutral on review');
+});
+
+test('declaring war damages opinion, including friends of the defender', () => {
+  const state = fixture();
+  const attacker = other(state);
+  const defender = other(state, [attacker]);
+  const friend = other(state, [attacker, defender]);
+  nudgeOpinion(state, friend, defender, 60);
+
+  const before = warAppetite(state, attacker, defender);
+  const declared = declareWar(state, attacker, defender);
+  assert(declared.ok, 'the attack is declared');
+
+  assert(opinionOf(state, defender, attacker) <= CONFIG.diplomacy.opinion.war,
+    'the defender strongly dislikes the attacker');
+  assert(opinionOf(state, friend, attacker) < 0,
+    'and a friend of the defender lowers its opinion of the attacker too');
+  assert(warAppetite(state, attacker, defender) < before,
+    'an existing declaration no longer has appetite to declare again');
+});
+
+test('the world can declare war, but only one per review and not during the quiet period', () => {
+  const state = createInitialState();
+  const attacker = 'FR';
+  const defender = neighboursOf(attacker).find((id) => id !== state.home);
+  for (const id of COUNTRY_IDS) state.countries[id].solvent = false;
+  for (const id of [attacker, defender]) {
+    state.countries[id].solvent = true;
+    state.countries[id].cash = 50_000_000;
+  }
+  state.countries[attacker].demand = 1000;
+  state.countries[defender].demand = 1;
+  nudgeOpinion(state, attacker, defender, -100);
+
+  const jitter = CONFIG.diplomacy.jitter;
+  try {
+    CONFIG.diplomacy.jitter = 0;
+    state.tick = CONFIG.diplomacy.warQuiet;
+    runRelations(state);
+    equal(diplomacyOf(state).ultimatums.length, 1, 'one hostile pair can produce one declaration');
+
+    const secondTarget = neighboursOf(attacker).find((id) => id !== defender && id !== state.home);
+    state.countries[secondTarget].solvent = true;
+    nudgeOpinion(state, attacker, secondTarget, -100);
+    state.tick += CONFIG.diplomacy.every;
+    runRelations(state);
+    equal(diplomacyOf(state).ultimatums.length, 1, 'the worldwide quiet period blocks another one');
+  } finally {
+    CONFIG.diplomacy.jitter = jitter;
+  }
+});
+
+test('the world never puts more than a few pacts to you at once', () => {
+  const state = createInitialState();
+  for (let i = 0; i < 400; i++) runTick(state);
+  assert(proposalsTo(state, state.home).length <= CONFIG.diplomacy.maxProposals,
+    'your inbox is capped — a stack of pacts is a stack nobody reads');
+});
+
+// ---- what a war actually does ----------------------------------------------
+
+// Nothing to set up: a formation costs nothing to keep, so a combat test needs
+// no depots on either side and any strength that moves in one moved because
+// somebody shot it off.
+
+test('formations at war grind each other down; at peace they do not', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  const mine = station(state, 'infantry', lane[0]);
+  const theirs = station(state, 'infantry', lane[0], them);
+
+  const before = mine.strength;
+  runMilitary(state);
+  equal(mine.strength, before, 'two formations sharing a tile in peacetime simply stand there');
+  equal(theirs.strength, UNIT_TYPES.infantry.strength, 'both of them, and both are fed');
+
+  setRelation(state, state.home, them, 'war');
+  runMilitary(state);
+  assert(mine.strength < before, 'at war they fire');
+  assert(theirs.strength < UNIT_TYPES.infantry.strength, 'and BOTH of them are hit — nobody shoots first');
+  equal(mine.strength.toFixed(4), theirs.strength.toFixed(4),
+    'by exactly the same amount: who is earlier in the array cannot decide a battle');
+
+  // A formation IN CONTACT does not make its losses good. Without that rule its
+  // recovery outruns an even enemy's fire, both settle at half strength for
+  // ever, and no war between two even armies can be decided at all.
+  equal(mine.engaged, true, 'it is in contact');
+  const wounded = mine.strength;
+  runMilitary(state);
+  assert(mine.strength < wounded, 'and still losing ground — a unit under fire gets no replacements');
+
+  // Evenly matched, they are gone together rather than one surviving on the
+  // strength of being earlier in the array.
+  for (let i = 0; i < 200 && state.military.units.length; i++) runMilitary(state);
+  equal(state.military.units.length, 0, 'an even fight destroys both');
+});
+
+test('a formation that is broken is destroyed rather than lingering at nothing', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  setRelation(state, state.home, them, 'war');
+  // A tank against a rifleman: the rifleman is broken long before the tank is.
+  const tank = station(state, 'tank', lane[0]);
+  const foot = station(state, 'infantry', lane[0], them);
+
+  let ticks = 0;
+  while (state.military.units.includes(foot) && ticks < 200) { runMilitary(state); ticks++; }
+  assert(ticks < 200, `the rifleman is destroyed rather than decaying for ever (${ticks} ticks)`);
+  assert(state.military.units.includes(tank), 'and the tank is still standing');
+
+  // ...and the survivor is out of contact again, so it makes its losses good.
+  // Left flagged as engaged it could never recover from a war it had won.
+  // `reorganise` runs before the shooting, so the flag clears on the tick after
+  // the fight ends and recovery starts on the one after that — a deliberate
+  // one-tick lag, not an oversight.
+  const hurt = tank.strength;
+  assert(hurt < UNIT_TYPES.tank.strength, 'the tank did not come through unscathed');
+  runMilitary(state);
+  equal(tank.engaged, false, 'the last unit standing is in contact with nothing');
+  runMilitary(state);
+  assert(tank.strength > hurt, 'and starts making its losses good');
+  // Damage is a share of the attacker's strength, so nothing ever reaches zero
+  // on its own — the break point is what turns that asymptote into an outcome.
+  assert(UNIT_TYPES.infantry.strength * CONFIG.war.breakAt > 0,
+    'a formation is spent well before its strength is');
+});
+
+test('artillery outranges everything, and shells across the line', () => {
+  const state = fixture();
+  const lane = marchLane(state, 6);
+  const them = other(state);
+  setRelation(state, state.home, them, 'war');
+  const guns = station(state, 'artillery', lane[0]);
+  const foe = station(state, 'infantry', lane[3], them);
+
+  const gunsAt = guns.strength;
+  runMilitary(state);
+  // Both are supplied, so any strength that moved here moved because it was
+  // shot off — which is the whole point of stocking the enemy's depot.
+  assert(foe.strength < UNIT_TYPES.infantry.strength, 'a gun three tiles out hits');
+  equal(guns.strength, gunsAt, 'and riflemen three tiles away cannot hit back');
+
+  // A fourth tile is out of range of even the guns.
+  const distant = station(state, 'infantry', lane[4], them);
+  runMilitary(state);
+  equal(distant.strength, UNIT_TYPES.infantry.strength, 'four tiles is out of reach of everything');
+});
+
+test('a war costs the loser its industry', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  // Their soil, their factory, right beside our line.
+  const site = placeIn(state, them, 'warehouse', lane[3].x, lane[3].y, 'plain');
+  const raider = station(state, 'infantry', lane[2]);
+  equal(raider.owner, state.home, 'the raider is ours');
+
+  state.tick = CONFIG.war.raidEvery;
+  runMilitary(state);
+  assert(state.buildings.some((b) => b.id === site.id), 'in peacetime a neighbour’s factory is safe');
+
+  setRelation(state, state.home, them, 'war');
+  runMilitary(state);
+  equal(state.buildings.some((b) => b.id === site.id), false, 'at war a formation beside it wrecks it');
+  equal(state.tiles[site.tileId].buildingId, null, 'and the ground it stood on is cleared');
+});
+
+// ---- taking ground ---------------------------------------------------------
+
+test('a land formation takes the ground it stands on, and an aircraft never does', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  // Their soil, right beside our line.
+  const theirs = claim(state, them, lane[2].x, lane[2].y, 'plain');
+  const air = claim(state, them, lane[3].x, lane[3].y, 'plain');
+  setRelation(state, state.home, them, 'war');
+
+  const foot = station(state, 'infantry', theirs);
+  const plane = station(state, 'aircraft', air);
+  state.tick = CONFIG.war.conquerEvery;
+  runMilitary(state);
+
+  equal(theirs.countryId, state.home, 'the rifleman took the tile it was standing on');
+  equal(air.countryId, them, 'and the aircraft took nothing — it overflies, it does not occupy');
+  equal(foot.owner, state.home, 'the formation is unchanged by any of it');
+  equal(plane.owner, state.home, 'both of them');
+
+  // The DIFF is written down, because tiles are dropped from the save and
+  // regenerated from the seed — a conquest that only lived on the tile would be
+  // silently undone by a save/load.
+  equal(state.claims[theirs.id], state.home, 'the change is recorded as a claim');
+  assert((state.mapVersion ?? 0) > 0, 'and the map version moved, so the AI caches know');
+});
+
+test('ground taken carries whatever is built on it', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  const ground = claim(state, them, lane[2].x, lane[2].y, 'plain');
+  const site = placeIn(state, them, 'warehouse', ground.x, ground.y, 'plain');
+  equal(site.owner, them, 'their factory to begin with');
+  setRelation(state, state.home, them, 'war');
+  // Beside it rather than on it — a building occupies its tile, so the raid
+  // clears the site first and the ground is taken once the unit can stand there.
+  station(state, 'infantry', ground);
+
+  // A tick the conquest cadence falls on but the RAID cadence does not, so the
+  // site is still standing when the ground moves — otherwise this would be
+  // testing demolition rather than transfer.
+  state.tick = CONFIG.war.conquerEvery;
+  assert(state.tick % CONFIG.war.raidEvery !== 0, 'no raid falls on this tick');
+  runMilitary(state);
+  equal(ground.countryId, state.home, 'the ground changed hands');
+  // `building.owner` is ALSO the country the site stands in — a stated
+  // invariant — so a site whose ground moved has to move with it or the two
+  // would disagree.
+  const still = state.buildings.find((b) => b.id === site.id);
+  assert(still, 'the site is still standing');
+  equal(still.owner, state.home, 'and changed hands with the ground under it');
+});
+
+test('a march takes EVERY tile it crosses, not just the one it stops on', () => {
+  const state = fixture();
+  const lane = marchLane(state, 8);
+  const them = other(state);
+  // A corridor of their soil to walk down.
+  for (let i = 1; i <= 6; i++) claim(state, them, lane[i].x, lane[i].y, 'plain');
+  setRelation(state, state.home, them, 'war');
+  const unit = station(state, 'infantry', lane[0]);
+
+  assert(moveMilitaryUnit(state, unit.id, lane[6].id).ok, 'ordered down the corridor');
+  for (let i = 0; i < 10 && unit.orderTileId != null; i++) { state.tick++; runMilitary(state); }
+  equal(unit.tileId, lane[6].id, 'it arrived');
+
+  // The whole corridor, not merely the far end. A unit that walked through six
+  // tiles of enemy country has been in six tiles of enemy country — before this
+  // it took only whichever tile it happened to stand on when the conquest
+  // cadence next came round, which is one in ten.
+  for (let i = 1; i <= 6; i++) {
+    equal(lane[i].countryId, state.home, `tile ${i} of the corridor was taken`);
+  }
+});
+
+test('a formation can walk BACKWARDS off a peninsula to get where it is going', () => {
+  const state = fixture();
+  const lane = marchLane(state, 10);
+  // A spit: the unit sits at the tip, and the only land is to the WEST while the
+  // goal is to the EAST. Everything around it except lane[0] is sea.
+  const tip = claim(state, state.home, lane[1].x, lane[1].y, 'plain');
+  for (let oy = -1; oy <= 1; oy++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      if (!ox && !oy) continue;
+      const t = state.tiles[(tip.y + oy) * state.grid.w + (tip.x + ox)];
+      if (t && t.id !== lane[0].id) { t.terrain = 'water'; t.countryId = null; }
+    }
+  }
+  // A way round, one row south, back out to the east.
+  for (let i = 0; i <= 10; i++) claim(state, state.home, lane[0].x + i, lane[0].y + 1, 'plain');
+  const goal = claim(state, state.home, lane[9].x, lane[9].y + 1, 'plain');
+
+  const unit = station(state, 'infantry', tip);
+  assert(moveMilitaryUnit(state, unit.id, goal.id).ok, 'ordered east, off the spit');
+  let ticks = 0;
+  while (unit.orderTileId != null && ticks < 200) { state.tick++; runMilitary(state); ticks++; }
+
+  // It has to go WEST first — away from the goal — which the first version of
+  // the step rule forbade outright. That is what pinned Turkey's whole army on
+  // the Black Sea coast: every order it was given died on the first tick.
+  equal(unit.tileId, goal.id, `it got there by going the long way round (${ticks} ticks)`);
+});
+
+test('a march that cannot get there gives up instead of circling for ever', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  setRelation(state, state.home, them, 'war');
+  const unit = station(state, 'infantry', lane[0]);
+  // An island: their soil, ringed by sea, with no land approach at all.
+  const isle = claim(state, them, lane[0].x, lane[0].y + 4, 'plain');
+  for (let oy = -1; oy <= 1; oy++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      if (!ox && !oy) continue;
+      const t = state.tiles[(isle.y + oy) * state.grid.w + (isle.x + ox)];
+      if (t) { t.terrain = 'water'; t.countryId = null; }
+    }
+  }
+
+  assert(moveMilitaryUnit(state, unit.id, isle.id).ok, 'the order is accepted — you cannot see it is hopeless');
+  let ticks = 0;
+  while (unit.orderTileId != null && ticks < 400) { state.tick++; runMilitary(state); ticks++; }
+  equal(unit.orderTileId, null, `the march is abandoned rather than run for ever (${ticks} ticks)`);
+  assert(ticks <= CONFIG.war.giveUpAfter + 20, 'and abandoned promptly once it stops making progress');
+  equal(unit.unreachable, isle.id, 'the place is remembered, so it is not ordered there again');
+  equal(isle.countryId, them, 'and the island was never taken');
+});
+
+test('a formation standing still fights whatever walks into its range', () => {
+  const state = fixture();
+  const lane = marchLane(state, 6);
+  const them = other(state);
+  setRelation(state, state.home, them, 'war');
+
+  // Ours is stationary and under no orders at all — a garrison.
+  const guard = station(state, 'infantry', lane[0]);
+  // Theirs walks past it.
+  const raider = station(state, 'infantry', lane[4], them);
+  moveMilitaryUnit(state, raider.id, lane[6].id);
+
+  const full = UNIT_TYPES.infantry.strength;
+  state.tick = 1;
+  runMilitary(state);
+  equal(guard.strength, full, 'four tiles away, nothing happens');
+  equal(guard.orderTileId, null, 'and the garrison has no orders of its own');
+
+  // Let it march. Nothing is ordered to attack and nothing is targeted — the
+  // raider is simply walking past, and coming within reach is the whole trigger.
+  moveMilitaryUnit(state, raider.id, lane[0].id);
+  for (let i = 0; i < 6 && guard.strength === full; i++) { state.tick++; runMilitary(state); }
+  assert(guard.strength < full, 'once it is adjacent, the garrison is in the fight');
+  assert(raider.strength < full, 'and so is the raider — both fire, neither was ordered to');
+  equal(guard.engaged, true, 'the garrison reads as in contact');
+});
+
+test('a nation with no land left ceases to exist and can do nothing', () => {
+  const state = fixture();
+  const them = other(state);
+  // Reduce them to a single tile, then take it.
+  const owned = state.tiles.filter((t) => t.countryId === them);
+  for (const tile of owned.slice(1)) tile.countryId = null;
+  const last = owned[0];
+  last.terrain = 'plain';
+  setRelation(state, state.home, them, 'war');
+  station(state, 'infantry', last);
+
+  assert(isAlive(state, them), 'they exist while they hold ground');
+  state.tick = CONFIG.war.conquerEvery;
+  runMilitary(state);
+
+  equal(last.countryId, state.home, 'the last tile is taken');
+  equal(isAlive(state, them), false, 'and the nation is finished');
+  equal(canTrade(state, state.home, them), false, 'a nation that does not exist is not a market');
+  equal(canPropose(state, state.home, them, 'access').ok, false, 'nor can it be dealt with');
+  equal(unitsOf(state, them).length, 0, 'its army is gone');
+  equal(state.countries[them].demand, 0, 'and it has no economy');
+
+  // It does not come back, and it does not act.
+  for (let i = 0; i < 60; i++) runTick(state);
+  equal(isAlive(state, them), false, 'conquest is permanent');
+});
+
+test('a march holds the straight line rather than dog-legging to a corner', () => {
+  const state = fixture();
+  // A wide open field so terrain cannot be the reason for any bend in the path.
+  const x0 = 400;
+  const y0 = 300;
+  for (let y = y0 - 4; y <= y0 + 24; y++) {
+    for (let x = x0 - 2; x <= x0 + 62; x++) claim(state, state.home, x, y, 'plain');
+  }
+  const from = state.tiles[y0 * state.grid.w + x0];
+  const goal = state.tiles[(y0 + 20) * state.grid.w + (x0 + 60)];
+  const unit = station(state, 'infantry', from);
+  assert(moveMilitaryUnit(state, unit.id, goal.id).ok, 'ordered across the field');
+
+  let worst = 0;
+  for (let i = 0; i < 200 && unit.orderTileId != null; i++) {
+    state.tick++;
+    runMilitary(state);
+    // How far off the sight-line from start to goal it has strayed.
+    const cross = Math.abs((goal.x - from.x) * (unit.y - from.y) - (goal.y - from.y) * (unit.x - from.x));
+    worst = Math.max(worst, cross / Math.hypot(goal.x - from.x, goal.y - from.y));
+  }
+  equal(unit.tileId, goal.id, 'it arrives');
+  // Distance here is CHEBYSHEV, so a whole family of routes is equally short and
+  // the tie-break decides which one you watch. Settling ties by neighbour order
+  // sent a column up to the northern coast and along it; closing both axes first
+  // walked the diagonal out and then turned a hard corner. Following the
+  // sight-line keeps it on the line a person would draw.
+  assert(worst <= 1.5, `it stays on the sight-line (worst deviation ${worst.toFixed(2)} tiles)`);
+});
+
+test('an army fans out rather than marching down one road', () => {
+  const state = fixture();
+  const them = other(state);
+  const seat = state.tiles.find((t) => t.countryId === them && t.terrain !== 'water');
+  // Three separate objectives to aim at.
+  const sites = [];
+  for (let i = 0; i < 3; i++) {
+    sites.push(placeIn(state, them, 'warehouse', seat.x + i * 6, seat.y + 6, 'plain'));
+  }
+  // ...and three of ours, mustered together.
+  const home = state.tiles.find((t) => t.countryId === state.home && t.terrain !== 'water');
+  const ours = [0, 1, 2].map(() => station(state, 'infantry', home));
+  setRelation(state, state.home, them, 'war');
+
+  // `orderArmy` is the government's, so drive it as one: this is about how a
+  // government spreads its army, not about the player's own orders.
+  const enemyState = { ...state, home: 'ZZ' };   // so runStateMilitary does not skip us
+  enemyState.tick = CONFIG.stateArmyEvery;
+  runStateMilitary(enemyState);
+
+  const goals = ours.map((u) => u.orderTileId).filter((g) => g != null);
+  assert(goals.length > 1, `more than one formation was given an objective (${goals.length})`);
+  equal(new Set(goals).size, goals.length,
+    'and no two were sent to the same tile — an army that walks single file arrives as a stack');
+});
+
+test('a government marches at enemy formations before enemy land', () => {
+  const state = fixture();
+  const actor = other(state);
+  const enemy = other(state, [actor]);
+  const actorTile = state.tiles.find((t) => t.countryId === actor && t.terrain !== 'water');
+  const enemyTile = state.tiles.find((t) => t.countryId === enemy && t.terrain !== 'water');
+  const ours = station(state, 'infantry', actorTile, actor);
+  const theirs = station(state, 'infantry', enemyTile, enemy);
+  setRelation(state, actor, enemy, 'war');
+
+  const spread = CONFIG.army.spread;
+  try {
+    CONFIG.army.spread = 0;
+    const aiState = { ...state, home: 'ZZ' };
+    aiState.tick = CONFIG.stateArmyEvery;
+    runStateMilitary(aiState);
+  } finally {
+    CONFIG.army.spread = spread;
+  }
+
+  equal(ours.orderTileId, theirs.tileId, 'the first objective is the enemy formation');
+});
+
+test('a government marches at enemy land when there are no sites or formations left', () => {
+  const state = fixture();
+  const actor = other(state);
+  const enemy = other(state, [actor]);
+  const actorTile = state.tiles.find((t) => t.countryId === actor && t.terrain !== 'water');
+  const ours = station(state, 'infantry', actorTile, actor);
+  state.buildings = state.buildings.filter((b) => b.owner !== enemy);
+  state.military.units = state.military.units.filter((u) => u.owner !== enemy);
+  setRelation(state, actor, enemy, 'war');
+
+  const aiState = { ...state, home: 'ZZ' };
+  aiState.tick = CONFIG.stateArmyEvery;
+  runStateMilitary(aiState);
+
+  assert(ours.orderTileId != null, 'it still gets an objective');
+  equal(state.tiles[ours.orderTileId].countryId, enemy, 'and that objective is enemy ground');
+});
+
+test('a defeated nation\'s treasury, people and industry pass to the victor', () => {
+  const state = fixture();
+  const them = other(state);
+  // One tile left, with a treasury and a population on it.
+  const owned = state.tiles.filter((t) => t.countryId === them);
+  for (const tile of owned.slice(1)) tile.countryId = null;
+  const last = owned[0];
+  last.terrain = 'plain';
+  const gov = state.countries[them];
+  gov.cash = 250_000;
+  gov.pop = 12;
+  gov.demand = 9;
+
+  const mine = me(state);
+  const cashBefore = mine.cash;
+  const popBefore = mine.pop ?? 0;
+  const demandBefore = mine.demand;
+
+  setRelation(state, state.home, them, 'war');
+  station(state, 'infantry', last);
+  state.tick = CONFIG.war.conquerEvery;
+  runMilitary(state);
+
+  equal(isAlive(state, them), false, 'they are conquered');
+  equal(mine.cash, cashBefore + 250_000, 'their treasury is yours');
+  equal(mine.pop, popBefore + 12, 'and their people');
+  equal(mine.demand, demandBefore + 9, 'and the economy they were');
+  equal(state.countries[them].cash, 0, 'they keep nothing');
+  equal(state.buildings.some((b) => b.owner === them), false, 'nor any industry');
+});
+
+test('a cell that finishes a nation inherits nothing — it is not a government', () => {
+  const state = fixture();
+  const them = other(state);
+  const owned = state.tiles.filter((t) => t.countryId === them);
+  for (const tile of owned.slice(1)) tile.countryId = null;
+  const last = owned[0];
+  last.terrain = 'plain';
+  state.countries[them].cash = 500_000;
+  const before = COUNTRY_IDS.reduce((sum, id) => sum + state.countries[id].cash, 0);
+
+  const active = {
+    id: 'terror-test', name: 'ISIS cell', countryId: them,
+    tileId: last.id, x: last.x, y: last.y,
+    infantry: CONFIG.terrorism.startInfantry, spawnedAt: 0, movedAt: 0,
+    targetId: null, destroyed: 0,
+  };
+  active.strength = terroristStrength(active);
+  state.terrorism.active = active;
+  placeIn(state, them, 'warehouse', last.x, last.y, 'plain');   // something to go for
+
+  for (let i = 1; i <= 20 && isAlive(state, them); i++) {
+    state.tick += CONFIG.terrorism.moveEvery;
+    runMilitary(state);
+  }
+  const after = COUNTRY_IDS.reduce((sum, id) => sum + state.countries[id].cash, 0);
+  assert(after <= before, 'no government got richer for a cell taking a country');
+});
+
+test('a terrorist cell takes ground, and freeing it gives the ground back', () => {
+  const state = fixture();
+  const them = other(state);
+  const seat = state.tiles.find((t) => t.countryId === them && t.terrain !== 'water');
+  const target = placeIn(state, them, 'warehouse', seat.x + 3, seat.y, 'plain');
+  const active = {
+    id: 'terror-test', name: 'ISIS cell', countryId: them,
+    tileId: seat.id, x: seat.x, y: seat.y,
+    infantry: CONFIG.terrorism.startInfantry, spawnedAt: 0, movedAt: 0,
+    targetId: target.id, destroyed: 0,
+  };
+  active.strength = terroristStrength(active);
+  state.terrorism.active = active;
+
+  // Walk it until it has taken ground.
+  for (let i = 1; i <= 20 && !Object.keys(state.occupied ?? {}).length; i++) {
+    state.tick += CONFIG.terrorism.moveEvery;
+    runMilitary(state);
+  }
+  const held = Object.keys(state.occupied ?? {});
+  assert(held.length > 0, 'the cell holds ground it has walked over');
+  for (const tileId of held) {
+    equal(state.occupied[tileId], them, 'and remembers whose it was');
+    equal(state.tiles[Number(tileId)].countryId, null,
+      'while it holds it, the ground belongs to nobody — a cell is not a government');
+  }
+
+  // A THIRD nation clears it. The ground must go back to `them`, not to the
+  // liberator — that is the whole rule.
+  const liberator = other(state, [them]);
+  const camp = state.tiles[active.tileId];
+  claim(state, liberator, camp.x, camp.y + 40, 'plain');   // somewhere of their own
+  state.countries[liberator].cash = 1;
+  defeatTerrorists(state);
+
+  equal(Object.keys(state.occupied).length, 0, 'the cell holds nothing once it is gone');
+  for (const tileId of held) {
+    equal(state.tiles[Number(tileId)].countryId, them,
+      'liberated ground goes home to the nation it was taken from, never to the liberator');
+  }
+});
+
+test('conquest survives a save and a load', () => {
+  const state = fixture();
+  const lane = marchLane(state, 4);
+  const them = other(state);
+  const ground = claim(state, them, lane[2].x, lane[2].y, 'plain');
+  setRelation(state, state.home, them, 'war');
+  station(state, 'infantry', ground);
+  state.tick = CONFIG.war.conquerEvery;
+  runMilitary(state);
+  equal(ground.countryId, state.home, 'taken');
+
+  // Tiles are dropped from the save and rebuilt from the seed, so this is the
+  // case the claims diff exists for: without it the border would spring back.
+  const loaded = rehydrate(JSON.parse(JSON.stringify(packState(state))));
+  equal(loaded.tiles[ground.id].countryId, state.home,
+    'the conquest is still there after a round trip');
+});
+
+// ---- the world raises armies -----------------------------------------------
+
+test('a government raises an army out of its own warehouses, sized by its economy', () => {
+  const state = fixture();
+  const them = other(state);
+  const seat = state.tiles.find((t) => t.countryId === them && t.terrain === 'plain');
+  const depot = placeIn(state, them, 'warehouse', seat.x, seat.y, 'plain');
+  for (const id of COMMODITY_IDS) depot.store[id] = 2000;
+  // Bare ground beside the depot for the formations to muster on.
+  for (let i = 1; i <= 4; i++) claim(state, them, seat.x + i, seat.y, 'plain');
+
+  const target = armyTarget(state, them);
+  assert(target >= CONFIG.army.min, 'every government wants at least a token force');
+  assert(target <= CONFIG.army.max, 'and none of them wants an absurd one');
+
+  equal(unitsOf(state, them).length, 0, 'it starts with nothing standing');
+  for (let i = 0; i < 40; i++) { state.tick += CONFIG.stateArmyEvery; runStateMilitary(state); }
+  const raised = unitsOf(state, them);
+  assert(raised.length > 0, 'a stocked depot lets it field something');
+  assert(raised.length <= target, `and it stops at what it wants (${raised.length} of ${target})`);
+  for (const unit of raised) equal(unit.owner, them, 'everything it raised is its own');
+});
+
+test('a government with an empty depot buys its army in, and a broke one gets none', () => {
+  const state = fixture();
+  const them = other(state);
+  const seat = state.tiles.find((t) => t.countryId === them && t.terrain === 'plain');
+  placeIn(state, them, 'warehouse', seat.x, seat.y, 'plain');   // empty on purpose
+  for (let i = 1; i <= 4; i++) claim(state, them, seat.x + i, seat.y, 'plain');
+
+  // Broke and bare: nothing to draw on and nothing to pay with.
+  state.countries[them].cash = 0;
+  for (let i = 0; i < 20; i++) { state.tick += CONFIG.stateArmyEvery; runStateMilitary(state); }
+  equal(unitsOf(state, them).length, 0, 'an empty treasury and an empty shelf field nothing');
+
+  // Rich and bare: it buys the shortfall in, which is the whole point of the
+  // treasury route — a nation with money is not a nation without an army.
+  state.countries[them].cash = 50_000_000;
+  for (let i = 0; i < 20; i++) { state.tick += CONFIG.stateArmyEvery; runStateMilitary(state); }
+  const raised = unitsOf(state, them);
+  assert(raised.length > 0, 'but money alone can field one');
+  assert(state.countries[them].cash < 50_000_000, 'and it came out of the treasury');
+  // Procurement is dear, so it buys the CHEAPEST formation rather than the best.
+  const dearest = UNIT_IDS.slice().sort((a, b) => UNIT_TYPES[b].strength - UNIT_TYPES[a].strength)[0];
+  equal(raised.some((u) => u.type === dearest), false,
+    'a government paying cash buys riflemen, not aircraft');
+});
+
+test('a government mobilises while the ultimatum is still running, not after it', () => {
+  const state = fixture();
+  const them = other(state);
+  const peace = armyTarget(state, them);
+  equal(mobilising(state, them), false, 'nothing is coming yet');
+
+  declareWar(state, state.home, them);
+  // Early in the ultimatum it is still on a peacetime footing — the whole delay
+  // is not spent under arms.
+  equal(mobilising(state, them), false, 'a declaration alone does not mobilise anybody');
+  equal(armyTarget(state, them), peace, 'so the army it wants is unchanged');
+
+  // Wind the clock to `mobiliseAt` ticks before the fighting.
+  state.tick += CONFIG.diplomacy.warDelay - CONFIG.diplomacy.mobiliseAt;
+  equal(mobilising(state, them), true, 'with the deadline close it prepares');
+  assert(armyTarget(state, them) >= peace, 'and wants a bigger army BEFORE a shot is fired');
+  // The one being declared ON prepares too — it is the side that most needs to.
+  equal(mobilising(state, state.home), true, 'both sides of a declaration mobilise');
+});
+
+test('a government at war wants a bigger army than one at peace', () => {
+  const state = fixture();
+  const them = other(state);
+  const peace = armyTarget(state, them);
+  equal(atWar(state, them), false, 'it is at peace to begin with');
+  setRelation(state, them, state.home, 'war');
+  equal(atWar(state, them), true, 'and now it is not');
+  assert(armyTarget(state, them) >= peace, 'a war is a reason to raise more');
 });
 
 test('a defence weaker than the cell does not clear it', () => {
@@ -1867,11 +3130,47 @@ test('a defence weaker than the cell does not clear it', () => {
   state.terrorism.active = active;
   state.military.units.push({
     id: state.military.nextUnitId++, type: 'infantry', owner: state.home, domain: 'land',
-    tileId: camp.id, x: camp.x, y: camp.y, strength: active.strength - 1, supplied: true,
+    tileId: camp.id, x: camp.x, y: camp.y, strength: active.strength - 1, engaged: false,
   });
 
   runMilitary(state);
   assert(state.terrorism.active, 'an under-strength defence does not clear the presence');
+});
+
+test('a cell is announced a hundred ticks before it appears, and appears where it was announced', () => {
+  const state = fixture();
+  const warnAt = CONFIG.terrorism.firstAt - CONFIG.terrorism.warnBefore;
+  for (let i = 0; i < warnAt - 1; i++) runTick(state);
+  equal(state.terrorism.warning, null, 'nothing is announced before the warning window');
+  equal(ticksToTerror(state), null, 'and there is no countdown to read');
+
+  runTick(state);
+  const warning = state.terrorism.warning;
+  assert(warning, 'the warning goes up a hundred ticks out');
+  equal(state.terrorism.active, null, 'and nothing is standing on the ground yet');
+  equal(ticksToTerror(state), CONFIG.terrorism.warnBefore, 'the countdown starts at the full warning');
+  assert(COUNTRIES[warning.countryId], `it names a real country (${warning.countryId})`);
+  assert(state.tiles[warning.tileId], 'and a real tile');
+
+  // The ground must not WANDER while the clock runs — the whole point is that
+  // you can march somewhere before anything happens, and a target that moved
+  // every tick would make that pointless.
+  const half = Math.floor(CONFIG.terrorism.warnBefore / 2);
+  for (let i = 0; i < half; i++) runTick(state);
+  equal(state.terrorism.warning.tileId, warning.tileId, 'the announced ground does not move');
+  equal(state.terrorism.warning.countryId, warning.countryId, 'nor does the country');
+  equal(ticksToTerror(state), CONFIG.terrorism.warnBefore - half, 'and the countdown runs down');
+
+  for (let i = 0; i < CONFIG.terrorism.warnBefore - half; i++) runTick(state);
+  assert(state.terrorism.active, 'it appears when the clock runs out');
+  equal(state.terrorism.active.countryId, warning.countryId, 'in the country it was announced for');
+  equal(state.terrorism.active.tileId, warning.tileId, 'on the ground it was announced for');
+  equal(state.terrorism.warning, null, 'and the warning is spent');
+  equal(ticksToTerror(state), null, 'so there is no countdown left to read');
+
+  // Defeating it clears the warning too — the next cell has not been chosen yet.
+  defeatTerrorists(state);
+  equal(state.terrorism.warning, null, 'a defeat leaves no stale warning behind');
 });
 
 test('terrorists spawn only after 600 ticks and never duplicate while active', () => {
@@ -2000,6 +3299,104 @@ test('nothing crosses a border except under a contract', () => {
   // The report lines ARE the contract settlements; nothing else writes them.
   const contracted = state.contracts.filter((c) => state.tick >= c.started);
   assert(contracted.length > 0, 'with contracts actually settling');
+});
+
+// ---- what a nation can actually promise -----------------------------------
+
+test('spare is what you MAKE less what you burn and your people want', () => {
+  const state = fixture();
+  // A coal mine and a coal plant: the mine digs it, the plant burns it, and the
+  // difference is the only thing that could ever be promised abroad.
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  depot.store.coal = 9999;
+  const before = spareRates(state, state.home).coal;
+  place(state, 'coalMine', 21, 20, 'coalfield');
+  const dug = spareRates(state, state.home).coal;
+  assert(dug > before, 'digging coal adds to what you can spare');
+  place(state, 'coalPlant', 22, 20, 'plain');
+  const burnt = spareRates(state, state.home).coal;
+  assert(burnt < dug, 'and burning it in your own plant takes it away again');
+  // Stock is deliberately NOT part of it: the warehouse is full of coal
+  // throughout, and the figure only moved when a RATE did.
+  equal(depot.store.coal, 9999, 'the shelf is untouched by any of this');
+});
+
+// A neighbour whose power stations burn coal it cannot dig, and a home nation
+// with `mines` collieries of its own. This is the shape of the whole rule: they
+// want coal, and whether they are allowed to ask you for it depends on what you
+// actually have left over — not on what happens to be in your warehouse.
+function coalFixture(mines) {
+  const state = fixture();
+  const them = other(state);
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  for (const id of COMMODITY_IDS) depot.store[id] = 4000;
+  for (let i = 0; i < mines; i++) place(state, 'coalMine', 21 + i, 20, 'coalfield');
+  const theirs = placeIn(state, them, 'warehouse', 24, 24, 'plain');
+  for (const id of COMMODITY_IDS) theirs.store[id] = 4000;
+  placeIn(state, them, 'coalPlant', 25, 24, 'plain');
+  return state;
+}
+
+// Every offer the world puts to you over a dozen decision rounds.
+function offersOver(state, rounds = 12) {
+  const seen = [];
+  for (let round = 1; round <= rounds; round++) {
+    state.tick = CONFIG.contracts.every * round;
+    state.contractOffers = [];
+    runContractDiplomacy(state);
+    seen.push(...state.contractOffers);
+  }
+  return seen;
+}
+
+test('nobody asks you for more coal than you can actually spare', () => {
+  // With no colliery of your own you are a net CONSUMER of coal, and nobody
+  // comes asking you for any however full the warehouse is — which is the whole
+  // point: a warehouse is a one-off and a contract is a rate.
+  const poor = coalFixture(0);
+  assert(spareRates(poor, poor.home).coal <= 0, 'no mines means nothing to spare');
+  equal(offersOver(poor).some((o) => o.dir === 'buy' && o.commodity === 'coal'), false,
+    'so no contract to supply coal is ever put to you');
+
+  // Dig six and the same neighbour comes asking — the path is live, and this is
+  // what makes the assertion above mean something.
+  const rich = coalFixture(6);
+  const spare = spareRates(rich, rich.home);
+  assert(spare.coal > 1, `six collieries leave a real surplus (${spare.coal.toFixed(1)}/tick)`);
+  const buys = offersOver(rich).filter((o) => o.dir === 'buy');
+  assert(buys.length > 0, 'a nation with a genuine surplus IS asked for it');
+  assert(buys.some((o) => o.commodity === 'coal'), 'and asked for the thing it has a surplus of');
+  for (const offer of buys) {
+    const rate = offer.qty / offer.every;
+    assert(rate <= (spare[offer.commodity] ?? 0) + 1e-6,
+      `asked for ${rate.toFixed(2)} ${offer.commodity}/tick with only ${(spare[offer.commodity] ?? 0).toFixed(2)} spare`);
+  }
+});
+
+test('a commodity you will not export is one nobody asks you for', () => {
+  const state = coalFixture(6);
+  assert(offersOver(state).some((o) => o.dir === 'buy'), 'they ask while the ↗ flag is on');
+
+  for (const id of COMMODITY_IDS) state.exports[id] = false;
+  equal(offersOver(state).some((o) => o.dir === 'buy'), false,
+    'and stop the moment it is off — the flag is your policy, not just an exchange setting');
+
+  // The mirror on the way in: ↙ off and nobody offers to sell you anything.
+  const buyer = coalFixture(0);
+  assert(offersOver(buyer).some((o) => o.dir === 'sell'), 'they offer to supply you while ↙ is on');
+  for (const id of COMMODITY_IDS) buyer.imports[id] = false;
+  equal(offersOver(buyer).some((o) => o.dir === 'sell'), false, 'and stop when it is off');
+});
+
+test('the world cannot sign a contract with you that you never agreed to', () => {
+  const state = createInitialState();
+  // Turn every flag off: nothing of yours is for sale on any channel, so the
+  // only contracts you can end up in are ones you accepted by hand.
+  for (const id of COMMODITY_IDS) { state.exports[id] = false; state.imports[id] = false; }
+  for (let i = 0; i < 500; i++) runTick(state);
+  const mine = (state.contracts ?? []).filter((c) => c.seller === state.home || c.buyer === state.home);
+  equal(mine.length, 0,
+    `a contract exists only because two governments agreed terms — found ${mine.length} you never signed`);
 });
 
 test('the ↗ and ↙ flags decide whether your government posts at all', () => {
@@ -2327,6 +3724,7 @@ test('a long stall is clamped and cannot trigger a catch-up spiral', () => {
   assert(counts.ticks <= 5, `a ten-minute stall must not burst past the catch-up cap, got ${counts.ticks}`);
   equal(counts.ticks, 1, 'the stalled frame is clamped to maxFrameMs of simulated work');
 });
+
 
 export function runTests(filter = '') {
   const needle = filter.trim().toLowerCase();

@@ -20,12 +20,13 @@
 //   * A country the admin-1 layer does not cover keeps the OLD coarse grid,
 //     under one province named after itself. Seventeen territories are in that
 //     position and they would otherwise vanish from the map.
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const W = 1440;
 const H = 720;
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = process.argv[2];
 
 if (!SOURCE || !fs.existsSync(SOURCE)) {

@@ -6,7 +6,7 @@ import { placeForCountry, provinceForTile } from '../data/places.js';
 import { buildingOnTile, warehouseUsed, siteWages, countryDeposits, WATER_TERRAINS,
   ownerName, ownerColor, isPlayer } from '../core/state.js';
 import { warehousesServing } from '../systems/logistics.js';
-import { UNIT_TYPES, unitOnTile } from '../systems/military.js';
+import { UNIT_TYPES, unitOnTile, groupMembers, groupSpeed } from '../systems/military.js';
 import { money, num, price, pct, html } from './format.js';
 
 const STATUS_LABEL = {
@@ -43,14 +43,22 @@ export function updateInspector(host, ctx) {
   // priority order.
   const unit = tile && !building ? unitOnTile(state, tile.id) : null;
   const mine = tile ? isPlayer(state, tile.countryId) : false;
+  // Who this formation marches with. The SIZE is what the panel says, so the
+  // size is what the signature carries — a companion joining or standing down
+  // leaves `groupId` untouched and would otherwise never repaint.
+  const group = unit?.groupId != null ? groupMembers(state, unit.groupId) : [];
 
   const sig = tile
     ? [tile.id, tile.countryId ?? '', mine ? 'm' : '',
        building?.owner ?? '', building?.status, building?.progress,
        JSON.stringify(building?.input), JSON.stringify(building?.output),
        JSON.stringify(building?.store),
-       unit?.id ?? '', unit?.strength.toFixed(1) ?? '', unit?.supplied,
-       ui.moveUnit === unit?.id].join('|')
+       unit?.id ?? '', unit?.strength.toFixed(1) ?? '', unit?.engaged,
+       // A formation's ORDER and its GROUP both change what this panel says, so
+       // both are in the signature: a marching column whose destination is not
+       // here would otherwise never repaint.
+       unit?.orderTileId ?? '', unit?.groupId ?? '', group.length,
+       ui.moveUnit === unit?.id, ui.groupUnit === unit?.id].join('|')
     : 'none';
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
@@ -63,32 +71,52 @@ export function updateInspector(host, ctx) {
   host.replaceChildren(building
     ? renderBuilding(state, tile, building)
     : unit
-      ? renderUnit(state, tile, unit, ctx)
+      ? renderUnit(state, tile, unit, group, ctx)
       : renderLand(state, tile, mine));
 }
 
-function renderUnit(state, tile, unit, ctx) {
+function renderUnit(state, tile, unit, group, ctx) {
   const def = UNIT_TYPES[unit.type];
   const mine = isPlayer(state, unit.owner);
   const moving = ctx.ui.moveUnit === unit.id;
+  const grouping = ctx.ui.groupUnit === unit.id;
   const owner = `<p class="owner" style="--swatch:${ownerColor(unit.owner)}">
       <i class="swatch"></i>${mine ? 'Yours' : ownerName(unit.owner)}
     </p>`;
+  // A group MARCHES at its slowest member, so that — not this formation's own
+  // speed — is the figure that answers "when does it get there".
+  const pace = group.length ? groupSpeed(state, unit.groupId) : def.speed;
+  const goal = unit.orderTileId != null ? state.tiles[unit.orderTileId] : null;
+  const away = goal ? Math.max(Math.abs(goal.x - unit.x), Math.abs(goal.y - unit.y)) : 0;
   const el = html(`
     <div class="inspect">
       <h3>${def.glyph} ${def.name}</h3>
       ${owner}
       <p class="muted">Tile (${tile.x}, ${tile.y}) &middot; strength ${unit.strength.toFixed(1)} / ${def.strength}</p>
-      <p class="status" data-status="${unit.supplied === false ? 'starved' : 'running'}">${unit.supplied === false ? 'Unsupplied — wasting away' : 'Supplied'}</p>
+      <p class="muted">${pace} tile${pace === 1 ? '' : 's'} a tick${group.length && pace !== def.speed ? ` <span class="muted">(its own ${def.speed}, held to the group's slowest)</span>` : ''}
+        &middot; strikes ${def.range} tile${def.range === 1 ? '' : 's'} out</p>
+      <p class="status" data-status="${unit.engaged ? 'starved' : 'running'}">${unit.engaged
+        ? 'In contact — taking losses and making none good'
+        : unit.strength < def.strength ? 'Out of contact — making its losses good' : 'At full strength'}</p>
+      ${goal ? `<p class="muted">Marching for (${goal.x}, ${goal.y}) &mdash; ${away} tile${away === 1 ? '' : 's'} to go, about ${Math.max(1, Math.ceil(away / Math.max(1, pace)))} tick${Math.max(1, Math.ceil(away / Math.max(1, pace))) === 1 ? '' : 's'}.</p>` : ''}
+      ${group.length ? `<p class="muted">Grouped with ${group.length - 1} other${group.length === 2 ? '' : 's'}: ${group
+        .map((u) => `${UNIT_TYPES[u.type].glyph} ${UNIT_TYPES[u.type].name}`).join(', ')}. An order to any of them is an order to all.</p>` : ''}
       ${mine ? `
-        <p class="muted">Upkeep ${Object.entries(def.upkeep).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ')}/tick, drawn from any of your own warehouses.</p>
+        <p class="muted">Raised for ${Object.entries(def.cost).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ')} out of your warehouses. It costs nothing to keep — an army is capital, not a subscription.</p>
         <div class="inspect__actions">
-          <button type="button" class="unit-move" data-active="${moving}">${moving ? 'Click a tile to move…' : 'Move'}</button>
+          <button type="button" class="unit-move" data-active="${moving}" title="Order this formation somewhere (M)">${moving ? 'Click a tile to move…' : group.length ? 'Move group' : 'Move'}</button>
+          <button type="button" class="unit-group" data-active="${grouping}">${grouping ? 'Click a formation to add…' : 'Group'}</button>
+          ${group.length ? '<button type="button" class="unit-ungroup">Leave group</button>' : ''}
           <button type="button" class="unit-standdown">Stand down</button>
-        </div>` : ''}
+        </div>
+        <p class="muted">${def.domain === 'air'
+          ? 'Aircraft group only with aircraft.'
+          : 'Land formations group with land formations; aircraft keep to their own.'}</p>` : ''}
     </div>`);
   if (mine) {
     el.querySelector('.unit-move').addEventListener('click', () => ctx.onMoveUnit(moving ? null : unit.id));
+    el.querySelector('.unit-group').addEventListener('click', () => ctx.onGroupUnit(unit.id));
+    el.querySelector('.unit-ungroup')?.addEventListener('click', () => ctx.onUngroupUnit(unit.id));
     el.querySelector('.unit-standdown').addEventListener('click', () => ctx.onStandDownUnit(unit.id));
   }
   return el;

@@ -9,6 +9,7 @@ import { mountTech, updateTech } from './tech.js';
 import { mountContracts, updateContracts } from './contracts.js';
 import { mountMarket, updateMarket } from './market.js';
 import { mountDiplomacy, updateDiplomacy } from './diplomacy.js';
+import { mountEvents, updateEvents } from './events.js';
 import { updateInbox } from './inbox.js';
 import { updateTerror } from './terror.js';
 import { updateInspector } from './inspector.js';
@@ -27,11 +28,15 @@ const ID_MAP = {
   techHead: 'tech-head', techOffers: 'tech-offers', techTree: 'tech-tree',
   contractOffers: 'contract-offers', contractDraft: 'contract-draft', contractList: 'contract-list',
   diplomacyHead: 'diplomacy-head', diplomacyList: 'diplomacy-list',
+  diplomacyPending: 'diplomacy-pending',
+  eventFilters: 'event-filters', eventCountry: 'event-country',
+  eventHead: 'event-head', eventList: 'event-list',
   nationName: 'nation-name', nationCard: 'nation-card', homeMap: 'btn-home-map',
   speeds: 'speed-buttons', cash: 'stat-cash', net: 'stat-net',
   wages: 'stat-wages', trade: 'stat-trade', supply: 'stat-supply', demand: 'stat-demand',
-  tick: 'stat-tick', pause: 'btn-pause', save: 'btn-save',
+  tick: 'stat-tick', standing: 'stat-standing', pause: 'btn-pause', save: 'btn-save',
   load: 'btn-load', reset: 'btn-reset',
+  menu: 'btn-menu', controlsMore: 'controls-more',
   panel: 'side-panel', tabs: 'tabs', panes: 'panes', summary: 'summary-card',
   factoryHead: 'factory-head', factoryList: 'factory-list',
   layout: 'layout', leftPanel: 'left-panel', leftToggle: 'btn-left', leftClose: 'btn-left-close',
@@ -47,6 +52,7 @@ const PANES = {
   trade: updateTrade,
   market: updateMarket,
   diplomacy: updateDiplomacy,
+  events: updateEvents,
   ranks: updateRanks,
   tech: updateTech,
   selected: (refs, ctx) => updateInspector(refs.inspector, ctx),
@@ -74,6 +80,7 @@ export function createRenderer(ctx) {
   mountContracts(refs, ctx);
   mountMarket(refs, ctx);
   mountDiplomacy(refs, ctx);
+  mountEvents(refs, ctx);
 
   return {
     refs,
