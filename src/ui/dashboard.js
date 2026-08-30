@@ -22,6 +22,8 @@ const BUILD_VIEWS = [
 
 const BUILD_CATEGORY = {
   warehouse: 'logistics',
+  mediumWarehouse: 'logistics',
+  bigWarehouse: 'logistics',
   coalPlant: 'power',
   gasPlant: 'power',
   nuclearPlant: 'power',

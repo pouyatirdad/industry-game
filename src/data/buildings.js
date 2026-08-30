@@ -2,7 +2,7 @@
 //
 // `terrain` gates placement. Extraction sits on the deposit it works; factories
 // need `plain`, which is why a country that is all desert and oilfield can pump
-// crude but not refine it. `warehouse` is the only entry with `recipe: null`,
+// crude but not refine it. Warehouses are the entries with `recipe: null`,
 // and that null is how the systems tell storage from production.
 //
 // `tech` names an entry in data/technology.js that a government must hold
@@ -271,7 +271,26 @@ export const BUILDINGS = {
              'quarry', 'farmland', 'forest', 'desert', 'uraniumore', 'lithiumflat', 'rareearth'],
     radius: 20, capacity: 3000,
     recipe: null,
-    blurb: 'Stores goods and serves industry within 20 tiles. Your people buy from here first; whatever they do not eat is what you have to export.',
+    // The legacy id remains `warehouse` so old saves and existing worlds keep
+    // working; it is now the small variant.
+    name: 'Small Warehouse',
+    blurb: 'Stores 3,000 goods and serves industry within 20 tiles. Your people buy from here first; whatever they do not eat is what you have to export.',
+  },
+  mediumWarehouse: {
+    name: 'Medium Warehouse', glyph: 'M', cost: 35_000, wages: 110,
+    terrain: ['plain', 'hills', 'coalfield', 'oilfield', 'gasfield', 'copperbelt', 'bauxite',
+             'quarry', 'farmland', 'forest', 'desert', 'uraniumore', 'lithiumflat', 'rareearth'],
+    radius: 28, capacity: 10_000,
+    recipe: null,
+    blurb: 'Stores 10,000 goods and serves industry within 28 tiles. Cheaper per unit of capacity than several small warehouses.',
+  },
+  bigWarehouse: {
+    name: 'Big Warehouse', glyph: 'B', cost: 90_000, wages: 180,
+    terrain: ['plain', 'hills', 'coalfield', 'oilfield', 'gasfield', 'copperbelt', 'bauxite',
+             'quarry', 'farmland', 'forest', 'desert', 'uraniumore', 'lithiumflat', 'rareearth'],
+    radius: 36, capacity: 30_000,
+    recipe: null,
+    blurb: 'Stores 30,000 goods and serves industry within 36 tiles. The best choice for a large industrial region.',
   },
 };
 
