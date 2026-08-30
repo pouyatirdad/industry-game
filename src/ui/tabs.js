@@ -34,17 +34,10 @@ export function mountTabs(refs, ctx) {
     return btn;
   });
 
-  // Two controls, not one, and they answer two different questions: how TALL
-  // should the panel be, and should it be here at all. The tall state is what
-  // makes the Ranks table and the tech tree readable without scrolling a pane
-  // that was sized for a summary card.
-  const grow = html('<button type="button" class="tab tab--grow" title="Make this panel taller (T) — the ranks table and the tech tree are worth the height">⤢</button>');
-  grow.addEventListener('click', () => ctx.onTogglePanelHeight());
-
   const collapse = html('<button type="button" class="tab tab--collapse" title="Show or hide this panel">▾</button>');
   collapse.addEventListener('click', () => ctx.onTogglePanel());
 
-  refs.tabs.replaceChildren(...buttons, grow, collapse);
+  refs.tabs.replaceChildren(...buttons, collapse);
 
   // THE PANEL IS OPENED AND CLOSED BY CLICKING, and by nothing else.
   //
@@ -71,14 +64,7 @@ export function updatePanels(refs, ctx) {
   for (const btn of refs.tabs.children) {
     const id = btn.dataset.tab;
     if (!id) {
-      // The two chrome buttons: one says how tall, the other says whether at
-      // all, and each shows the state it is currently in.
-      if (btn.classList.contains('tab--grow')) {
-        setText(btn, ui.panelTall ? '⤡' : '⤢');
-        setAttr(btn, 'data-active', ui.panelTall ? 'true' : null);
-      } else {
-        setText(btn, ui.panelOpen ? '▾' : '▸');
-      }
+      setText(btn, ui.panelOpen ? '▾' : '▸');
       continue;
     }
     const active = id === ui.tab;
@@ -116,7 +102,6 @@ export function updatePanels(refs, ctx) {
   }
 
   setAttr(refs.panel, 'data-open', String(ui.panelOpen));
-  setAttr(refs.panel, 'data-tall', String(Boolean(ui.panelTall)));
   setAttr(refs.layout, 'data-left', String(ui.leftOpen));
   setAttr(refs.layout, 'data-paused', String(state.paused));
   for (const pane of refs.panes.children) {
