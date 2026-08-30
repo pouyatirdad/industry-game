@@ -57,6 +57,7 @@ export function mountResources(refs, ctx) {
       <tr data-commodity="${id}">
         <th scope="row"><i class="swatch" style="--swatch:${def.color}"></i>${def.name}</th>
         <td class="market__price"></td>
+        <td class="market__base"></td>
         <td class="market__drift"></td>
         <td class="market__demand"></td>
         <td class="market__met"></td>
@@ -118,6 +119,7 @@ export function updateResources(refs, ctx) {
 
     const drift = Math.round(((line.price - def.basePrice) / def.basePrice) * 100);
     setText(row.querySelector('.market__price'), priceShort(line.price));
+    setText(row.querySelector('.market__base'), priceShort(def.basePrice));
     const dr = row.querySelector('.market__drift');
     setText(dr, `${drift > 0 ? '▲' : drift < 0 ? '▼' : '·'}${Math.abs(drift)}%`);
     setAttr(dr, 'data-dir', drift > 0 ? 'up' : drift < 0 ? 'down' : 'flat');

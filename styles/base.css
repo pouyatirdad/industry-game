@@ -33,6 +33,21 @@ body {
   font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
 }
 
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+/* The login screen has a display rule, so it needs an explicit hidden rule
+   rather than relying on the browser's lower-specificity `[hidden]` default. */
+.auth-screen[hidden] { display: none; }
+#game-app:not([hidden]) { height: 100vh; min-height: 0; display: flex; flex-direction: column; }
+.auth-card, .profile-card { width: min(100%, 390px); display: grid; gap: 12px; padding: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.auth-card label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.auth-card input { width: 100%; padding: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); font: inherit; }
+.auth-error { min-height: 1.4em; margin: 0; color: var(--bad); }
+.profile-button { padding: 4px 9px; font-size: 12px; white-space: nowrap; }
+.profile-dialog { padding: 0; background: transparent; border: 0; color: var(--ink); }
+.profile-dialog::backdrop { background: #000a; }
+.profile-card { position: relative; }
+.dialog-close { position: absolute; top: 8px; right: 8px; padding: 2px 8px; font-size: 18px; }
+
 /* Scrollbars are INVISIBLE everywhere — the map, the panes, the build menu.
    There are a lot of scrollable boxes on this screen and a bar down the side of
    each cost more width than the numbers it sat beside. Everything still
@@ -276,10 +291,10 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* Messages hover over the bottom of the map rather than taking a row of layout
    away from it, so the world never shifts when one arrives. */
 .alerts {
-  position: absolute; z-index: 100; left: 50%; transform: translateX(-50%); top: 46px;
+  position: absolute; z-index: 100; left: 12px; top: 46px;
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: 4px;
-  width: min(560px, calc(100vw - 40px)); min-width: 320px; pointer-events: none;
+  width: min(420px, calc(100vw - 40px)); min-width: 260px; pointer-events: none;
 }
 .alert { pointer-events: auto; }
 .alert {
@@ -336,11 +351,25 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* Green while a group is being assembled, matching the ring the map draws round
    the formations that could join it. */
 .unit-group[data-active="true"] { background: #7fdca0; color: #0b1626; border-color: transparent; font-weight: 600; }
+/* A running campaign, and the button that calls it off. Amber rather than the
+   blue of a pending order: this one is a standing state, not a gesture waiting
+   for its second half. */
+.unit-auto-conquer[data-active="true"] { background: var(--accent); color: #221606; border-color: transparent; font-weight: 600; }
+
+/* THE ARMY CARD, above whatever the clicked tile is. It is separated by a rule
+   rather than by a gap, because two stacked cards with the same spacing inside
+   and between them read as one long card. */
+.army { padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.army h3 { margin: 0; }
+/* The selection's own colour, the same cyan the map rings a picked formation
+   in — so "these six" means one thing in both places. */
+.army-move[data-active="true"] { background: #8fe3ff; color: #0b1626; border-color: transparent; font-weight: 600; }
+.inspect__actions button:disabled { opacity: .45; cursor: default; }
 
 /* On a narrow window the panels stay modals; they just take the width they need
    and the map runs on underneath. */
 @media (max-width: 1100px) {
-  .alerts { width: min(560px, calc(100vw - 40px)); }
+  .alerts { width: min(420px, calc(100vw - 40px)); }
 }
 
 /* ---- THE PHONE ----------------------------------------------------------

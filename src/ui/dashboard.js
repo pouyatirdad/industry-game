@@ -9,6 +9,7 @@ import { depotsByOwner } from '../systems/logistics.js';
 import { UNIT_TYPES, UNIT_IDS, unitsOf, armyCostOf, unitShortfall } from '../systems/military.js';
 import { updateContracts } from './contracts.js';
 import { money, moneyShort, num, qtyShort, pct, setAttr, setText, setToggle, html } from './format.js';
+import { currentUser } from '../core/accounts.js';
 
 const BUILD_VIEWS = [
   { id: 'basic', label: 'Basic' },
@@ -143,6 +144,12 @@ export function updateDashboard(refs, ctx) {
   // figure has to be the whole trade balance or it stops meaning anything the
   // moment you sign your first contract.
   const balance = tradeBalance(me);
+  const user = currentUser();
+  setText(refs.profileName, user?.guest ? 'Guest' : user?.username ?? 'Profile');
+  refs.save.disabled = Boolean(user?.guest);
+  refs.load.disabled = Boolean(user?.guest);
+  refs.save.title = user?.guest ? 'Guest mode cannot save' : 'Save game';
+  refs.load.title = user?.guest ? 'Guest mode cannot load' : 'Load game';
 
   setText(refs.cash, money(me.cash));
   setToggle(refs.cash, 'is-negative', me.cash < 0);

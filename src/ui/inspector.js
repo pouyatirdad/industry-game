@@ -6,7 +6,7 @@ import { placeForCountry, provinceForTile } from '../data/places.js';
 import { buildingOnTile, warehouseUsed, siteWages, countryDeposits, WATER_TERRAINS,
   ownerName, ownerColor, isPlayer } from '../core/state.js';
 import { warehousesServing } from '../systems/logistics.js';
-import { UNIT_TYPES, unitOnTile, groupMembers, groupSpeed } from '../systems/military.js';
+import { UNIT_TYPES, unitOnTile, groupMembers, groupSpeed, canAutoConquer, unitsOf } from '../systems/military.js';
 import { money, num, price, pct, html } from './format.js';
 
 const STATUS_LABEL = {
@@ -48,8 +48,18 @@ export function updateInspector(host, ctx) {
   // leaves `groupId` untouched and would otherwise never repaint.
   const group = unit?.groupId != null ? groupMembers(state, unit.groupId) : [];
 
+  // YOUR WHOLE ARMY, and how much of it is selected or campaigning. The army
+  // card sits above whatever the clicked tile is, so its figures are in the
+  // same signature — a formation joining a campaign while you are looking at a
+  // coalfield still has to repaint the buttons.
+  const army = unitsOf(state, state.home);
+  const selected = (ui.selection ?? []).filter((id) => army.some((u) => u.id === id));
+  const sweeping = army.filter((u) => u.autoConquerCountryId).length;
+  const campaignable = army.some((u) => canAutoConquer(state, u).ok);
+  const armySig = [army.length, selected.length, sweeping, campaignable, ui.orderSelection].join(',');
+
   const sig = tile
-    ? [tile.id, tile.countryId ?? '', mine ? 'm' : '',
+    ? [armySig, tile.id, tile.countryId ?? '', mine ? 'm' : '',
        building?.owner ?? '', building?.status, building?.progress,
        JSON.stringify(building?.input), JSON.stringify(building?.output),
        JSON.stringify(building?.store),
@@ -57,22 +67,64 @@ export function updateInspector(host, ctx) {
        // A formation's ORDER and its GROUP both change what this panel says, so
        // both are in the signature: a marching column whose destination is not
        // here would otherwise never repaint.
-       unit?.orderTileId ?? '', unit?.groupId ?? '', group.length,
+       unit?.orderTileId ?? '', unit?.autoConquerCountryId ?? '', unit?.autoConquerTargetId ?? '', unit?.groupId ?? '', group.length,
        ui.moveUnit === unit?.id, ui.groupUnit === unit?.id].join('|')
-    : 'none';
+    : `none|${armySig}`;
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
 
-  if (!tile) {
-    host.replaceChildren(html('<p class="muted">Click a tile to inspect it.</p>'));
-    return;
-  }
+  // The army card is shown whenever you HAVE an army, whatever the click was
+  // about: it is the only place a selection can be spent, and hunting for a
+  // formation to click on before you can order the other twenty is not a
+  // gesture. It is a card ABOVE the tile's card, not a replacement for it.
+  const cards = [];
+  if (army.length) cards.push(renderArmy(ctx, army, selected, sweeping, campaignable));
+  cards.push(!tile
+    ? html('<p class="muted">Click a tile to inspect it. Shift-drag the map to pick out formations, Ctrl-click to add one.</p>')
+    : building
+      ? renderBuilding(state, tile, building)
+      : unit
+        ? renderUnit(state, tile, unit, group, ctx)
+        : renderLand(state, tile, mine));
+  host.replaceChildren(...cards);
+}
 
-  host.replaceChildren(building
-    ? renderBuilding(state, tile, building)
-    : unit
-      ? renderUnit(state, tile, unit, group, ctx)
-      : renderLand(state, tile, mine));
+// YOUR ARMY, AND WHAT YOU ARE ABOUT TO DO TO IT.
+//
+// Every button here acts on the SELECTION when there is one and on the whole
+// army when there is not, which is what makes "order these six" and "order all
+// thirty" one control rather than two sets of them. The labels say which,
+// because a button that quietly means something different depending on state
+// you cannot see is a button nobody presses twice.
+function renderArmy(ctx, army, selected, sweeping, campaignable) {
+  const some = selected.length > 0;
+  const scope = some ? `${selected.length} selected` : `all ${army.length}`;
+  const ordering = Boolean(ctx.ui.orderSelection);
+  const el = html(`
+    <div class="inspect army">
+      <h3>Your army &mdash; ${army.length} formation${army.length === 1 ? '' : 's'}</h3>
+      <p class="muted">${some ? `${selected.length} selected` : 'Nothing selected'}${sweeping ? ` &middot; ${sweeping} campaigning` : ''}</p>
+      <div class="inspect__actions">
+        <button type="button" class="army-all">Select all</button>
+        <button type="button" class="army-none" ${some ? '' : 'disabled'}>Clear</button>
+        <button type="button" class="army-move" data-active="${ordering}" ${some ? '' : 'disabled'}>${ordering ? 'Click a tile to march…' : `Move ${selected.length}`}</button>
+        <button type="button" class="army-group" ${selected.length > 1 ? '' : 'disabled'}>Group ${selected.length}</button>
+        <button type="button" class="army-campaign" ${campaignable ? '' : 'disabled'}
+          title="March at the nearest enemy at war, fight what they meet and take a tile a tick">Auto conquer (${scope})</button>
+        <button type="button" class="army-stop" ${sweeping ? '' : 'disabled'}>Stop campaigns (${scope})</button>
+      </div>
+      <p class="muted">Shift-drag the map to draw a selection box, Ctrl-drag to add to it, Ctrl-click one
+        formation to pick it up or put it down. ${campaignable
+          ? 'A campaign marches at the nearest enemy that still holds ground and takes a tile a tick.'
+          : 'Auto conquer needs a war: it is unavailable while nobody you are at war with holds land.'}</p>
+    </div>`);
+  el.querySelector('.army-all').addEventListener('click', () => ctx.onSelectAllUnits());
+  el.querySelector('.army-none').addEventListener('click', () => ctx.onClearUnitSelection());
+  el.querySelector('.army-move').addEventListener('click', () => ctx.onOrderSelection(!ordering));
+  el.querySelector('.army-group').addEventListener('click', () => ctx.onGroupSelection());
+  el.querySelector('.army-campaign').addEventListener('click', () => ctx.onAutoConquerMany(true));
+  el.querySelector('.army-stop').addEventListener('click', () => ctx.onAutoConquerMany(false));
+  return el;
 }
 
 function renderUnit(state, tile, unit, group, ctx) {
@@ -80,6 +132,13 @@ function renderUnit(state, tile, unit, group, ctx) {
   const mine = isPlayer(state, unit.owner);
   const moving = ctx.ui.moveUnit === unit.id;
   const grouping = ctx.ui.groupUnit === unit.id;
+  // Whether this formation is ALREADY campaigning, which is what turns one
+  // button into two states rather than two buttons: pressing it again is how you
+  // call it off. "Can start" and "is running" are different questions and both
+  // have to be asked — a campaign whose enemy has just made peace is running and
+  // cannot be started.
+  const sweeping = Boolean(unit.autoConquerCountryId);
+  const autoConquer = mine ? canAutoConquer(state, unit) : { ok: false };
   const owner = `<p class="owner" style="--swatch:${ownerColor(unit.owner)}">
       <i class="swatch"></i>${mine ? 'Yours' : ownerName(unit.owner)}
     </p>`;
@@ -98,7 +157,7 @@ function renderUnit(state, tile, unit, group, ctx) {
       <p class="status" data-status="${unit.engaged ? 'starved' : 'running'}">${unit.engaged
         ? 'In contact — taking losses and making none good'
         : unit.strength < def.strength ? 'Out of contact — making its losses good' : 'At full strength'}</p>
-      ${goal ? `<p class="muted">Marching for (${goal.x}, ${goal.y}) &mdash; ${away} tile${away === 1 ? '' : 's'} to go, about ${Math.max(1, Math.ceil(away / Math.max(1, pace)))} tick${Math.max(1, Math.ceil(away / Math.max(1, pace))) === 1 ? '' : 's'}.</p>` : ''}
+      ${unit.autoConquerCountryId ? `<p class="muted">Campaigning against ${ownerName(unit.autoConquerCountryId)} — marching at their ground and taking a tile a tick, fighting whatever it meets.</p>` : goal ? `<p class="muted">Marching for (${goal.x}, ${goal.y}) &mdash; ${away} tile${away === 1 ? '' : 's'} to go, about ${Math.max(1, Math.ceil(away / Math.max(1, pace)))} tick${Math.max(1, Math.ceil(away / Math.max(1, pace))) === 1 ? '' : 's'}.</p>` : ''}
       ${group.length ? `<p class="muted">Grouped with ${group.length - 1} other${group.length === 2 ? '' : 's'}: ${group
         .map((u) => `${UNIT_TYPES[u.type].glyph} ${UNIT_TYPES[u.type].name}`).join(', ')}. An order to any of them is an order to all.</p>` : ''}
       ${mine ? `
@@ -106,6 +165,7 @@ function renderUnit(state, tile, unit, group, ctx) {
         <div class="inspect__actions">
           <button type="button" class="unit-move" data-active="${moving}" title="Order this formation somewhere (M)">${moving ? 'Click a tile to move…' : group.length ? 'Move group' : 'Move'}</button>
           <button type="button" class="unit-group" data-active="${grouping}">${grouping ? 'Click a formation to add…' : 'Group'}</button>
+          ${sweeping || autoConquer.ok ? `<button type="button" class="unit-auto-conquer" data-active="${sweeping}" title="${sweeping ? 'Call the campaign off' : 'March at the nearest enemy at war, fight what it meets and take a tile each tick'}">${sweeping ? 'Stop campaign' : 'Auto conquer'}</button>` : ''}
           ${group.length ? '<button type="button" class="unit-ungroup">Leave group</button>' : ''}
           <button type="button" class="unit-standdown">Stand down</button>
         </div>
@@ -115,6 +175,7 @@ function renderUnit(state, tile, unit, group, ctx) {
     </div>`);
   if (mine) {
     el.querySelector('.unit-move').addEventListener('click', () => ctx.onMoveUnit(moving ? null : unit.id));
+    el.querySelector('.unit-auto-conquer')?.addEventListener('click', () => ctx.onAutoConquerUnit(unit.id, !sweeping));
     el.querySelector('.unit-group').addEventListener('click', () => ctx.onGroupUnit(unit.id));
     el.querySelector('.unit-ungroup')?.addEventListener('click', () => ctx.onUngroupUnit(unit.id));
     el.querySelector('.unit-standdown').addEventListener('click', () => ctx.onStandDownUnit(unit.id));
