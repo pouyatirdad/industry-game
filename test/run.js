@@ -20,7 +20,7 @@ import { produce } from '../src/systems/production.js';
 import { payWages } from '../src/systems/economy.js';
 import { movePrices, growEconomies } from '../src/systems/market.js';
 import { sellDomestic, unmet, supplyRatio } from '../src/systems/domestic.js';
-import { warehousesServing, spoil } from '../src/systems/logistics.js';
+import { warehousesServing, spoil, deliverToWarehouses, depotSpace } from '../src/systems/logistics.js';
 import { runStateIndustry } from '../src/systems/stateIndustry.js';
 import { runResearch, runTechTrade, licenceCost } from '../src/systems/research.js';
 import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice } from '../src/systems/contracts.js';
@@ -128,6 +128,8 @@ test('build menu categories split economic and military tools', () => {
   equal(buildCategory('steelMill'), 'process', 'tier 1 factories sit in processing');
   equal(buildCategory('vehiclePlant'), 'assembly', 'tier 2 factories sit in assembly');
   equal(buildCategory('warehouse'), 'logistics', 'warehouses sit in logistics');
+  equal(buildCategory('mediumWarehouse'), 'logistics', 'medium warehouses sit in logistics');
+  equal(buildCategory('bigWarehouse'), 'logistics', 'big warehouses sit in logistics');
   // There is no military INDUSTRY: a formation is a unit, not a building, and
   // `buildCategory` sends every one of the five to 'military' with no building
   // definition behind it at all.
@@ -520,9 +522,27 @@ test('Iran gets the offshore gas its data claims', () => {
 });
 
 test('warehouses can never stand on water of any kind', () => {
-  for (const terrain of WATER_TERRAINS) {
-    assert(!BUILDINGS.warehouse.terrain.includes(terrain),
-      `warehouses must not be placeable on ${terrain}`);
+  for (const type of ['warehouse', 'mediumWarehouse', 'bigWarehouse']) {
+    for (const terrain of WATER_TERRAINS) {
+      assert(!BUILDINGS[type].terrain.includes(terrain),
+        `${type} must not be placeable on ${terrain}`);
+    }
+  }
+});
+
+test('all warehouse sizes use their own capacity and service range', () => {
+  for (const type of ['warehouse', 'mediumWarehouse', 'bigWarehouse']) {
+    const state = fixture();
+    const depot = place(state, type, 20, 20, 'plain');
+    const def = BUILDINGS[type];
+    equal(warehousesServing(state, 20 + def.radius, 20, state.home).length, 1,
+      `${def.name} serves to its advertised range`);
+    equal(warehousesServing(state, 21 + def.radius, 20, state.home).length, 0,
+      `${def.name} stops outside its advertised range`);
+    equal(deliverToWarehouses(state, state.home, 'ore', def.capacity + 500), def.capacity,
+      `${def.name} takes only what fits`);
+    equal(depot.store.ore, def.capacity, `${def.name} stores its full capacity`);
+    equal(depotSpace(state, state.home), 0, `${def.name} reports no free capacity when full`);
   }
 });
 

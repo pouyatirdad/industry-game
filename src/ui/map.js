@@ -426,6 +426,13 @@ function draw(host, view, ctx) {
     flush(x1, py);
   }
 
+  // Warehouses use a Chebyshev (square) service radius: `servedBy` compares
+  // the larger of the horizontal and vertical distances. Draw the same square
+  // after terrain, so clicking any warehouse shows the exact tiles it reaches
+  // without turning the hot per-tile paint loop into a coverage calculation.
+  const selectedBuilding = ui.selectedTileId == null ? null : byTile.get(ui.selectedTileId);
+  if (selectedBuilding?.store) drawWarehouseRange(g, state, selectedBuilding, tilePx, left, top);
+
   // Frontiers and the graticule go on TOP of the terrain, so a border is never
   // painted over by the next tile along. The edges were COLLECTED in the tile
   // loop above rather than found in a second sweep of their own: at one pixel a
@@ -439,6 +446,27 @@ function draw(host, view, ctx) {
     drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1);
     drawLabels(g, state, tilePx, left, top, cssW, cssH);
   }
+}
+
+function drawWarehouseRange(g, state, building, tilePx, left, top) {
+  const radius = BUILDINGS[building.type].radius ?? 0;
+  if (!radius) return;
+  const fromX = Math.max(0, building.x - radius);
+  const fromY = Math.max(0, building.y - radius);
+  const toX = Math.min(state.grid.w - 1, building.x + radius);
+  const toY = Math.min(state.grid.h - 1, building.y + radius);
+  const x = fromX * tilePx - left;
+  const y = fromY * tilePx - top;
+  const width = (toX - fromX + 1) * tilePx;
+  const height = (toY - fromY + 1) * tilePx;
+  g.save();
+  g.fillStyle = '#f0a04b20';
+  g.fillRect(x, y, width, height);
+  g.strokeStyle = '#f0a04b';
+  g.lineWidth = Math.max(1, Math.min(2, tilePx / 5));
+  g.setLineDash(tilePx >= 4 ? [5, 4] : []);
+  g.strokeRect(x + g.lineWidth / 2, y + g.lineWidth / 2, width - g.lineWidth, height - g.lineWidth);
+  g.restore();
 }
 
 function drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1) {

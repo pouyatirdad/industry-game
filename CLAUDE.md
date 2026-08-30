@@ -295,8 +295,11 @@ Terrain gates placement via `def.terrain`: `plain`, `water`, `desert`, and nine 
 (limestone), `farmland`, `forest`. Desert takes extraction and warehouses but no factories, so an
 oil-rich desert nation cannot refine its own crude — that asymmetry is deliberate.
 
-`warehouse` is the only building with `recipe: null`, and that null is how the systems distinguish
-storage from production.
+The three warehouse tiers (`warehouse`/Small, `mediumWarehouse`, `bigWarehouse`) are the buildings
+with `recipe: null`, and that null is how the systems distinguish storage from production. Their
+cost, capacity and Chebyshev service radius are defined per type in `src/data/buildings.js`; logistics
+must always read those values from `BUILDINGS[depot.type]`, never assume the small warehouse's values.
+The legacy `warehouse` id intentionally remains the Small Warehouse so existing saves keep working.
 
 ### Three silent traps when editing country data
 
@@ -762,6 +765,10 @@ Consequences worth knowing before editing the map:
   owner-scoped logistics (`depotsByOwner` + `servedBy`) during the draw, not from a DOM overlay and
   not from cross-owner depots. The marker belongs on producers only (`building.output`), never on
   warehouses themselves.
+- **Clicking a warehouse draws its service range.** It is a translucent, dashed square because
+  logistics uses Chebyshev distance (`max(dx, dy) <= radius`), not a circular radius. Draw this once
+  after the tile loop from the selected warehouse's `BUILDINGS[type].radius`; do not calculate it
+  per tile or make a DOM overlay that drifts while the canvas scrolls.
 - **Frontiers, coastlines, a graticule and country names are painted over the terrain**, and the
   border segments are COLLECTED during the tile loop rather than found in a sweep of their own: at
   one pixel a tile the visible window is the whole planet, and a second pass over a million tiles
