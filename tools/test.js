@@ -7,11 +7,12 @@
 // CommonJS and choke on its `import`s. This writes the one-line ESM marker for
 // the length of the run and removes it again — including on failure, so a red
 // suite never leaves a stray file behind.
-const { spawnSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+import { spawnSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const root = path.resolve(__dirname, '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const marker = path.join(root, 'package.json');
 const existed = fs.existsSync(marker);
 if (!existed) fs.writeFileSync(marker, '{"type":"module"}\n');

@@ -7,7 +7,7 @@ import { WORLD_COUNTRY_INFO } from '../data/worldCountries.js';
 import { STARTING_TECHS } from '../data/technology.js';
 
 const SAVE_KEY = 'industry-game.save.v9';
-const SAVE_VERSION = 10;
+const SAVE_VERSION = 15;
 
 // You are a NATION, not a firm. There is no separate player object: the country
 // you picked is an entry in `state.countries` exactly like the other forty-five,
@@ -119,10 +119,10 @@ export function generateWorld(seed) {
   COUNTRY_IDS.forEach((id, countryIndex) => {
     const rand = mulberry32((seed ^ Math.imul(countryIndex + 1, 0x9e3779b1)) >>> 0);
     const pool = shuffle(owned[id].slice(), rand);
-    // At least one tile stays plain even in a one-tile country, so `budget` is
-    // floored to pool.length - 1 rather than to a share of it.
+    // A few tiles stay plain so the default depot and starter factories have
+    // legal ground even in tiny countries.
     const budget = Math.min(
-      pool.length ? pool.length - 1 : 0,
+      Math.max(0, pool.length - 4),
       Math.floor(pool.length * MAX_DEPOSIT_SHARE),
     );
     const wanted = {};
@@ -131,10 +131,29 @@ export function generateWorld(seed) {
       wanted[terrain] = Math.round((COUNTRIES[id].deposits[terrain] ?? 0) * AREA_SCALE);
     }
     layDeposits(tiles, pool, budget, DEPOSIT_ORDER, wanted, id, rand);
+    ensureFarmland(tiles, pool);
   });
 
   layOffshoreDeposits(tiles, seed);
   return tiles;
+}
+
+// Every country gets somewhere to put its opening farm, and that has to happen
+// HERE rather than where the opening assets are placed. Nothing may mutate
+// terrain after generation — that invariant is the whole reason a save can drop
+// a million tiles and regenerate them from the seed — so a starter that stamped
+// farmland on the map made every save rehydrate into a different world, silently.
+// Inside this deterministic pass it is reproduced exactly.
+//
+// It only fires for a country whose deposits left it with no farmland at all,
+// so the hand-authored proportions in countries.js are untouched.
+function ensureFarmland(tiles, pool) {
+  for (const index of pool) if (tiles[index].terrain === 'farmland') return;
+  for (const index of pool) {
+    if (tiles[index].terrain !== 'plain') continue;
+    tiles[index].terrain = 'farmland';
+    return;
+  }
 }
 
 function ensureVisibleCountries(tiles, owned) {
@@ -450,6 +469,167 @@ export function createLedger() {
   return { tick, total };
 }
 
+// The relation table starts EMPTY, and that is a save-size decision as much as a
+// tidiness one. Neutral is the default `relationOf` returns for a pair it has
+// never heard of, so writing all 258x257 of them down said nothing and cost over
+// a megabyte of the save on its own — comfortably past what localStorage will
+// take. Only a pair somebody has actually changed is stored.
+//
+// `lastWarAt` is -1 rather than -Infinity because everything on `state` has to
+// survive a JSON round trip, and `JSON.stringify(-Infinity)` is `null`.
+// The relation table starts EMPTY — `relationOf` answers `neutral` for a pair
+// it has never heard of, so writing all 258x257 of them down said nothing and
+// cost a megabyte. What rides alongside it is everything two governments have
+// SAID to each other but not yet settled: proposals on the table, declarations
+// of war counting down, and when each pair last answered a given question.
+// All plain arrays and objects, like the contracts, so it round-trips.
+export function createDiplomacy() {
+  return { relations: {}, opinion: {}, lastWarAt: -1, proposals: [], ultimatums: [], history: {}, nextId: 1 };
+}
+
+// Opinion is asymmetric and sparse. Neutral is zero and is not written: one
+// country may like another more than it is liked back, and the save only pays
+// for opinions the world has actually earned.
+export function opinionOf(state, from, to) {
+  if (from === to) return 100;
+  return state.diplomacy?.opinion?.[from]?.[to] ?? 0;
+}
+
+export function nudgeOpinion(state, from, to, delta) {
+  if (!from || !to || from === to || !Number.isFinite(delta) || delta === 0) return 0;
+  if (!state.diplomacy) state.diplomacy = createDiplomacy();
+  state.diplomacy.opinion ??= {};
+  const row = state.diplomacy.opinion[from] ??= {};
+  const next = Math.max(-100, Math.min(100, (row[to] ?? 0) + delta));
+  if (Math.abs(next) < CONFIG.diplomacy.opinion.deadband) {
+    delete row[to];
+    if (!Object.keys(row).length) delete state.diplomacy.opinion[from];
+    return 0;
+  }
+  row[to] = next;
+  return next;
+}
+
+export function decayOpinions(state) {
+  const opinion = state.diplomacy?.opinion;
+  if (!opinion) return;
+  const { decay, deadband } = CONFIG.diplomacy.opinion;
+  for (const [from, row] of Object.entries(opinion)) {
+    for (const [to, value] of Object.entries(row)) {
+      const next = value * decay;
+      if (Math.abs(next) < deadband) delete row[to];
+      else row[to] = next;
+    }
+    if (!Object.keys(row).length) delete opinion[from];
+  }
+}
+
+// WHO OWNS THE GROUND, and the one place it is allowed to change.
+//
+// Ownership used to be fixed for the whole game, and two things leaned on that
+// hard enough to break silently when it stopped being true:
+//
+//   - THE SAVE DROPS EVERY TILE and regenerates them from `seed`. That is only
+//     sound while generation is the whole truth, so conquest has to be written
+//     down separately: `state.claims` is the DIFF — tile id to its new owner,
+//     and nothing else — and `rehydrate` lays it back over the fresh world. It
+//     is a few hundred numbers rather than a million tiles.
+//   - TWO AI CACHES are keyed on the tile array (`tilesByCountry`,
+//     `depositsOf`), on the reasoning that ownership never moves. `mapVersion`
+//     is bumped here so they can tell they are stale; keying on the array alone
+//     would have left every government planning around a map that no longer
+//     exists.
+//
+// A building goes WITH the ground. `building.owner` is also the country its site
+// stands in — that is a stated invariant, and the whole reason nothing carries a
+// separate `country` field — so a tile that changes hands must take whatever is
+// built on it, or the two would disagree the moment a border moved.
+export function setTileOwner(state, tile, countryId) {
+  if (!tile || tile.countryId === countryId) return false;
+  tile.countryId = countryId;
+  state.claims ??= {};
+  state.claims[tile.id] = countryId;
+  state.mapVersion = (state.mapVersion ?? 0) + 1;
+  if (tile.buildingId != null) {
+    const site = state.buildings.find((b) => b.id === tile.buildingId);
+    // Unclaimed ground has no government to own a factory, so a site on it is
+    // simply lost. Otherwise it changes hands with the land it stands on.
+    if (site && countryId) site.owner = countryId;
+    else if (site) {
+      state.buildings = state.buildings.filter((b) => b.id !== site.id);
+      tile.buildingId = null;
+    }
+  }
+  return true;
+}
+
+// Is this government still a going concern? A nation with no land at all has
+// been conquered out of existence and does nothing ever again — see
+// `eliminate`. Tolerant of a state built before any of this, like every other
+// accessor here.
+export function isAlive(state, countryId) {
+  return state.countries[countryId]?.alive !== false;
+}
+
+export function livingCountries(state) {
+  return COUNTRY_IDS.filter((id) => isAlive(state, id));
+}
+
+// THE WORLD LOG: what every government just DID.
+//
+// The alerts are your news and expire on a wall clock; this is the world's, and
+// it expires on the TICK clock after `CONFIG.events.ttl`. It exists because the
+// other 257 governments are constantly signing pacts, writing contracts, raising
+// formations and going to war, and until now none of that was visible anywhere
+// unless it happened to involve you.
+//
+// Two rules keep it from eating the save, and both are load-bearing at this
+// scale — 258 nations acting every few ticks is a great many lines:
+//
+//   - IT STORES DATA, NOT SENTENCES. `kind`, `who`, `about`, `what`, `qty` and
+//     nothing else. A formatted string per event would be several times the size
+//     AND would put presentation text inside the systems, which is the one thing
+//     `src/systems` is not allowed to contain. `src/ui/events.js` turns a row
+//     into a sentence.
+//   - IT IS DOUBLY BOUNDED. Anything older than `ttl` ticks is dropped, and the
+//     list is capped at `max` whatever the age — a burst (every nation raising a
+//     formation on the same decision tick) must not blow the localStorage quota
+//     between two sweeps.
+//
+// Tolerant of a state built without one, exactly as `noteLedger` is.
+export function noteEvent(state, kind, who, extra = {}) {
+  if (!state.events) state.events = [];
+  state.events.push({
+    id: state.nextEventId = (state.nextEventId ?? 1) + 1,
+    tick: state.tick,
+    kind,
+    who,
+    ...extra,
+  });
+  const { max } = CONFIG.events;
+  if (state.events.length > max) state.events.splice(0, state.events.length - max);
+}
+
+// Dropped at the top of the tick, beside the ledger fold and for the same
+// reason: everything that writes into the log only sees its own slice of the
+// tick, so the sweep cannot live inside any of them.
+export function pruneEvents(state) {
+  if (!state.events?.length) return;
+  const oldest = state.tick - CONFIG.events.ttl;
+  if (state.events[0].tick >= oldest) return;
+  state.events = state.events.filter((e) => e.tick >= oldest);
+}
+
+// What the log holds for one nation, newest first — the Notifications tab's
+// whole query. `who` is the government that acted and `about` whoever it acted
+// with, so a country's row appears under either name: a pact France proposed to
+// Spain is Spain's news as much as it is France's.
+export function eventsFor(state, filter) {
+  const all = state.events ?? [];
+  const rows = filter === 'all' ? all : all.filter((e) => e.who === filter || e.about === filter);
+  return rows.slice().reverse();
+}
+
 // Written from four different systems, so it tolerates a state built without a
 // ledger rather than making every caller check.
 export function noteLedger(state, commodityId, field, qty) {
@@ -466,7 +646,7 @@ export function createInitialState(seed = CONFIG.seed, home = DEFAULT_HOME) {
     imports_[id] = true;
     history.prices[id] = [];
   }
-  return {
+  const state = {
     version: SAVE_VERSION,
     seed,
     tick: 0,
@@ -500,11 +680,129 @@ export function createInitialState(seed = CONFIG.seed, home = DEFAULT_HOME) {
     // The global exchange: an open book of asks and bids that anybody may take,
     // and the clearing fund its fee builds up. See systems/exchange.js.
     exchange: { listings: [], nextListingId: 1, fund: 0, lent: 0, fees: 0 },
+    diplomacy: createDiplomacy(),
+    military: { units: [], nextUnitId: 1, nextGroupId: 1 },
+    terrorism: { active: null, warning: null, nextSpawnTick: CONFIG.terrorism.firstAt, defeated: 0 },
     ledger: createLedger(),
+    // What the world has just done, pruned every tick — see `noteEvent`.
+    events: [],
+    // Ownership CHANGES now. `claims` is the diff conquest writes over the
+    // generated world, `occupied` is ground a terrorist cell is sitting on
+    // (mapped to whoever it belongs to), and `mapVersion` is what tells the AI
+    // caches their picture of the map is stale. All plain JSON.
+    claims: {},
+    occupied: {},
+    mapVersion: 0,
+    nextEventId: 1,
     warnedHungry: false,
     history,
     alerts: [],
   };
+  seedDefaultAssets(state);
+  return state;
+}
+
+function seedDefaultAssets(state) {
+  const byCountry = new Map(COUNTRY_IDS.map((id) => [id, []]));
+  for (const tile of state.tiles) {
+    if (tile.countryId && byCountry.has(tile.countryId) && tile.terrain !== 'water') {
+      byCountry.get(tile.countryId).push(tile);
+    }
+  }
+  for (const id of COUNTRY_IDS) {
+    const land = byCountry.get(id) ?? [];
+    const nearCapital = nearCountryCentre(id, land);
+    const plain = nearCapital.filter((tile) => tile.terrain === 'plain');
+    const warehouseTile = plain[0] ?? nearCapital.find((tile) => BUILDINGS.warehouse.terrain.includes(tile.terrain));
+    if (!warehouseTile) continue;
+
+    const warehouse = addInitialBuilding(state, id, 'warehouse', warehouseTile);
+    warehouse.store = starterStock();
+
+    // The farm goes on ground that is ALREADY farmland. NOTHING here may stamp
+    // terrain: the opening position is buildings and formations, and the moment
+    // it edits the map a save stops round-tripping, because tiles are dropped
+    // from the save and regenerated from the seed. `generateWorld` guarantees
+    // every country has somewhere to put this (`ensureFarmland`).
+    const farmTile = nearCapital.find((tile) => tile.buildingId == null && tile.terrain === 'farmland');
+    if (farmTile) addInitialBuilding(state, id, 'farm', farmTile);
+
+    const foodTile = plain.find((tile) => tile.buildingId == null);
+    if (foodTile) addInitialBuilding(state, id, 'foodPlant', foodTile);
+
+    // The opening military asset is a FORMATION, not a factory. An arms works
+    // in every country on earth put a standing world demand for steel behind
+    // industry nobody had built yet; a squad of riflemen eats food, which is
+    // the one thing every one of these openings can already make.
+    //
+    // It stands on bare ground beside the depot rather than on top of it, so
+    // right-clicking the warehouse still demolishes the warehouse.
+    const musterTile = nearCapital.find((tile) => tile.buildingId == null && tile.terrain !== 'water');
+    if (musterTile) {
+      state.military.units.push({
+        id: state.military.nextUnitId++,
+        type: 'infantry',
+        owner: id,
+        domain: 'land',
+        tileId: musterTile.id,
+        x: musterTile.x,
+        y: musterTile.y,
+        strength: 6,
+        engaged: false,
+        orderTileId: null,
+        groupId: null,
+      });
+    }
+  }
+}
+
+function nearCountryCentre(countryId, tiles) {
+  const info = WORLD_COUNTRY_INFO.find((row) => row.id === countryId);
+  if (!info) return tiles;
+  const cx = (info.centre.lon + 180) * WORLD_W / 360;
+  const cy = (90 - info.centre.lat) * WORLD_H / 180;
+  return tiles.slice().sort((a, b) =>
+    ((a.x - cx) ** 2 + (a.y - cy) ** 2) - ((b.x - cx) ** 2 + (b.y - cy) ** 2));
+}
+
+function starterStock() {
+  const stock = emptyBag();
+  Object.assign(stock, {
+    grain: 60,
+    food: 36,
+    coal: 12,
+    ore: 8,
+    steel: 4,
+    fuel: 4,
+  });
+  return stock;
+}
+
+function emptyBag() {
+  return Object.fromEntries(COMMODITY_IDS.map((id) => [id, 0]));
+}
+
+function addInitialBuilding(state, owner, type, tile) {
+  const def = BUILDINGS[type];
+  const building = {
+    id: state.nextBuildingId++,
+    type,
+    owner,
+    x: tile.x,
+    y: tile.y,
+    tileId: tile.id,
+    progress: 0,
+    status: def.recipe ? 'idle' : 'store',
+    uptime: 0,
+    shortage: [],
+    staffed: true,
+    input: def.recipe && Object.keys(def.recipe.in).length ? emptyBag() : null,
+    output: def.recipe ? emptyBag() : null,
+    store: def.recipe ? null : emptyBag(),
+  };
+  state.buildings.push(building);
+  tile.buildingId = building.id;
+  return building;
 }
 
 // --- nations --------------------------------------------------------------
@@ -544,6 +842,32 @@ export function appetite(state, countryId, commodityId) {
   return country.demand * COMMODITIES[commodityId].demandShare * CONFIG.demandScale;
 }
 
+// WHAT A NATION CAN ACTUALLY PROMISE ABROAD, per tick, by commodity: what its
+// own industry turns out, less what its own factories burn, less what its own
+// people want. This is the `Bal` column in the Goods tab, and it is the figure
+// a contract has to cover — a nation that pumps two oil and burns one has ONE
+// to sell, whatever its warehouse happens to hold today.
+//
+// It lives here rather than in either place that needs it, because both the
+// Goods table and the code that decides which offers reach you must mean the
+// same thing by "spare". Two definitions would drift the first time either was
+// touched, and the panel would then be promising rates the offers refuse.
+//
+// Stock is deliberately NOT part of it. A full warehouse is a one-off; a
+// contract is a rate held for a term, and the rate is what has to be sustainable.
+export function spareRates(state, countryId) {
+  const spare = {};
+  for (const id of COMMODITY_IDS) spare[id] = -appetite(state, countryId, id);
+  for (const b of state.buildings) {
+    if (b.owner !== countryId) continue;
+    const recipe = BUILDINGS[b.type].recipe;
+    if (!recipe) continue;
+    for (const [id, qty] of Object.entries(recipe.out)) spare[id] += qty / recipe.ticks;
+    for (const [id, qty] of Object.entries(recipe.in)) spare[id] -= qty / recipe.ticks;
+  }
+  return spare;
+}
+
 // Every nation may deal with every other. There is no permission to buy and no
 // market that is closed to you: what limits a deal is whether anybody has terms
 // on the book you would take, and what the freight costs to get it there.
@@ -551,7 +875,10 @@ export function appetite(state, countryId, commodityId) {
 // This is still asked through a function rather than inlined, because "may these
 // two deal" is a real question the systems ask and the answer could change again.
 export function canTrade(state, a, b) {
-  return a !== b && Boolean(state.countries[a]) && Boolean(state.countries[b]);
+  // ...and both still exist. A nation conquered out of existence is not a
+  // market: it has no land, no people and no government to sign anything.
+  return a !== b && Boolean(state.countries[a]) && Boolean(state.countries[b])
+    && isAlive(state, a) && isAlive(state, b);
 }
 
 // --- technology -----------------------------------------------------------
@@ -637,6 +964,21 @@ export function createUiState(home = DEFAULT_HOME) {
   // preferences and must not ride along in the save file.
   return {
     tool: null,
+    // The FORMATION in hand, if any. A unit is not a building — it is raised by
+    // clicking your own ground — so it is a second kind of thing the pointer can
+    // be carrying, and picking one up puts the other down.
+    unit: null,
+    // The id of an ALREADY-STANDING formation waiting for its next order, set
+    // from the Move button in the Selected pane. The next tile click is that
+    // order rather than a selection or a build — a third and separate thing the
+    // pointer can be carrying, mutually exclusive with `tool` and `unit` above.
+    moveUnit: null,
+    // ...and a FOURTH: the formation whose group is being assembled, set from
+    // the Group button in the Selected pane. While it is set, clicking another
+    // of your own formations puts the two in one group; clicking anything else
+    // ends the gesture. Mutually exclusive with the three above, for the same
+    // reason they are with each other — the pointer carries one thing.
+    groupUnit: null,
     selectedTileId: null,
     hoveredTileId: null,
     zoom: CONFIG.defaultZoom,
@@ -646,11 +988,23 @@ export function createUiState(home = DEFAULT_HOME) {
     // rides along in the save file.
     tab: 'summary',
     panelOpen: false,
+    // ...and how much room it gets when it is. Nine views do not all want the
+    // same height: a summary card is read in one look, the ranks table and the
+    // tech tree are not. A view preference, so it never reaches the save.
+    panelTall: false,
     leftOpen: true,
+    // Whether the topbar's overflow sheet is open. It only exists on a phone —
+    // on a desktop those controls are simply on the bar — so it is a view
+    // preference like every other flag here and never reaches the save.
+    menuOpen: false,
+    buildView: 'basic',
     openFactoryId: null,
     // Whether the commodity book reads the tick just run or the whole game, and
     // which column the nation table is ranked by. View preferences both.
     goodsView: 'tick',
+    // Whose world news the Notifications tab shows: 'all', 'home', or a country
+    // id. A view preference, so it never reaches the save.
+    eventFilter: 'all',
     rankSort: 'score',
     // The ask or bid you are writing for the open book, before you post it,
     // and whether the book below it is showing everybody's terms or only yours.
@@ -858,6 +1212,47 @@ function packBag(bag) {
   return out;
 }
 
+// Every nation prices every commodity itself, so `state.markets` is 258 books of
+// 34 lines and it is by far the biggest thing in the save. Written out as
+// objects it is three-quarters of a megabyte of REPEATED KEY NAMES —
+// "soldLastTick" written nine thousand times — which on its own put a fresh save
+// past what localStorage will take. A line goes out as a fixed tuple in
+// `MARKET_FIELDS` order and comes back as the object the systems mutate in
+// place, exactly as a commodity bag does.
+const MARKET_FIELDS = ['price', 'soldLastTick', 'importedLastTick', 'soldTotal'];
+
+function packMarkets(markets) {
+  if (!markets) return markets;
+  const out = {};
+  for (const [countryId, book] of Object.entries(markets)) {
+    const lines = {};
+    for (const id of COMMODITY_IDS) {
+      const line = book[id];
+      if (!line) continue;
+      lines[id] = MARKET_FIELDS.map((field) => Math.round((line[field] ?? 0) * 100) / 100);
+    }
+    out[countryId] = lines;
+  }
+  return out;
+}
+
+function unpackMarkets(markets) {
+  if (!markets) return createMarkets();
+  const out = {};
+  for (const [countryId, book] of Object.entries(markets)) {
+    const lines = {};
+    for (const id of COMMODITY_IDS) {
+      const packed = book[id];
+      const line = {};
+      MARKET_FIELDS.forEach((field, i) => { line[field] = packed?.[i] ?? 0; });
+      if (!packed) line.price = COMMODITIES[id].basePrice;
+      lines[id] = line;
+    }
+    out[countryId] = lines;
+  }
+  return out;
+}
+
 function unpackBag(bag) {
   if (!bag) return bag;
   const out = {};
@@ -877,11 +1272,29 @@ function packLedger(ledger) {
   return { tick: round(ledger.tick), total: round(ledger.total) };
 }
 
+function packDiplomacy(diplomacy) {
+  if (!diplomacy) return diplomacy;
+  const opinion = {};
+  const deadband = CONFIG.diplomacy.opinion.deadband;
+  for (const [from, row] of Object.entries(diplomacy.opinion ?? {})) {
+    const packed = {};
+    for (const [to, value] of Object.entries(row)) {
+      const rounded = Math.round(value * 10) / 10;
+      if (Math.abs(rounded) >= deadband) packed[to] = rounded;
+    }
+    if (Object.keys(packed).length) opinion[from] = packed;
+  }
+  return { ...diplomacy, opinion };
+}
+
 export function packState(state) {
   const { tiles, ...rest } = state;
   return {
     ...rest,
+    version: SAVE_VERSION,
+    diplomacy: packDiplomacy(state.diplomacy),
     ledger: packLedger(state.ledger),
+    markets: packMarkets(state.markets),
     buildings: state.buildings.map((b) => ({
       ...b,
       // Uptime is an exponential average, so it is a full-precision float on
@@ -905,6 +1318,33 @@ export function saveState(state) {
 
 export function rehydrate(saved) {
   const state = { ...saved, tiles: generateWorld(saved.seed) };
+  state.markets = unpackMarkets(saved.markets);
+  state.diplomacy ??= createDiplomacy();
+  state.diplomacy.relations ??= {};
+  state.diplomacy.opinion ??= {};
+  state.diplomacy.proposals ??= [];
+  state.diplomacy.ultimatums ??= [];
+  state.diplomacy.history ??= {};
+  state.diplomacy.nextId ??= 1;
+  state.diplomacy.lastWarAt ??= -1;
+  state.military ??= { units: [], nextUnitId: 1, nextGroupId: 1 };
+  state.military.nextGroupId ??= 1;
+  state.terrorism ??= { active: null, warning: null, nextSpawnTick: (state.tick ?? 0) + CONFIG.terrorism.cooldown, defeated: 0 };
+  state.terrorism.warning ??= null;
+  state.events ??= [];
+  state.nextEventId ??= 1;
+  // THE CONQUEST DIFF, laid back over the freshly generated world. Tiles are
+  // regenerated from the seed, which is only sound while generation is the whole
+  // truth about who owns what — so every border a war moved has to be written
+  // down separately and reapplied here, or a save would quietly load with every
+  // conquest undone.
+  state.claims ??= {};
+  state.occupied ??= {};
+  state.mapVersion ??= 0;
+  for (const [tileId, countryId] of Object.entries(state.claims)) {
+    const tile = state.tiles[Number(tileId)];
+    if (tile) tile.countryId = countryId;
+  }
   state.buildings = state.buildings.map((b) => ({
     ...b,
     input: unpackBag(b.input),

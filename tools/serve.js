@@ -1,13 +1,13 @@
 // Minimal static server, because ES modules will not load over file:// and the
-// game needs an HTTP origin. CommonJS on purpose: the repo has no package.json,
-// so a .js file here is CJS and needs no flags.
+// game needs an HTTP origin.
 //
 //   node tools/serve.js [port]
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const root = path.resolve(__dirname, '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.argv[2] ?? 8123);
 
 // .js MUST be text/javascript or the browser refuses the module outright.

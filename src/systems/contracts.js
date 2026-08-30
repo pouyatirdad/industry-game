@@ -4,7 +4,7 @@ import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { haulShare } from '../data/geography.js';
 import { BUILDINGS } from '../data/buildings.js';
 import { allOwners, canTrade, exchangeOf, isPlayer, noteLedger, ownerName, pushAlert, recordFlow,
-  siteWages } from '../core/state.js';
+  siteWages, spareRates, exportsFrom, importsTo, noteEvent, nudgeOpinion, opinionOf } from '../core/state.js';
 import { depotsByOwner, drawFrom, deliverTo, spaceIn, stockIn } from './logistics.js';
 import { unmet } from './domestic.js';
 
@@ -57,6 +57,8 @@ export function runContracts(state) {
     if (isPlayer(state, contract.seller) || isPlayer(state, contract.buyer)) {
       pushAlert(state, `${describe(state, contract)} has run its term.`, 'info');
     }
+    nudgeOpinion(state, contract.seller, contract.buyer, CONFIG.diplomacy.opinion.completed);
+    nudgeOpinion(state, contract.buyer, contract.seller, CONFIG.diplomacy.opinion.completed);
   }
   state.contracts = kept;
 }
@@ -144,6 +146,7 @@ function charge(state, c, from, to, short, unit, side) {
   c.penalties = (c.penalties ?? 0) + fee;
   c.lastMiss = state.tick;
   c.lastMissBy = side;
+  nudgeOpinion(state, to.id, from.id, CONFIG.diplomacy.opinion.defaulted);
   if (isPlayer(state, from.id)) {
     pushAlert(state, `${short.toFixed(1)} ${COMMODITIES[c.commodity].name} short on your contract with ${ownerName(to.id)} — ${money(fee)} penalty.`, 'danger');
   }
@@ -225,6 +228,13 @@ export function signContract(state, terms) {
     lastMiss: null, lastMissBy: null,
   };
   state.contracts.push(contract);
+  nudgeOpinion(state, contract.seller, contract.buyer, CONFIG.diplomacy.opinion.signed);
+  nudgeOpinion(state, contract.buyer, contract.seller, CONFIG.diplomacy.opinion.signed);
+  // The world's trade, for the Notifications tab: who sold what to whom. One
+  // line per contract SIGNED, never per delivery — a settlement happens every
+  // tick of every contract on the planet and would bury everything else.
+  noteEvent(state, 'contract', contract.seller,
+    { about: contract.buyer, what: contract.commodity, qty: Math.round(contract.qty / contract.every * 10) / 10 });
   return { ok: true, contract };
 }
 
@@ -303,20 +313,22 @@ function seekContract(state, buyerId, depots, need) {
   if (!buyer?.solvent) return;
 
   const row = need.get(buyerId) ?? {};
-  const commodityId = Object.keys(row).sort((a, b) => row[b] - row[a])[0];
-  if (!commodityId) return;
-  // Already covered by a standing contract? Then it does not need another.
-  const covered = (state.contracts ?? []).reduce((sum, c) =>
-    sum + (c.buyer === buyerId && c.commodity === commodityId ? c.qty / c.every : 0), 0);
-  const gap = row[commodityId] - covered;
-  if (gap <= 0.5) return;
+  for (const commodityId of Object.keys(row).sort((a, b) => row[b] - row[a])) {
+    // Already covered by a standing contract? Then it does not need another.
+    const covered = (state.contracts ?? []).reduce((sum, c) =>
+      sum + (c.buyer === buyerId && c.commodity === commodityId ? c.qty / c.every : 0), 0);
+    const gap = row[commodityId] - covered;
+    if (gap <= 0.5) continue;
 
-  const seller = bestSeller(state, buyerId, commodityId, gap, depots);
-  if (!seller) return;
-  signContract(state, {
-    seller, buyer: buyerId, commodity: commodityId,
-    qty: Math.round(gap * 2 * 10) / 10, every: 2, term: 120,
-  });
+    const seller = bestSeller(state, buyerId, commodityId, gap, depots);
+    if (!seller) continue;
+    signContract(state, {
+      seller: seller.id, buyer: buyerId, commodity: commodityId,
+      qty: Math.round(gap * 2 * 10) / 10, every: 2, term: 120,
+      price: seller.price,
+    });
+    return;
+  }
 }
 
 // A nation with the goods actually standing in its depots, nearest first. A
@@ -326,6 +338,12 @@ function bestSeller(state, buyerId, commodityId, perTick, depots) {
   let best = null;
   for (const id of COUNTRY_IDS) {
     if (id === buyerId || !canTrade(state, id, buyerId)) continue;
+    // NOT YOU. The world may not conscript your government into a supply
+    // contract it never agreed to — a contract exists only because two
+    // governments agreed terms, and yours agrees through `offerToPlayer` and
+    // the Trade tab. Leaving you in this list is how a nation ended up
+    // promising oil it had turned exporting off for.
+    if (id === state.home) continue;
     if (!state.countries[id].solvent) continue;
     const held = stockIn(depots.get(id) ?? [], commodityId);
     const promised = promisedBy(state, id, commodityId) * CONFIG.contracts.maxTerm;
@@ -333,14 +351,26 @@ function bestSeller(state, buyerId, commodityId, perTick, depots) {
     // that its own people are not being sold out from under it.
     if (held - promised < perTick * 4) continue;
     const haul = haulShare(id, buyerId);
-    if (!best || haul < best.haul) best = { id, haul };
+    const price = sellerPrice(state, id, buyerId, commodityId);
+    const standing = opinionOf(state, buyerId, id) / 100;
+    const score = price / COMMODITIES[commodityId].basePrice + haul * 0.35 - standing * 0.25;
+    if (!best || score < best.score) best = { id, price, score };
   }
-  return best?.id ?? null;
+  return best;
 }
 
 function promisedBy(state, countryId, commodityId) {
   return (state.contracts ?? []).reduce((sum, c) =>
     sum + (c.seller === countryId && c.commodity === commodityId ? c.qty / c.every : 0), 0);
+}
+
+function sellerPrice(state, sellerId, buyerId, commodityId) {
+  const local = state.markets[sellerId]?.[commodityId]?.price ?? COMMODITIES[commodityId].basePrice;
+  const ownAsk = round2(Math.max(local, COMMODITIES[commodityId].basePrice * CONFIG.price.floor) * 1.02);
+  const bestAsk = exchangeOf(state).listings
+    .filter((l) => l.side === 'sell' && l.commodity === commodityId && l.from !== buyerId && l.from !== sellerId)
+    .sort((a, b) => a.price - b.price)[0];
+  return bestAsk ? Math.min(ownAsk, round2(bestAsk.price * 0.98)) : ownAsk;
 }
 
 // ...and one nation comes to you with terms. It is asking, so it is asking for
@@ -358,6 +388,19 @@ function offerToPlayer(state, depots, need) {
   const start = Math.floor(noise(state.seed ^ Math.imul(state.tick + 5, 0x27d4eb2d)) * partners.length);
   const mine = depots.get(state.home) ?? [];
 
+  // WHAT YOU COULD ACTUALLY PROMISE, per tick and per commodity, worked out ONCE
+  // for the whole round rather than per partner. It is what your industry makes
+  // less what your own factories burn and your own people want (`spareRates`),
+  // less what you have ALREADY promised away under standing contracts — so a
+  // nation that pumps two oil, burns one and has sold that one has nothing left
+  // to be asked for, and is not asked.
+  //
+  // Without this you were offered contracts you could only default on: the old
+  // filter looked at what was standing in the warehouse, which is a one-off,
+  // while a contract is a rate held for a term.
+  const spare = spareRates(state, state.home);
+  for (const id of COMMODITY_IDS) spare[id] -= promisedBy(state, state.home, id);
+
   let from = null;
   let pick = null;
   for (let n = 0; n < partners.length && !pick; n++) {
@@ -370,11 +413,25 @@ function offerToPlayer(state, depots, need) {
     // the factory gap made offers almost impossible — an oil state with a full
     // warehouse and a customer in mind is the commonest deal there is, and it
     // has nothing to do with anybody's factory floor.
+    // A nation only asks you for what you could actually supply, and only for
+    // what you are willing to sell. Three gates, and each answers a different
+    // question:
+    //   * `exportsFrom` — your POLICY. The ↗ flag off in Goods means that
+    //     commodity is not for sale, so nobody asks for it at all.
+    //   * `spare` — your RATE. Nobody asks for more per tick than you have left
+    //     once your own factories, your own people and your standing promises
+    //     are served.
+    //   * stock — your SHELF, which is still checked, because a promise you
+    //     cannot start filling this week is not much of a promise either.
     const wantsFromYou = wanted(state, candidate, need)
-      .filter(([id, gap]) => stockIn(mine, id) > gap * 3)
+      .filter(([id, gap]) => exportsFrom(state, state.home, id)
+        && gap <= (spare[id] ?? 0)
+        && stockIn(mine, id) > gap * 3)
       .sort((a, b) => b[1] - a[1])[0];
+    // ...and the mirror of the first gate on the way in: ↙ off means you are
+    // not buying that commodity, so nobody offers to sell it to you.
     const sellsToYou = wanted(state, state.home, need)
-      .filter(([id, gap]) => stockIn(theirs, id) > gap * 3)
+      .filter(([id, gap]) => importsTo(state, state.home, id) && stockIn(theirs, id) > gap * 3)
       .sort((a, b) => b[1] - a[1])[0];
 
     const found = sellsToYou
@@ -435,4 +492,8 @@ function noise(seed) {
   a = Math.imul(a ^ (a >>> 15), 1 | a);
   a = (a + Math.imul(a ^ (a >>> 7), 61 | a)) ^ a;
   return ((a ^ (a >>> 14)) >>> 0) / 4294967296;
+}
+
+function round2(value) {
+  return Math.round(value * 100) / 100;
 }

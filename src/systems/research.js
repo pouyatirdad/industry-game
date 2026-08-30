@@ -4,6 +4,7 @@ import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { TECHS, availableTechs, techChain } from '../data/technology.js';
 import { allOwners, isPlayer, knowsTech, learnTech, pushAlert, canTrade,
   techDeclinedRecently } from '../core/state.js';
+import { worldBalance, scarcityGain } from './worldBalance.js';
 
 // Technology. Every industry past coal, iron, stone, timber and food is locked
 // behind a tech, for you and for the other forty-five alike — so what a nation
@@ -64,18 +65,18 @@ function chooseTech(state, countryId) {
   const options = availableTechs(state.countries[countryId].techs ?? {});
   if (!options.length) return null;
   const deposits = depositsOf(state, countryId);
+  const balance = worldBalance(state);
   let best = null;
   for (const id of options) {
-    const useful = unlocksFor(id).some((type) => {
+    const unlockValue = unlocksFor(id).reduce((sum, type) => {
       const def = BUILDINGS[type];
       // Extraction is worth learning only where the ground carries it.
       if (def.recipe && !Object.keys(def.recipe.in).length) {
-        return def.terrain.some((t) => deposits.has(t));
+        if (!def.terrain.some((t) => deposits.has(t))) return sum;
       }
-      return true;
-    });
-    // Cheap and useful beats dear and useful beats useless.
-    const score = (useful ? 1_000_000 : 0) - TECHS[id].cost;
+      return def.recipe ? sum + scarcityGain(def.recipe.out, balance.scarce) : sum;
+    }, 0);
+    const score = unlockValue / Math.max(1, TECHS[id].cost);
     if (!best || score > best.score) best = { id, score };
   }
   return best?.id ?? options[0];
@@ -104,9 +105,15 @@ function unlockNames(techId) {
 // mutates terrain or ownership after generation — the same guarantee that lets
 // the save omit tiles entirely. Asking per country was a scan of 180,000 tiles
 // every time any government finished a subject.
+//
+// Keyed on `state.mapVersion` too, because a war moves borders: a nation that
+// has just taken a coalfield can research what that coalfield unlocks, and one
+// that has lost its last oilfield should stop. The version only moves when a
+// tile actually changes hands, so a world at peace still builds this once.
 const depositCache = new WeakMap();
 function depositsOf(state, countryId) {
-  let index = depositCache.get(state.tiles);
+  const cached = depositCache.get(state.tiles);
+  let index = cached && cached.version === (state.mapVersion ?? 0) ? cached.index : null;
   if (!index) {
     index = new Map();
     for (const tile of state.tiles) {
@@ -115,7 +122,7 @@ function depositsOf(state, countryId) {
       if (!found) { found = new Set(); index.set(tile.countryId, found); }
       found.add(tile.terrain);
     }
-    depositCache.set(state.tiles, index);
+    depositCache.set(state.tiles, { version: state.mapVersion ?? 0, index });
   }
   return index.get(countryId) ?? new Set();
 }

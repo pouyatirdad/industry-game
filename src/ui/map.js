@@ -7,6 +7,8 @@ import { SOURCE_COUNTRY_W, SOURCE_COUNTRY_H } from '../data/world.js';
 import { ownerColor, ownerName, isPlayer } from '../core/state.js';
 import { canBuild } from '../actions.js';
 import { depotsByOwner, servedBy } from '../systems/logistics.js';
+import { UNIT_TYPES, deployableTile, terroristForce, unitAffordable, canMilitaryEnter,
+  canGroup, rangeOf } from '../systems/military.js';
 
 // The map is drawn to a CANVAS, not to DOM nodes.
 //
@@ -163,26 +165,49 @@ function attachZoom(host, view, ctx) {
   host.addEventListener('wheel', (event) => {
     event.preventDefault();
     const step = event.deltaY < 0 ? 1 : -1;
-    const next = Math.min(CONFIG.zoomLevels.length - 1, Math.max(0, ctx.ui.zoom + step));
-    if (next === ctx.ui.zoom) return;
-
-    // Where the pointer is in WORLD coordinates, before and after.
     const rect = host.getBoundingClientRect();
-    const px = event.clientX - rect.left;
-    const py = event.clientY - rect.top;
-    const was = CONFIG.zoomLevels[ctx.ui.zoom];
-    const to = CONFIG.zoomLevels[next];
-    const worldX = (host.scrollLeft + px) / was;
-    const worldY = (host.scrollTop + py) / was;
-
-    ctx.ui.zoom = next;
-    // The spacer has to grow before the scroll offset can be set against it.
-    view.spacer.style.width = `${ctx.state.grid.w * to}px`;
-    view.spacer.style.height = `${ctx.state.grid.h * to}px`;
-    host.scrollLeft = Math.max(0, worldX * to - px);
-    host.scrollTop = Math.max(0, worldY * to - py);
-    ctx.onZoom(next);
+    zoomTo(host, view, ctx, ctx.ui.zoom + step, event.clientX - rect.left, event.clientY - rect.top);
   }, { passive: false });
+}
+
+// ZOOM TO A LEVEL, HOLDING ONE SCREEN POINT STILL.
+//
+// The wheel holds the cursor and a pinch holds the midpoint between the two
+// fingers, but that is the only difference between them — so the arithmetic
+// lives here once rather than twice. Anchoring is what makes either gesture feel
+// right: zooming toward something and then having to hunt for it again is what
+// makes a naive level change feel broken.
+function zoomTo(host, view, ctx, level, px, py) {
+  const next = Math.min(CONFIG.zoomLevels.length - 1, Math.max(0, level));
+  if (next === ctx.ui.zoom) return false;
+
+  // Where that point is in WORLD coordinates, before and after.
+  const was = CONFIG.zoomLevels[ctx.ui.zoom];
+  const to = CONFIG.zoomLevels[next];
+  const worldX = (host.scrollLeft + px) / was;
+  const worldY = (host.scrollTop + py) / was;
+
+  ctx.ui.zoom = next;
+  // The spacer has to grow before the scroll offset can be set against it.
+  view.spacer.style.width = `${ctx.state.grid.w * to}px`;
+  view.spacer.style.height = `${ctx.state.grid.h * to}px`;
+  host.scrollLeft = Math.max(0, worldX * to - px);
+  host.scrollTop = Math.max(0, worldY * to - py);
+  ctx.onZoom(next);
+  return true;
+}
+
+// The zoom level whose tile size is nearest a wanted number of pixels. A pinch
+// is continuous and `CONFIG.zoomLevels` is a ladder, so the gesture has to be
+// resolved against the ladder rather than multiplying a level index — which is
+// also what makes "pinch to twice the distance" mean "tiles twice the size"
+// rather than some arbitrary number of steps.
+function levelNearest(px) {
+  let best = 0;
+  for (let i = 1; i < CONFIG.zoomLevels.length; i++) {
+    if (Math.abs(CONFIG.zoomLevels[i] - px) < Math.abs(CONFIG.zoomLevels[best] - px)) best = i;
+  }
+  return best;
 }
 
 // ...and panning is dragging, since the scrollbars are gone. `dragged` is what
@@ -190,14 +215,43 @@ function attachZoom(host, view, ctx) {
 // rather than to put a building on it.
 function attachPan(host, view, ctx, toTile) {
   let from = null;
+  // EVERY pointer currently down, because a second one means a PINCH.
+  //
+  // A phone has no wheel, so without this the map cannot be zoomed at all — it
+  // opens at 2px a tile and stays there, which is the whole planet and nothing
+  // you can build on. There are still no zoom buttons: a pinch is the gesture a
+  // touch screen already has, exactly as the wheel is the one a mouse has.
+  const down = new Map();
+  let pinch = null;
+
+  const spread = () => {
+    const [a, b] = [...down.values()];
+    return { gap: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  };
+
   host.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
     host.setPointerCapture?.(event.pointerId);
+    down.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (down.size === 2) {
+      // A pinch beginning cancels the drag the first finger started, or the map
+      // lurches by however far the fingers have already moved apart. Leaving
+      // `from` null is also what suppresses the tile click on the way back up:
+      // `pointerup` returns early without one, so a two-finger zoom over your
+      // own soil cannot quietly put a factory there.
+      from = null;
+      view.dragged = false;
+      pinch = { gap: spread().gap, level: ctx.ui.zoom };
+      return;
+    }
     from = { x: event.clientX, y: event.clientY, left: host.scrollLeft, top: host.scrollTop, moved: 0 };
   });
+
   host.addEventListener('pointerup', (event) => {
-    if (!from || event.button !== 0) return;
+    down.delete(event.pointerId);
+    if (down.size < 2) pinch = null;
+    if (!from || event.button !== 0) { host.releasePointerCapture?.(event.pointerId); return; }
     event.preventDefault();
     host.releasePointerCapture?.(event.pointerId);
     const wasDrag = from.moved >= 4;
@@ -207,14 +261,33 @@ function attachPan(host, view, ctx, toTile) {
     const id = toTile(event);
     if (id != null) ctx.onTileClick(id);
   });
+
   const end = (event) => {
+    down.delete(event.pointerId);
+    if (down.size < 2) pinch = null;
     if (from) host.releasePointerCapture?.(event.pointerId);
     from = null;
     view.dragged = false;
   };
   host.addEventListener('pointerleave', end);
   host.addEventListener('pointercancel', end);
+
   host.addEventListener('pointermove', (event) => {
+    if (down.has(event.pointerId)) down.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    // Two fingers: the map zooms and does not pan. The tile between the fingers
+    // is what stays put, which is the same promise the wheel makes about the
+    // tile under the cursor.
+    if (pinch && down.size === 2) {
+      event.preventDefault();
+      const { gap, mx, my } = spread();
+      if (pinch.gap < 1 || gap < 1) return;
+      const rect = host.getBoundingClientRect();
+      const want = CONFIG.zoomLevels[pinch.level] * (gap / pinch.gap);
+      zoomTo(host, view, ctx, levelNearest(want), mx - rect.left, my - rect.top);
+      return;
+    }
+
     if (!from) return;
     event.preventDefault();
     const dx = event.clientX - from.x;
@@ -302,8 +375,46 @@ function draw(host, view, ctx) {
   const byTile = new Map();
   for (const b of state.buildings) byTile.set(b.tileId, b);
   const depots = depotsByOwner(state);
+  // ...and so are the standing formations, for exactly the same reason. There
+  // are far fewer of them than buildings, but the tile loop is the whole
+  // viewport and it must not search a list per square.
+  //
+  // Formations STACK now — a group converges on one tile and stays there — so
+  // this is a tile to a LIST rather than a tile to a unit. The map draws the
+  // top of the stack and says how deep it is.
+  const unitsByTile = new Map();
+  // ...and where your own marching columns are headed, so a destination can be
+  // marked on the ground rather than only described in the panel. Only yours:
+  // the world's orders are not your news.
+  const ordersByTile = new Map();
+  for (const u of state.military?.units ?? []) {
+    const stack = unitsByTile.get(u.tileId);
+    if (stack) stack.push(u); else unitsByTile.set(u.tileId, [u]);
+    if (u.orderTileId == null || !isPlayer(state, u.owner)) continue;
+    ordersByTile.set(u.orderTileId, (ordersByTile.get(u.orderTileId) ?? 0) + 1);
+  }
+  const terror = state.terrorism?.active ?? null;
+  // ...and the ground a cell has been ANNOUNCED for, which is marked before
+  // anything is standing on it. That is the whole use of the warning: you can
+  // see where to be.
+  const warned = !terror ? (state.terrorism?.warning ?? null) : null;
 
   const tool = ui.tool;
+  // Whether a formation is in hand, and whether the warehouses could actually
+  // pay for one. The affordability half costs a depot scan, so it is asked ONCE
+  // here rather than per tile — `deployableTile` below is the cheap half.
+  const unitTool = ui.unit;
+  const canRaise = unitTool ? unitAffordable(state, state.home, unitTool, depots.get(state.home) ?? []) : false;
+  // A formation already standing, waiting for its next order — set from the
+  // Move button in the Selected pane. Valid destinations light up the same way
+  // a deployable tile does, since both answer the same question: where may
+  // this unit be.
+  const moveUnit = ui.moveUnit != null ? (state.military?.units ?? []).find((u) => u.id === ui.moveUnit) : null;
+  // ...and the formation whose group is being assembled. While one is in hand,
+  // the OTHER formations it could legally march with light up, so "aircraft
+  // group only with aircraft" is something you can see rather than a refusal
+  // you find out about by clicking.
+  const groupUnit = ui.groupUnit != null ? (state.military?.units ?? []).find((u) => u.id === ui.groupUnit) : null;
   const glyphs = tilePx >= 10;
   // Frontier segments, gathered as the tiles are painted and stroked once at
   // the end. Flat arrays of x1,y1,x2,y2 rather than objects: at one pixel a tile
@@ -357,9 +468,21 @@ function draw(host, view, ctx) {
         runFrom = x;
       }
 
+      const stack = unitsByTile.get(tile.id);
+      const unit = stack ? stack[stack.length - 1] : null;
+      const camp = terror && terror.tileId === tile.id;
+      const omen = warned && warned.tileId === tile.id;
+      const bound = ordersByTile.get(tile.id);
       const buildable = !building && tool && tile.countryId && canBuild(state, tool, tile).ok;
+      const raisable = !building && !unit && canRaise && deployableTile(state, state.home, unitTool, tile);
+      // A destination for an order may be occupied — formations stack, and a
+      // column arriving on the tile a scout already holds is the normal case —
+      // so a movable tile is no longer gated on being empty of units.
+      const movable = !building && moveUnit && tile.id !== moveUnit.tileId
+        && canMilitaryEnter(state, moveUnit, tile);
+      const groupable = groupUnit && unit && unit.id !== groupUnit.id && canGroup(groupUnit, unit);
       const selected = ui.selectedTileId === tile.id;
-      if (building || buildable || selected) flush(x + 1, py);
+      if (building || unit || camp || omen || bound || buildable || raisable || movable || selected) flush(x + 1, py);
 
       if (building) {
         const stranded = building.output && !servedBy(depots.get(building.owner) ?? [], building.x, building.y);
@@ -376,11 +499,26 @@ function draw(host, view, ctx) {
           g.fillText(BUILDINGS[building.type].glyph, px + tilePx / 2, py + tilePx / 2);
         }
         if (stranded) drawStrandedBadge(g, px, py, tilePx);
-      } else if (buildable) {
-        g.strokeStyle = '#5fbf7f';
+      } else if (buildable || raisable || movable) {
+        g.strokeStyle = raisable || movable ? '#7fa8ff' : '#5fbf7f';
         g.lineWidth = 1;
         g.strokeRect(px + 0.5, py + 0.5, tilePx - 1, tilePx - 1);
       }
+      // A formation you could add to the group in hand. Green rather than the
+      // blue "you may stand here", because it is a different question.
+      if (groupable) {
+        g.strokeStyle = '#7fdca0';
+        g.lineWidth = 2;
+        g.strokeRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
+      }
+
+      // A formation is drawn ON TOP of whatever ground it holds rather than
+      // recolouring it: an army occupies land, it does not replace it. A stack
+      // draws its topmost unit and carries a count.
+      if (unit) drawUnit(g, unit, px, py, tilePx, glyphs, isPlayer(state, unit.owner), stack.length);
+      if (bound) drawWaypoint(g, px, py, tilePx);
+      if (camp) drawCamp(g, px, py, tilePx, glyphs);
+      if (omen) drawOmen(g, px, py, tilePx);
 
       if (selected) {
         g.strokeStyle = '#f0b34b';
@@ -397,6 +535,25 @@ function draw(host, view, ctx) {
       edge(frontiers, coasts, provinceLines ? provinces : null, tile, below, px, py + tilePx, px + tilePx, py + tilePx);
     }
     flush(x1, py);
+  }
+
+  // How far the selected formation can reach to fight, drawn as ONE rectangle
+  // after the tile loop rather than as a highlight per tile inside it. Only
+  // artillery's is bigger than the ground it stands on, so this is the whole
+  // visible difference between a gun and a rifle and it is worth showing — but
+  // it must not cost a per-tile question to show it.
+  const chosen = ui.selectedTileId != null ? unitsByTile.get(ui.selectedTileId) : null;
+  if (chosen && tilePx >= 3) {
+    const lead = chosen[chosen.length - 1];
+    const reach = rangeOf(lead);
+    const from = Math.floor((lead.x - reach) * tilePx - left);
+    const above = Math.floor((lead.y - reach) * tilePx - top);
+    g.save();
+    g.strokeStyle = '#e0a34b99';
+    g.lineWidth = 1.5;
+    g.setLineDash([4, 3]);
+    g.strokeRect(from + 0.5, above + 0.5, (reach * 2 + 1) * tilePx - 1, (reach * 2 + 1) * tilePx - 1);
+    g.restore();
   }
 
   // Frontiers and the graticule go on TOP of the terrain, so a border is never
@@ -624,6 +781,114 @@ function statusColor(building) {
   }
 }
 
+// A standing formation: a disc in its owner's colour, with the unit's glyph on
+// it once there is room to read one. A unit that was IN CONTACT last tick wears
+// a red rim, because "why is my army melting" has to be answerable from the map.
+function drawUnit(g, unit, px, py, tilePx, glyphs, mine, stacked = 1) {
+  const def = UNIT_TYPES[unit.type];
+  if (!def) return;
+  g.save();
+  const radius = Math.max(2, Math.min(tilePx * 0.42, 11));
+  const cx = px + tilePx / 2;
+  const cy = py + tilePx / 2;
+  // A formation that marches with a group wears a second ring. Grouping is
+  // invisible otherwise — it changes nothing you can see except where the
+  // column goes next — and an order given to one that quietly moved four is
+  // exactly the surprise a marker prevents.
+  if (unit.groupId != null && tilePx >= 6) {
+    g.beginPath();
+    g.arc(cx, cy, radius + 2, 0, Math.PI * 2);
+    g.lineWidth = 1;
+    g.strokeStyle = '#7fdca0';
+    g.stroke();
+  }
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.fillStyle = mine ? '#e9f0ff' : '#8d95a4';
+  g.fill();
+  g.lineWidth = tilePx >= 8 ? 2 : 1;
+  g.strokeStyle = unit.engaged ? '#e22929' : '#0b0d12cc';
+  g.stroke();
+  if (glyphs) {
+    g.fillStyle = '#12151c';
+    g.font = `${Math.floor(tilePx * 0.6)}px system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(def.glyph, cx, cy);
+    // How many formations are standing on this square. Only the top one is
+    // drawn, so without this a column of five reads as a lone scout.
+    if (stacked > 1) {
+      g.font = `700 ${Math.max(8, Math.floor(tilePx * 0.34))}px system-ui, sans-serif`;
+      g.fillStyle = '#0b0d12';
+      g.fillText(`×${stacked}`, cx + radius * 0.9, cy - radius * 0.85);
+      g.fillStyle = '#f0e9c8';
+      g.fillText(`×${stacked}`, cx + radius * 0.9 - 0.5, cy - radius * 0.85 - 0.5);
+    }
+  }
+  g.restore();
+}
+
+// Where one of your own marching columns is headed. A standing order takes many
+// ticks now, so the destination has to be somewhere you can see it — otherwise
+// an army crossing a continent looks like an army that has stopped.
+function drawWaypoint(g, px, py, tilePx) {
+  const cx = px + tilePx / 2;
+  const cy = py + tilePx / 2;
+  const arm = Math.max(2, tilePx * 0.34);
+  g.save();
+  g.strokeStyle = '#7fa8ff';
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(cx - arm, cy);
+  g.lineTo(cx + arm, cy);
+  g.moveTo(cx, cy - arm);
+  g.lineTo(cx, cy + arm);
+  g.stroke();
+  g.restore();
+}
+
+// The ground a cell has been announced for, before anything is standing on it.
+// A dashed amber ring rather than the camp's solid red: nothing is there YET,
+// and the difference between "a cell is here" and "a cell will be here" is the
+// whole value of the warning.
+function drawOmen(g, px, py, tilePx) {
+  const cx = px + tilePx / 2;
+  const cy = py + tilePx / 2;
+  const radius = Math.max(3, Math.min(tilePx * 0.5, 13));
+  g.save();
+  g.strokeStyle = '#f0a04b';
+  g.lineWidth = tilePx >= 8 ? 2 : 1;
+  g.setLineDash([3, 3]);
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.stroke();
+  g.restore();
+}
+
+// The terrorist camp. Deliberately the loudest thing on the map: there is only
+// ever one, and the whole mechanic is that you go and deal with it.
+function drawCamp(g, px, py, tilePx, glyphs) {
+  g.save();
+  const radius = Math.max(3, Math.min(tilePx * 0.5, 13));
+  const cx = px + tilePx / 2;
+  const cy = py + tilePx / 2;
+  g.beginPath();
+  g.arc(cx, cy, radius, 0, Math.PI * 2);
+  g.fillStyle = '#e2292988';
+  g.fill();
+  g.lineWidth = 2;
+  g.strokeStyle = '#ff5a4d';
+  g.stroke();
+  if (glyphs) {
+    g.fillStyle = '#fff';
+    g.font = `700 ${Math.floor(tilePx * 0.62)}px system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('☠', cx, cy);
+  }
+  g.restore();
+}
+
 function drawStrandedBadge(g, px, py, tilePx) {
   g.save();
   const radius = Math.max(3, Math.min(8, tilePx * 0.34));
@@ -648,6 +913,26 @@ function tooltip(state, tile) {
   const where = tile.countryId
     ? placeName(tile)
     : tile.terrain === 'water' ? 'International waters' : 'Unclaimed territory';
+  const active = state.terrorism?.active;
+  if (active && active.tileId === tile.id) {
+    const force = terroristForce(active);
+    return `${active.name} — ${force.infantry} infantry, ${force.armoredCar} armoured car${force.armoredCar === 1 ? '' : 's'}`
+      + ` · ${active.destroyed ?? 0} site${(active.destroyed ?? 0) === 1 ? '' : 's'} destroyed · ${where}`;
+  }
+  // Formations stack, so the hover names what is actually standing here rather
+  // than only the first of them.
+  const here = (state.military?.units ?? []).filter((u) => u.tileId === tile.id);
+  if (here.length && !building) {
+    const unit = here[here.length - 1];
+    const def = UNIT_TYPES[unit.type];
+    const whose = isPlayer(state, unit.owner) ? 'yours' : ownerName(unit.owner);
+    return `${def.name} (${whose}) — strength ${unit.strength.toFixed(1)}/${def.strength}`
+      + ` · ${def.speed} tile${def.speed === 1 ? '' : 's'}/tick, strikes ${def.range}`
+      + `${here.length > 1 ? ` · ${here.length} formations here` : ''}`
+      + `${unit.groupId != null ? ' · grouped' : ''}`
+      + `${unit.orderTileId != null ? ' · marching' : ''}`
+      + `${unit.engaged ? ' · IN CONTACT' : ''} · ${where}`;
+  }
   if (building) {
     const def = BUILDINGS[building.type];
     const whose = isPlayer(state, building.owner) ? 'yours' : ownerName(building.owner);

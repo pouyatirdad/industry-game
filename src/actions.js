@@ -8,6 +8,11 @@ import { buildingOnTile, exchangeOf, pushAlert, isOwnSoil, isPlayer, ownerById, 
 import { licenceCost, clampShare } from './systems/research.js';
 import { canSignContract, signContract, quotePrice, describe as describeContract } from './systems/contracts.js';
 import { post, withdraw, takeListing, borrow, repay } from './systems/exchange.js';
+import { canDeployUnit, createMilitaryUnit, disbandUnit, unitOnTile,
+  moveMilitaryUnit, canMilitaryEnter, joinGroup, leaveGroup, groupOf, groupSpeed,
+  speedOf, UNIT_TYPES } from './systems/military.js';
+import { proposeRelation, answerProposal, withdrawProposal, declareWar,
+  callOffWar } from './systems/relations.js';
 
 // Money in an alert, spelled the way the panels spell it. Actions cannot import
 // the UI's formatter — src/ui is the layer above this one — and a bare 18000 in
@@ -67,6 +72,10 @@ export function build(state, type, tile, owner = state.home) {
     y: tile.y,
     tileId: tile.id,
     progress: 0,
+    // The tick it was laid. A plant needs time before "it has never worked" is
+    // a judgement rather than an observation, and `closeDeadSites` is the one
+    // thing that asks — see `stateIndustry.js`.
+    builtAt: state.tick,
     status: 'idle',
     // Rolling share of recent ticks this site actually worked. A new plant has
     // not worked one yet, so it opens at nought and climbs as it runs.
@@ -105,6 +114,129 @@ export function demolish(state, tile, owner = state.home) {
     pushAlert(state, `${def.name} at (${tile.x}, ${tile.y}) demolished — ${cash(refund)} back.`, 'info');
   }
   return { ok: true, refund };
+}
+
+// --- the army -------------------------------------------------------------
+
+// Raising a formation. There is no barracks and no build queue: you pick a unit
+// out of the same dock the industries are in, click your own ground, and the
+// batch it costs comes straight out of your warehouses. From then on it draws
+// its upkeep every tick until it is disbanded or it starves — see
+// `systems/military.js`, which owns every quantity involved.
+export function deployUnit(state, type, tile, owner = state.home) {
+  const check = canDeployUnit(state, owner, type, tile);
+  if (!check.ok) {
+    if (isPlayer(state, owner)) pushAlert(state, check.reason, 'warn');
+    return check;
+  }
+  const result = createMilitaryUnit(state, owner, type, tile.id);
+  if (result.ok && isPlayer(state, owner)) {
+    const def = UNIT_TYPES[type];
+    // Say plainly when the treasury made up the difference — buying goods in
+    // costs several times what producing them does, and a player who does it by
+    // accident should find out from the alert rather than from the balance.
+    pushAlert(state, `${def.name} raised at (${tile.x}, ${tile.y}) for ${describeBag(def.cost)}`
+      + `${result.cash > 0 ? `, ${cash(result.cash)} of it bought in` : ''}.`, 'good');
+  }
+  return result;
+}
+
+// Standing one down. The supplies that raised it are spent, so nothing comes
+// back — what you get is the upkeep you stop paying.
+export function standDown(state, tile, owner = state.home) {
+  const unit = unitOnTile(state, tile.id);
+  if (!unit) return { ok: false, reason: 'No formation here.' };
+  return standDownUnit(state, unit.id, owner);
+}
+
+export function standDownUnit(state, unitId, owner = state.home) {
+  const unit = (state.military?.units ?? []).find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (unit.owner !== owner) {
+    const reason = `That formation belongs to ${ownerName(unit.owner)}.`;
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  const result = disbandUnit(state, unit.id);
+  if (result.ok && isPlayer(state, owner)) {
+    pushAlert(state, `${UNIT_TYPES[unit.type].name} at (${unit.x}, ${unit.y}) stood down.`, 'info');
+  }
+  return result;
+}
+
+// Ordering a formation you already have to a new tile. The map asks for this
+// once a unit is picked up in "move" mode and a destination is clicked — the
+// same access rules as raising one apply (`canMilitaryEnter`), so a unit can
+// only cross into land its government has a reason to be on.
+//
+// It is an ORDER, not an arrival: the column sets off and covers `speed` tiles
+// a tick until it gets there. If the formation marches with a group, the whole
+// group is ordered and moves at its slowest member's pace, so the alert says
+// how many are on the road and how long it will take them.
+export function orderMove(state, unitId, tile, owner = state.home) {
+  const unit = (state.military?.units ?? []).find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (unit.owner !== owner) {
+    const reason = `That formation belongs to ${ownerName(unit.owner)}.`;
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  if (!tile) return { ok: false, reason: 'No such tile.' };
+  if (!canMilitaryEnter(state, unit, tile)) {
+    const reason = 'No military access to that ground.';
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  const result = moveMilitaryUnit(state, unitId, tile.id);
+  if (!result.ok) { if (isPlayer(state, owner)) pushAlert(state, result.reason, 'warn'); return result; }
+  if (isPlayer(state, owner)) {
+    const pace = unit.groupId != null ? groupSpeed(state, unit.groupId) : speedOf(unit);
+    const away = Math.max(Math.abs(tile.x - unit.x), Math.abs(tile.y - unit.y));
+    const ticks = Math.max(1, Math.ceil(away / Math.max(1, pace)));
+    const marching = result.ordered.length;
+    pushAlert(state, `${marching > 1 ? `${marching} formations march` : `${UNIT_TYPES[unit.type].name} marches`} for (${tile.x}, ${tile.y}) — ${pace} tile${pace > 1 ? 's' : ''} a tick, about ${ticks} tick${ticks > 1 ? 's' : ''} out.`, 'info');
+  }
+  return result;
+}
+
+// --- groups ---------------------------------------------------------------
+
+// Putting two of your formations in one group. From then on an order given to
+// either is given to both, and they march at the slower one's pace — see
+// `moveMilitaryUnit`. Land marches with land and aircraft fly with aircraft;
+// the system decides that, not this file.
+export function groupUnits(state, unitId, otherId, owner = state.home) {
+  const a = (state.military?.units ?? []).find((u) => u.id === unitId);
+  const b = (state.military?.units ?? []).find((u) => u.id === otherId);
+  if (!a || !b) return { ok: false, reason: 'No such formation.' };
+  if (a.owner !== owner || b.owner !== owner) {
+    const reason = 'You can only group your own formations.';
+    if (isPlayer(state, owner)) pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  const result = joinGroup(state, unitId, otherId);
+  if (!result.ok) { if (isPlayer(state, owner)) pushAlert(state, result.reason, 'warn'); return result; }
+  if (isPlayer(state, owner)) {
+    pushAlert(state, `${UNIT_TYPES[b.type].name} joined the group — ${result.size} formations now move together at ${groupSpeed(state, result.groupId)} tile/tick.`, 'good');
+  }
+  return result;
+}
+
+export function ungroupUnit(state, unitId, owner = state.home) {
+  const unit = (state.military?.units ?? []).find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (unit.owner !== owner) return { ok: false, reason: `That formation belongs to ${ownerName(unit.owner)}.` };
+  const size = groupOf(state, unit).length;
+  const result = leaveGroup(state, unitId);
+  if (!result.ok) { if (isPlayer(state, owner)) pushAlert(state, result.reason, 'warn'); return result; }
+  if (isPlayer(state, owner)) {
+    pushAlert(state, `${UNIT_TYPES[unit.type].name} left the group${size > 2 ? '' : ' — the group is dissolved'}.`, 'info');
+  }
+  return result;
+}
+
+function describeBag(bag) {
+  return Object.entries(bag).map(([id, qty]) => `${qty} ${COMMODITIES[id].name}`).join(' + ');
 }
 
 // --- the exchange ---------------------------------------------------------
@@ -383,4 +515,69 @@ export function setSpeed(state, speed) {
 
 export function togglePause(state) {
   state.paused = !state.paused;
+}
+
+// --- diplomacy ------------------------------------------------------------
+//
+// A relation is no longer a dropdown you set. Alliance, military access and
+// peace are all ASKED FOR, and the other government answers on the same
+// appetite it uses to answer every other nation (`relationAppetite`). War is
+// the exception and it is the exception on purpose — see `systems/relations.js`.
+//
+// `changeRelation` is kept as the one door the UI goes through, so a click on
+// "Declare war" and a click on "Propose alliance" are the same call with a
+// different word, and neither can reach a code path the other cannot.
+export function changeRelation(state, countryId, relation) {
+  return relation === 'war' ? declareOnCountry(state, countryId) : proposeTo(state, countryId, relation);
+}
+
+export function proposeTo(state, countryId, relation, from = state.home) {
+  const result = proposeRelation(state, from, countryId, relation);
+  if (!result.ok) {
+    if (isPlayer(state, from)) pushAlert(state, result.reason, 'warn');
+    return result;
+  }
+  if (isPlayer(state, from)) {
+    pushAlert(state, `${describeRelation(relation)} proposed to ${ownerName(countryId)} — awaiting their answer.`, 'info');
+  }
+  return result;
+}
+
+export function declareOnCountry(state, countryId, from = state.home) {
+  const result = declareWar(state, from, countryId);
+  if (!result.ok && isPlayer(state, from)) pushAlert(state, result.reason, 'warn');
+  return result;
+}
+
+// Answering what another government has put to YOU. The same function the world
+// answers with — `answerProposal` in the system — so your yes cannot write a
+// relation theirs could not.
+export function answerPact(state, proposalId, accept, by = state.home) {
+  const result = answerProposal(state, proposalId, accept, by);
+  if (!result.ok) { pushAlert(state, result.reason, 'warn'); return result; }
+  const other = result.proposal.from === by ? result.proposal.to : result.proposal.from;
+  pushAlert(state, accept
+    ? `${describeRelation(result.proposal.relation)} agreed with ${ownerName(other)}.`
+    : `Declined ${ownerName(other)}'s proposal.`, accept ? 'good' : 'info');
+  return result;
+}
+
+export function withdrawPact(state, proposalId, by = state.home) {
+  const result = withdrawProposal(state, proposalId, by);
+  if (!result.ok) { pushAlert(state, result.reason, 'warn'); return result; }
+  pushAlert(state, `Proposal to ${ownerName(result.proposal.to)} withdrawn.`, 'info');
+  return result;
+}
+
+export function standDownWar(state, ultimatumId, by = state.home) {
+  const result = callOffWar(state, ultimatumId, by);
+  if (!result.ok) { pushAlert(state, result.reason, 'warn'); return result; }
+  pushAlert(state, `Declaration of war on ${ownerName(result.ultimatum.to)} called off.`, 'good');
+  return result;
+}
+
+function describeRelation(relation) {
+  return relation === 'alliance' ? 'An alliance'
+    : relation === 'access' ? 'Military access'
+      : relation === 'war' ? 'War' : 'Peace';
 }

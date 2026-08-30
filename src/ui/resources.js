@@ -1,7 +1,7 @@
 import { BUILDINGS } from '../data/buildings.js';
 import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
-import { warehouseStock, appetite } from '../core/state.js';
+import { warehouseStock, appetite, spareRates } from '../core/state.js';
 import { supplyRatio } from '../systems/domestic.js';
 import { num, pct, priceShort, qtyShort, setAttr, setText, html } from './format.js';
 
@@ -94,6 +94,10 @@ export function updateResources(refs, ctx) {
   // The standing rates, indexed once rather than per row: what your own plants
   // are set up to burn and to turn out, whether or not they ran this tick.
   const burn = factoryFlow(state, state.home, 'in');
+  // The same figure the contract offers are filtered against, from the same
+  // function — two definitions of "spare" would drift the first time either was
+  // touched, and this table would then promise rates the offers refuse.
+  const spare = spareRates(state, state.home);
   const make = factoryFlow(state, state.home, 'out');
   const usage = mine ? burn : factoryFlow(state, where, 'in');
 
@@ -142,10 +146,10 @@ export function updateResources(refs, ctx) {
 
     // What you have spare once your own factories and your own people are
     // served — the rate a contract has to cover, so it is always per tick.
-    const spare = (make[id] ?? 0) - (burn[id] ?? 0) - appetite(state, state.home, id);
+    const balance = spare[id] ?? 0;
     const bal = row.querySelector('.goods__balance');
-    setText(bal, Math.abs(spare) < 0.05 ? '·' : `${spare > 0 ? '+' : ''}${spare.toFixed(1)}`);
-    setAttr(bal, 'data-dir', spare > 0.05 ? 'up' : spare < -0.05 ? 'down' : null);
+    setText(bal, Math.abs(balance) < 0.05 ? '·' : `${balance > 0 ? '+' : ''}${balance.toFixed(1)}`);
+    setAttr(bal, 'data-dir', balance > 0.05 ? 'up' : balance < -0.05 ? 'down' : null);
 
     setText(row.querySelector('.goods__out'), figure(led.exported, perTick));
 

@@ -1,10 +1,12 @@
 import { CONFIG } from '../core/config.js';
 import { BUILDINGS, BUILDING_IDS } from '../data/buildings.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
-import { COMMODITIES, COMMODITY_IDS } from '../data/commodities.js';
-import { projectedWages, buildingsOf, appetite, siteWages, warehouseUsed, knowsTech } from '../core/state.js';
+import { COMMODITIES } from '../data/commodities.js';
+import { projectedWages, buildingsOf, siteWages, warehouseUsed, knowsTech, isAlive } from '../core/state.js';
 import { build, canBuild, demolish } from '../actions.js';
 import { servedBy } from './logistics.js';
+import { tilesByCountry, EMPTY_LAND } from './worldIndex.js';
+import { worldBalance, scarcityGain } from './worldBalance.js';
 
 // The other forty-five nations run their own industry. They are not scripted
 // opponents with special powers: each goes through `build` exactly as you do,
@@ -20,108 +22,62 @@ import { servedBy } from './logistics.js';
 // site per country per decision, because a government that built every tick
 // would carpet its own land inside a minute and leave you nothing to buy.
 
-// Every country's tiles, grouped in ONE pass and CACHED against the tile array.
-// Nothing in the game mutates terrain or ownership after generation — the same
-// guarantee that lets the save omit tiles entirely — so this index is built once
-// per world rather than once per decision. At a million tiles, regrouping it
-// every eight ticks was the most expensive thing in the pipeline by an order of
-// magnitude; `depositsOf` in research.js is cached for exactly the same reason.
-//
-// ...and bucketed by TERRAIN inside each country, because `findTile` asks for
-// one terrain at a time. A steel mill wants plain ground; walking a country's
-// coalfields and fisheries to find out they are not plain is thirty-four scans
-// of the whole country per decision.
-const tileCache = new WeakMap();
-function tilesByCountry(state) {
-  let index = tileCache.get(state.tiles);
-  if (index) return index;
-  index = new Map();
-  for (const tile of state.tiles) {
-    if (!tile.countryId) continue;
-    let entry = index.get(tile.countryId);
-    if (!entry) { entry = { all: [], byTerrain: new Map() }; index.set(tile.countryId, entry); }
-    entry.all.push(tile);
-    const list = entry.byTerrain.get(tile.terrain);
-    if (list) list.push(tile); else entry.byTerrain.set(tile.terrain, [tile]);
-  }
-  tileCache.set(state.tiles, index);
-  return index;
-}
-
-const EMPTY_LAND = { all: [], byTerrain: new Map() };
+// The tile index and the world's balance sheet both moved out to modules of
+// their own (`worldIndex.js`, `worldBalance.js`) once `stateMilitary` and
+// `research` needed them too. A second copy of either would walk a million tiles
+// or every building in the world all over again, and — worse — would drift from
+// this one the first time either was tuned.
 
 export function runStateIndustry(state) {
   if (state.tick % CONFIG.stateBuildEvery !== 0) return;
 
   const byCountry = tilesByCountry(state);
 
-  // What the world has on offer, so a government can plan a plant around an
-  // input it cannot dig up. Indexed once for all forty-five decisions.
-  const offered = worldOffer(state);
-  // ...and how much of each commodity the world actually wants, populations and
-  // factory floors together. Indexed once for the same reason.
-  const wants = worldDemand(state);
+  // What the world wants, what it can make, how short of each thing it is, and
+  // what is standing on a shelf somewhere — worked out ONCE for all 257
+  // decisions rather than once per country.
+  const { offered, wants, supply, scarce } = worldBalance(state);
 
   for (const id of COUNTRY_IDS) {
     // Your own country is yours to run. Nothing builds on your soil but you.
     if (id === state.home) continue;
+    // A nation conquered out of existence builds nothing ever again.
+    if (!isAlive(state, id)) continue;
     const land = byCountry.get(id) ?? EMPTY_LAND;
+    // Dead capital is cleared BEFORE anything new is considered, so the refund
+    // is in the treasury and the ground is free when the decision below is
+    // taken. A government that only ever built forward kept paying wages on
+    // plants that had not turned a job in two hundred ticks.
+    closeDeadSites(state, id);
     // More than one site per decision, or a government with a full treasury
     // spends the game saving it. It still stops the moment nothing is worth
     // building or the reserve is reached, so this is a ceiling, not a quota.
     for (let n = 0; n < CONFIG.stateBuildsPerDecision; n++) {
-      if (!considerBuild(state, id, land, offered, wants)) break;
+      if (!considerBuild(state, id, land, offered, wants, supply, scarce)) break;
     }
   }
 }
 
-// What every commodity is wanted for, worldwide and per nation: people's
-// appetite PLUS what the world's factories burn. Counting only appetite is what
-// left the world permanently short of feedstock — nobody built the coal mine
-// that three coal plants in another country were waiting on, because as far as
-// `hasHeadroom` was concerned nobody wanted any more coal.
-function worldDemand(state) {
-  const world = {};
-  const home = {};
-  for (const commodityId of COMMODITY_IDS) {
-    world[commodityId] = 0;
-    home[commodityId] = {};
-  }
-  for (const countryId of COUNTRY_IDS) {
-    for (const commodityId of COMMODITY_IDS) {
-      const eats = appetite(state, countryId, commodityId);
-      home[commodityId][countryId] = eats;
-      world[commodityId] += eats;
-    }
-  }
+// A site that has not worked in a long time is money leaving the treasury every
+// tick for nothing. A government demolishes it and takes the refund, which is
+// what turns a bad decision into capital rather than a permanent drain.
+//
+// Three guards, and each one is here because leaving it out thrashes: a plant
+// gets `deadAfter` ticks to find its feet before anybody judges it, only a
+// genuinely idle one counts (`uptime`), and a WAREHOUSE is never touched —
+// selling the depot strands everything else, exactly as in `closeWorstSite`.
+function closeDeadSites(state, countryId) {
+  const { deadAfter, deadUptime } = CONFIG.stateSalvage;
   for (const b of state.buildings) {
-    const recipe = BUILDINGS[b.type].recipe;
-    if (!recipe) continue;
-    for (const [id, qty] of Object.entries(recipe.in)) {
-      const burn = qty / recipe.ticks;
-      world[id] += burn;
-      home[id][b.owner] = (home[id][b.owner] ?? 0) + burn;
-    }
+    if (b.owner !== countryId || !b.output) continue;
+    if (state.tick - (b.builtAt ?? 0) < deadAfter) continue;
+    if ((b.uptime ?? 0) > deadUptime) continue;
+    demolish(state, state.tiles[b.tileId], countryId);
+    return;   // one a decision: a country is not razed in a single tick
   }
-  return { world, home };
 }
 
-// Everything sitting in a warehouse anywhere, by commodity. A government reads
-// this as "could I buy this in" — the forty-five trade freely with each other,
-// so anything on the world market is reachable by any of them.
-function worldOffer(state) {
-  const totals = new Map();
-  for (const b of state.buildings) {
-    if (!b.store) continue;
-    for (const id of Object.keys(b.store)) {
-      const qty = b.store[id] ?? 0;
-      if (qty > 0) totals.set(id, (totals.get(id) ?? 0) + qty);
-    }
-  }
-  return totals;
-}
-
-function considerBuild(state, countryId, land, offered, wants) {
+function considerBuild(state, countryId, land, offered, wants, supply, scarce) {
   const gov = state.countries[countryId];
   // A broke government closes plants rather than sinking forever. Without this
   // one line an insolvent nation idles every site, keeps paying the payroll on
@@ -142,7 +98,7 @@ function considerBuild(state, countryId, land, offered, wants) {
   // thirty sites blocked behind it, which is exactly what used to happen.
   const candidate = needsDepot(own, depots)
     ? bestDepot(state, countryId, spendable, land.all)
-    : bestSite(state, countryId, spendable, own, depots, land, offered, wants);
+    : bestSite(state, countryId, spendable, own, depots, land, offered, wants, supply, scarce);
   if (!candidate) return false;
   return build(state, candidate.type, candidate.tile, countryId).ok;
 }
@@ -206,7 +162,7 @@ function bestDepot(state, countryId, spendable, tiles) {
 // market. A country with no coalfield can run a steel mill on imported coal
 // exactly as you can, so refusing to plan around an input it cannot dig up was
 // what left half the map as pure extraction economies.
-function bestSite(state, countryId, spendable, own, depots, land, offered, wants) {
+function bestSite(state, countryId, spendable, own, depots, land, offered, wants, supply, scarce) {
   const market = state.markets[countryId];
   const produces = new Set();
   const rate = {};
@@ -217,34 +173,93 @@ function bestSite(state, countryId, spendable, own, depots, land, offered, wants
       produces.add(id);
       rate[id] = (rate[id] ?? 0) + qty / recipe.ticks;
     }
+    for (const [id, qty] of Object.entries(recipe.in)) {
+      rate[id] = (rate[id] ?? 0) - qty / recipe.ticks;
+    }
   }
 
-  let best = null;
+  // Plans it could site today, and — separately — what the plans it CANNOT site
+  // are waiting for. The second list is the whole point of the pass below.
+  const viable = [];
+  const blockedBy = new Map();
+
   for (const type of BUILDING_IDS) {
     const def = BUILDINGS[type];
     if (!def.recipe) continue;   // storage is `needsDepot`'s decision, not this one
-    if (def.cost > spendable) continue;
     // A government builds only what it has learned to build, exactly as you do.
     if (!knowsTech(state, countryId, def.tech)) continue;
+
+    const wages = Math.round(def.wages * COUNTRIES[countryId].wageMul);
+    // A plan is worth what it earns TIMES how badly the world needs what it
+    // makes, divided by how hard what it burns is to get. The second half
+    // matters as much as the first: a plant built on a feedstock nobody can
+    // supply is a plant that stands idle, and its margin on paper is a fiction.
+    const margin = marginPerTick(def, market) - wages;
+    const inputScarcity = scarcityGain(def.recipe.in, scarce);
+    const score = margin * scarcityGain(def.recipe.out, scarce) / Math.max(1, inputScarcity * inputScarcity);
 
     // An input counts as available if the country makes it, or if there is
     // enough of it standing in warehouses somewhere to keep the plant fed for a
     // few jobs. `marginPerTick` then prices those inputs at the DEARER of local
     // and base price, so a plan built on imports has to clear a margin at a
     // price it will not actually be beaten by.
-    const inputs = Object.entries(def.recipe.in);
-    if (!inputs.every(([id, qty]) => produces.has(id) || (offered?.get(id) ?? 0) >= qty * 4)) continue;
+    const missing = Object.entries(def.recipe.in)
+      .filter(([id, qty]) => {
+        const inputRate = qty / def.recipe.ticks;
+        if (produces.has(id) && (!undersuppliedManufactured(id, wants, supply, inputRate) || (rate[id] ?? 0) >= inputRate)) {
+          return false;
+        }
+        return (offered?.get(id) ?? 0) < qty * 4 || undersuppliedManufactured(id, wants, supply, inputRate);
+      })
+      .map(([id]) => id);
+
+    if (missing.length) {
+      // IT CANNOT BUILD THIS ONE — BUT REMEMBER WHAT IT IS WAITING FOR.
+      //
+      // A nation with no coalfield and no coal on any shelf it can reach used to
+      // discard the steel mill here and never think about it again, so it never
+      // built the coal mine that would have made the mill possible. Half the map
+      // stayed a pure extraction economy for exactly this reason.
+      //
+      // Two guards keep it honest: the blocked plan has to be worth something on
+      // its own terms, and it has to be within distant reach of the treasury —
+      // planning a chain around a plant this government will never afford is how
+      // an AI talks itself into a mine nothing will ever consume.
+      if (score <= 0 || def.cost > spendable * CONFIG.stateChain.reach) continue;
+      // Split across everything it lacks: a plan short of three feedstocks is not
+      // three times as good a reason to build any one of them.
+      const share = score / missing.length;
+      for (const id of missing) blockedBy.set(id, Math.max(blockedBy.get(id) ?? 0, share));
+      continue;
+    }
+
+    if (def.cost > spendable) continue;
     if (!hasHeadroom(state, countryId, def, rate, wants)) continue;
-
-    const wages = Math.round(def.wages * COUNTRIES[countryId].wageMul);
-    const score = marginPerTick(def, market) - wages;
-    if (score <= 0) continue;
-
-    const tile = findTile(state, countryId, type, depots, land);
-    if (!tile) continue;
-    if (!best || score > best.score) best = { type, tile, score };
+    // Kept even when the margin is negative, because the pass below may find it
+    // is worth building anyway for what it unblocks. It is filtered on the TOTAL.
+    viable.push({ type, score, out: def.recipe.out });
   }
-  return best;
+
+  // ONE LEVEL OF LOOKAHEAD, and one only. A plant that feeds a plan the
+  // government actually wants is worth more than its own margin says; two levels
+  // would need a real planner, and 257 governments cannot afford one.
+  const ranked = viable
+    .map((plan) => {
+      let unblocks = 0;
+      for (const id of Object.keys(plan.out)) unblocks = Math.max(unblocks, blockedBy.get(id) ?? 0);
+      return { type: plan.type, score: plan.score + unblocks * CONFIG.stateChain.lookahead };
+    })
+    .filter((plan) => plan.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  // Highest score that can actually be put somewhere. Walking in rank order
+  // rather than scoring every type and then siting it means `findTile` — which
+  // walks a country's tiles of one terrain — is usually called once.
+  for (const plan of ranked) {
+    const tile = findTile(state, countryId, plan.type, depots, land);
+    if (tile) return { type: plan.type, tile, score: plan.score };
+  }
+  return null;
 }
 
 // A government stops building capacity it has nowhere to send. Its own people
@@ -265,6 +280,17 @@ function hasHeadroom(state, countryId, def, rate, wants) {
     if ((rate[id] ?? 0) + qty / def.recipe.ticks > ceiling) return false;
   }
   return true;
+}
+
+const MANUFACTURED_OUTPUTS = new Set(Object.values(BUILDINGS)
+  .filter((def) => def.recipe && Object.keys(def.recipe.in).length)
+  .flatMap((def) => Object.keys(def.recipe.out)));
+
+function undersuppliedManufactured(commodityId, wants, supply, added = 0) {
+  if (!MANUFACTURED_OUTPUTS.has(commodityId)) return false;
+  const want = (wants.world[commodityId] ?? 0) + added;
+  if (want <= 0) return false;
+  return (supply[commodityId] ?? 0) < want * 0.5;
 }
 
 // Output is valued at the LOWER of the local price and the commodity's base
