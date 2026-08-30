@@ -5,9 +5,9 @@ import { COUNTRIES, COUNTRY_IDS, DEFAULT_HOME, TREASURY_PER_DEMAND, TREASURY_FLO
 import { WORLD_COUNTRY_ROWS, WORLD_W, WORLD_H, AREA_SCALE } from '../data/world.js';
 import { WORLD_COUNTRY_INFO } from '../data/worldCountries.js';
 import { STARTING_TECHS } from '../data/technology.js';
+import { saveKey } from './accounts.js';
 
-const SAVE_KEY = 'industry-game.save.v9';
-const SAVE_VERSION = 11;
+const SAVE_VERSION = 15;
 
 // You are a NATION, not a firm. There is no separate player object: the country
 // you picked is an entry in `state.countries` exactly like the other forty-five,
@@ -477,8 +477,157 @@ export function createLedger() {
 //
 // `lastWarAt` is -1 rather than -Infinity because everything on `state` has to
 // survive a JSON round trip, and `JSON.stringify(-Infinity)` is `null`.
+// The relation table starts EMPTY — `relationOf` answers `neutral` for a pair
+// it has never heard of, so writing all 258x257 of them down said nothing and
+// cost a megabyte. What rides alongside it is everything two governments have
+// SAID to each other but not yet settled: proposals on the table, declarations
+// of war counting down, and when each pair last answered a given question.
+// All plain arrays and objects, like the contracts, so it round-trips.
 export function createDiplomacy() {
-  return { relations: {}, lastWarAt: -1 };
+  return { relations: {}, opinion: {}, lastWarAt: -1, proposals: [], ultimatums: [], history: {}, nextId: 1 };
+}
+
+// Opinion is asymmetric and sparse. Neutral is zero and is not written: one
+// country may like another more than it is liked back, and the save only pays
+// for opinions the world has actually earned.
+export function opinionOf(state, from, to) {
+  if (from === to) return 100;
+  return state.diplomacy?.opinion?.[from]?.[to] ?? 0;
+}
+
+export function nudgeOpinion(state, from, to, delta) {
+  if (!from || !to || from === to || !Number.isFinite(delta) || delta === 0) return 0;
+  if (!state.diplomacy) state.diplomacy = createDiplomacy();
+  state.diplomacy.opinion ??= {};
+  const row = state.diplomacy.opinion[from] ??= {};
+  const next = Math.max(-100, Math.min(100, (row[to] ?? 0) + delta));
+  if (Math.abs(next) < CONFIG.diplomacy.opinion.deadband) {
+    delete row[to];
+    if (!Object.keys(row).length) delete state.diplomacy.opinion[from];
+    return 0;
+  }
+  row[to] = next;
+  return next;
+}
+
+export function decayOpinions(state) {
+  const opinion = state.diplomacy?.opinion;
+  if (!opinion) return;
+  const { decay, deadband } = CONFIG.diplomacy.opinion;
+  for (const [from, row] of Object.entries(opinion)) {
+    for (const [to, value] of Object.entries(row)) {
+      const next = value * decay;
+      if (Math.abs(next) < deadband) delete row[to];
+      else row[to] = next;
+    }
+    if (!Object.keys(row).length) delete opinion[from];
+  }
+}
+
+// WHO OWNS THE GROUND, and the one place it is allowed to change.
+//
+// Ownership used to be fixed for the whole game, and two things leaned on that
+// hard enough to break silently when it stopped being true:
+//
+//   - THE SAVE DROPS EVERY TILE and regenerates them from `seed`. That is only
+//     sound while generation is the whole truth, so conquest has to be written
+//     down separately: `state.claims` is the DIFF — tile id to its new owner,
+//     and nothing else — and `rehydrate` lays it back over the fresh world. It
+//     is a few hundred numbers rather than a million tiles.
+//   - TWO AI CACHES are keyed on the tile array (`tilesByCountry`,
+//     `depositsOf`), on the reasoning that ownership never moves. `mapVersion`
+//     is bumped here so they can tell they are stale; keying on the array alone
+//     would have left every government planning around a map that no longer
+//     exists.
+//
+// A building goes WITH the ground. `building.owner` is also the country its site
+// stands in — that is a stated invariant, and the whole reason nothing carries a
+// separate `country` field — so a tile that changes hands must take whatever is
+// built on it, or the two would disagree the moment a border moved.
+export function setTileOwner(state, tile, countryId) {
+  if (!tile || tile.countryId === countryId) return false;
+  tile.countryId = countryId;
+  state.claims ??= {};
+  state.claims[tile.id] = countryId;
+  state.mapVersion = (state.mapVersion ?? 0) + 1;
+  if (tile.buildingId != null) {
+    const site = state.buildings.find((b) => b.id === tile.buildingId);
+    // Unclaimed ground has no government to own a factory, so a site on it is
+    // simply lost. Otherwise it changes hands with the land it stands on.
+    if (site && countryId) site.owner = countryId;
+    else if (site) {
+      state.buildings = state.buildings.filter((b) => b.id !== site.id);
+      tile.buildingId = null;
+    }
+  }
+  return true;
+}
+
+// Is this government still a going concern? A nation with no land at all has
+// been conquered out of existence and does nothing ever again — see
+// `eliminate`. Tolerant of a state built before any of this, like every other
+// accessor here.
+export function isAlive(state, countryId) {
+  return state.countries[countryId]?.alive !== false;
+}
+
+export function livingCountries(state) {
+  return COUNTRY_IDS.filter((id) => isAlive(state, id));
+}
+
+// THE WORLD LOG: what every government just DID.
+//
+// The alerts are your news and expire on a wall clock; this is the world's, and
+// it expires on the TICK clock after `CONFIG.events.ttl`. It exists because the
+// other 257 governments are constantly signing pacts, writing contracts, raising
+// formations and going to war, and until now none of that was visible anywhere
+// unless it happened to involve you.
+//
+// Two rules keep it from eating the save, and both are load-bearing at this
+// scale — 258 nations acting every few ticks is a great many lines:
+//
+//   - IT STORES DATA, NOT SENTENCES. `kind`, `who`, `about`, `what`, `qty` and
+//     nothing else. A formatted string per event would be several times the size
+//     AND would put presentation text inside the systems, which is the one thing
+//     `src/systems` is not allowed to contain. `src/ui/events.js` turns a row
+//     into a sentence.
+//   - IT IS DOUBLY BOUNDED. Anything older than `ttl` ticks is dropped, and the
+//     list is capped at `max` whatever the age — a burst (every nation raising a
+//     formation on the same decision tick) must not blow the localStorage quota
+//     between two sweeps.
+//
+// Tolerant of a state built without one, exactly as `noteLedger` is.
+export function noteEvent(state, kind, who, extra = {}) {
+  if (!state.events) state.events = [];
+  state.events.push({
+    id: state.nextEventId = (state.nextEventId ?? 1) + 1,
+    tick: state.tick,
+    kind,
+    who,
+    ...extra,
+  });
+  const { max } = CONFIG.events;
+  if (state.events.length > max) state.events.splice(0, state.events.length - max);
+}
+
+// Dropped at the top of the tick, beside the ledger fold and for the same
+// reason: everything that writes into the log only sees its own slice of the
+// tick, so the sweep cannot live inside any of them.
+export function pruneEvents(state) {
+  if (!state.events?.length) return;
+  const oldest = state.tick - CONFIG.events.ttl;
+  if (state.events[0].tick >= oldest) return;
+  state.events = state.events.filter((e) => e.tick >= oldest);
+}
+
+// What the log holds for one nation, newest first — the Notifications tab's
+// whole query. `who` is the government that acted and `about` whoever it acted
+// with, so a country's row appears under either name: a pact France proposed to
+// Spain is Spain's news as much as it is France's.
+export function eventsFor(state, filter) {
+  const all = state.events ?? [];
+  const rows = filter === 'all' ? all : all.filter((e) => e.who === filter || e.about === filter);
+  return rows.slice().reverse();
 }
 
 // Written from four different systems, so it tolerates a state built without a
@@ -532,9 +681,19 @@ export function createInitialState(seed = CONFIG.seed, home = DEFAULT_HOME) {
     // and the clearing fund its fee builds up. See systems/exchange.js.
     exchange: { listings: [], nextListingId: 1, fund: 0, lent: 0, fees: 0 },
     diplomacy: createDiplomacy(),
-    military: { units: [], nextUnitId: 1 },
-    terrorism: { active: null, nextSpawnTick: CONFIG.terrorism.firstAt, defeated: 0 },
+    military: { units: [], nextUnitId: 1, nextGroupId: 1 },
+    terrorism: { active: null, warning: null, nextSpawnTick: CONFIG.terrorism.firstAt, defeated: 0 },
     ledger: createLedger(),
+    // What the world has just done, pruned every tick — see `noteEvent`.
+    events: [],
+    // Ownership CHANGES now. `claims` is the diff conquest writes over the
+    // generated world, `occupied` is ground a terrorist cell is sitting on
+    // (mapped to whoever it belongs to), and `mapVersion` is what tells the AI
+    // caches their picture of the map is stale. All plain JSON.
+    claims: {},
+    occupied: {},
+    mapVersion: 0,
+    nextEventId: 1,
     warnedHungry: false,
     history,
     alerts: [],
@@ -589,7 +748,9 @@ function seedDefaultAssets(state) {
         x: musterTile.x,
         y: musterTile.y,
         strength: 6,
-        supplied: true,
+        engaged: false,
+        orderTileId: null,
+        groupId: null,
       });
     }
   }
@@ -681,6 +842,32 @@ export function appetite(state, countryId, commodityId) {
   return country.demand * COMMODITIES[commodityId].demandShare * CONFIG.demandScale;
 }
 
+// WHAT A NATION CAN ACTUALLY PROMISE ABROAD, per tick, by commodity: what its
+// own industry turns out, less what its own factories burn, less what its own
+// people want. This is the `Bal` column in the Goods tab, and it is the figure
+// a contract has to cover — a nation that pumps two oil and burns one has ONE
+// to sell, whatever its warehouse happens to hold today.
+//
+// It lives here rather than in either place that needs it, because both the
+// Goods table and the code that decides which offers reach you must mean the
+// same thing by "spare". Two definitions would drift the first time either was
+// touched, and the panel would then be promising rates the offers refuse.
+//
+// Stock is deliberately NOT part of it. A full warehouse is a one-off; a
+// contract is a rate held for a term, and the rate is what has to be sustainable.
+export function spareRates(state, countryId) {
+  const spare = {};
+  for (const id of COMMODITY_IDS) spare[id] = -appetite(state, countryId, id);
+  for (const b of state.buildings) {
+    if (b.owner !== countryId) continue;
+    const recipe = BUILDINGS[b.type].recipe;
+    if (!recipe) continue;
+    for (const [id, qty] of Object.entries(recipe.out)) spare[id] += qty / recipe.ticks;
+    for (const [id, qty] of Object.entries(recipe.in)) spare[id] -= qty / recipe.ticks;
+  }
+  return spare;
+}
+
 // Every nation may deal with every other. There is no permission to buy and no
 // market that is closed to you: what limits a deal is whether anybody has terms
 // on the book you would take, and what the freight costs to get it there.
@@ -688,7 +875,10 @@ export function appetite(state, countryId, commodityId) {
 // This is still asked through a function rather than inlined, because "may these
 // two deal" is a real question the systems ask and the answer could change again.
 export function canTrade(state, a, b) {
-  return a !== b && Boolean(state.countries[a]) && Boolean(state.countries[b]);
+  // ...and both still exist. A nation conquered out of existence is not a
+  // market: it has no land, no people and no government to sign anything.
+  return a !== b && Boolean(state.countries[a]) && Boolean(state.countries[b])
+    && isAlive(state, a) && isAlive(state, b);
 }
 
 // --- technology -----------------------------------------------------------
@@ -783,6 +973,24 @@ export function createUiState(home = DEFAULT_HOME) {
     // order rather than a selection or a build — a third and separate thing the
     // pointer can be carrying, mutually exclusive with `tool` and `unit` above.
     moveUnit: null,
+    // ...and a FOURTH: the formation whose group is being assembled, set from
+    // the Group button in the Selected pane. While it is set, clicking another
+    // of your own formations puts the two in one group; clicking anything else
+    // ends the gesture. Mutually exclusive with the three above, for the same
+    // reason they are with each other — the pointer carries one thing.
+    groupUnit: null,
+    // ...and a FIFTH: the formations caught by a selection box, as a plain array
+    // of unit ids. This is the one pointer mode that is not exclusive with the
+    // others — a marquee selection is a thing you HAVE, not a thing the pointer
+    // is carrying — and `orderSelection` is the mode that spends it: while it is
+    // set, the next tile click is a march order for every id in the list.
+    //
+    // Ids rather than unit objects, for the same reason a group is a number: a
+    // formation destroyed while it is selected has to leave nothing behind that
+    // could lie to the panel, and `unitsOf` is the only thing that says what a
+    // formation is.
+    selection: [],
+    orderSelection: false,
     selectedTileId: null,
     hoveredTileId: null,
     zoom: CONFIG.defaultZoom,
@@ -792,12 +1000,23 @@ export function createUiState(home = DEFAULT_HOME) {
     // rides along in the save file.
     tab: 'summary',
     panelOpen: false,
+    // ...and how much room it gets when it is. Nine views do not all want the
+    // same height: a summary card is read in one look, the ranks table and the
+    // tech tree are not. A view preference, so it never reaches the save.
+    panelTall: false,
     leftOpen: true,
+    // Whether the topbar's overflow sheet is open. It only exists on a phone —
+    // on a desktop those controls are simply on the bar — so it is a view
+    // preference like every other flag here and never reaches the save.
+    menuOpen: false,
     buildView: 'basic',
     openFactoryId: null,
     // Whether the commodity book reads the tick just run or the whole game, and
     // which column the nation table is ranked by. View preferences both.
     goodsView: 'tick',
+    // Whose world news the Notifications tab shows: 'all', 'home', or a country
+    // id. A view preference, so it never reaches the save.
+    eventFilter: 'all',
     rankSort: 'score',
     // The ask or bid you are writing for the open book, before you post it,
     // and whether the book below it is showing everybody's terms or only yours.
@@ -1065,10 +1284,27 @@ function packLedger(ledger) {
   return { tick: round(ledger.tick), total: round(ledger.total) };
 }
 
+function packDiplomacy(diplomacy) {
+  if (!diplomacy) return diplomacy;
+  const opinion = {};
+  const deadband = CONFIG.diplomacy.opinion.deadband;
+  for (const [from, row] of Object.entries(diplomacy.opinion ?? {})) {
+    const packed = {};
+    for (const [to, value] of Object.entries(row)) {
+      const rounded = Math.round(value * 10) / 10;
+      if (Math.abs(rounded) >= deadband) packed[to] = rounded;
+    }
+    if (Object.keys(packed).length) opinion[from] = packed;
+  }
+  return { ...diplomacy, opinion };
+}
+
 export function packState(state) {
   const { tiles, ...rest } = state;
   return {
     ...rest,
+    version: SAVE_VERSION,
+    diplomacy: packDiplomacy(state.diplomacy),
     ledger: packLedger(state.ledger),
     markets: packMarkets(state.markets),
     buildings: state.buildings.map((b) => ({
@@ -1084,8 +1320,10 @@ export function packState(state) {
 }
 
 export function saveState(state) {
+  const key = saveKey();
+  if (!key) return { ok: false, reason: 'Guests cannot save games.' };
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(packState(state)));
+    localStorage.setItem(key, JSON.stringify({ ...packState(state), savedAt: Date.now() }));
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: String(err) };
@@ -1096,8 +1334,31 @@ export function rehydrate(saved) {
   const state = { ...saved, tiles: generateWorld(saved.seed) };
   state.markets = unpackMarkets(saved.markets);
   state.diplomacy ??= createDiplomacy();
-  state.military ??= { units: [], nextUnitId: 1 };
-  state.terrorism ??= { active: null, nextSpawnTick: (state.tick ?? 0) + CONFIG.terrorism.cooldown, defeated: 0 };
+  state.diplomacy.relations ??= {};
+  state.diplomacy.opinion ??= {};
+  state.diplomacy.proposals ??= [];
+  state.diplomacy.ultimatums ??= [];
+  state.diplomacy.history ??= {};
+  state.diplomacy.nextId ??= 1;
+  state.diplomacy.lastWarAt ??= -1;
+  state.military ??= { units: [], nextUnitId: 1, nextGroupId: 1 };
+  state.military.nextGroupId ??= 1;
+  state.terrorism ??= { active: null, warning: null, nextSpawnTick: (state.tick ?? 0) + CONFIG.terrorism.cooldown, defeated: 0 };
+  state.terrorism.warning ??= null;
+  state.events ??= [];
+  state.nextEventId ??= 1;
+  // THE CONQUEST DIFF, laid back over the freshly generated world. Tiles are
+  // regenerated from the seed, which is only sound while generation is the whole
+  // truth about who owns what — so every border a war moved has to be written
+  // down separately and reapplied here, or a save would quietly load with every
+  // conquest undone.
+  state.claims ??= {};
+  state.occupied ??= {};
+  state.mapVersion ??= 0;
+  for (const [tileId, countryId] of Object.entries(state.claims)) {
+    const tile = state.tiles[Number(tileId)];
+    if (tile) tile.countryId = countryId;
+  }
   state.buildings = state.buildings.map((b) => ({
     ...b,
     input: unpackBag(b.input),
@@ -1112,8 +1373,10 @@ export function rehydrate(saved) {
 }
 
 export function loadState() {
+  const key = saveKey();
+  if (!key) return null;
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed?.version !== SAVE_VERSION) return null;
@@ -1124,5 +1387,7 @@ export function loadState() {
 }
 
 export function clearSave() {
-  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+  const key = saveKey();
+  if (!key) return;
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
 }

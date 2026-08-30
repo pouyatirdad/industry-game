@@ -11,6 +11,17 @@ asked.
 
 Node **is** installed (v18). Python on PATH is a Microsoft Store stub, not a real interpreter.
 
+**If `node` is not on PATH, do not give up on the suite — VS Code ships one.** Its bundled Electron
+runs as a real Node (v24) when `ELECTRON_RUN_AS_NODE=1` is set, and both `tools/test.js` and
+`tools/serve.js` work under it unchanged:
+
+```powershell
+$env:ELECTRON_RUN_AS_NODE=1
+& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe" tools\test.js
+```
+
+The same trick serves the app, which is what lets headless Chrome load `index.html` over HTTP at all.
+
 ES modules are blocked over `file://`, so the app needs an HTTP origin:
 
 ```bash
@@ -85,6 +96,27 @@ stdout and logs nothing to stderr, which is indistinguishable from a slow test:
 If Chrome hangs, sanity-check it with `--dump-dom about:blank` before suspecting the game. The whole
 suite dumps in well under a second, so anything taking tens of seconds is one of the failures above.
 
+### Driving the real UI from a throwaway page
+
+The suite cannot reach `main.js` — it is the wiring layer and needs the DOM — so a keyboard shortcut
+or a pointer gesture is verified by loading `index.html` in a **same-origin iframe** from a scratch
+page in the repo root, pressing at it, and writing the results into an element `--dump-dom` will
+capture. Four things about that are each worth knowing before writing one:
+
+- **Dispatch keys on `doc.body`, not on `doc`.** A real keypress targets an element, and the handler
+  guards with `event.target.matches(...)`, which a `Document` does not have. Dispatching on the
+  document makes every shortcut look broken when none of them is.
+- **The map selects on `pointerdown`/`pointerup`, never `click`** (a drag that ends on a tile must
+  not build there), so a synthetic `click` does nothing at all.
+- **Stub `setPointerCapture`/`releasePointerCapture` on the map before dispatching.** A synthetic
+  `pointerId` was never a real pointer and Chrome throws on capturing one, which kills the handler
+  before it records the gesture.
+- **Zoom in before hunting for anything on the canvas.** At the opening 2px a tile a formation is a
+  two-pixel disc; the only way to ask "what is under this pixel" from outside the module is the
+  hover tooltip (`canvas.title`), and a sweep coarser than a tile walks straight past it.
+
+Delete the page afterwards — it is a probe, not a fixture.
+
 ## Architecture
 
 One-way data flow. Two rules keep it acyclic, and both are load-bearing:
@@ -133,6 +165,11 @@ Two consequences are load-bearing:
   before the shopkeeper opens. That single ordering is what gives one teeth — over-commit your own
   supply and you really will starve your own people for it — and whatever survives every contract is
   what its own factories, and then its own people, get to work with.
+- **`relay` runs between `contracts` and `distribute`.** A nation's depots are a NETWORK, not a
+  set of islands: a depot hauls to a neighbouring depot whatever the factories on the far side of
+  it are short of. It is after `contracts` because a promise still outranks a smelter, and before
+  `distribute` so a cargo hauled across the country reaches the plant that asked for it on the same
+  tick rather than a tick later.
 - **`distribute` runs after `contracts` and BEFORE `domestic`.** A factory draws its inputs out of
   the depot before the counter opens, because otherwise a nation's own population outbids its own
   industry for free: an imported cargo of coal landed in the warehouse and was sold over the counter
@@ -145,6 +182,10 @@ Two consequences are load-bearing:
   screen has to be the whole net.
 - `research` runs before `report`, so the laboratories are paid for out of the same tick's treasury
   and the net on screen is the whole net. It sits with the decisions at the bottom because it is one.
+- **`relations` runs before `army`, and `army` before `security`.** A declaration of war matures
+  into a war, THEN governments decide what to raise and where to send it, THEN the shooting happens.
+  Any other order costs a tick somewhere: an army ordered at an enemy it is not yet at war with, or
+  a war that begins after the armies have already decided they had nothing to do this tick.
 - `state` industry runs LAST, so a government decides on settled numbers. `exchange` sits beside it
   for the same reason — posting an ask is a decision taken on the same numbers, and a match written
   now first delivers next tick — and so do `licensing` (who will sell you a technology) and
@@ -157,6 +198,33 @@ Two consequences are load-bearing:
 
 Treat the order as a contract. If a change seems to need a different order, that is a game-design
 question for the user.
+
+### Depots are a NETWORK, not a set of islands
+
+`relay` in `systems/logistics.js`. A depot serves the industry inside its own radius and nothing
+further, which is why a nation whose power stations stand in the east and whose copper smelter
+stands in the west could watch one warehouse fill with electricity while the other starved: the two
+never spoke, and the smelter sat `starved` for ever with the goods it wanted already in the country.
+
+- **Two depots of one owner are NEIGHBOURS when their catchment areas touch** — Chebyshev distance
+  no greater than the SUM of their radii. So a warehouse built halfway between two distant ones
+  genuinely bridges them, which is the whole reason a player would put one there. The rule is
+  derived from `radius` in `buildings.js`; there is no distance written in the system.
+- **Cargo is PULLED, never pushed, and only toward a factory that is actually short of it.** A depot
+  with nothing near it that eats aluminium never accumulates aluminium, so this cannot become a
+  second, invisible way to hoard. Need is measured exactly as `distribute` measures it — `inCap`
+  minus what the plant is holding — so the two can never disagree about what "short" means.
+- **Flow is strictly DOWN a hop gradient, and that is what makes it acyclic.** `hopsToNeed` is a BFS
+  from every depot that wants the commodity; a depot only ever draws from a neighbour at the same
+  depth or deeper. Nothing can be handed back and forth, and a depot never gives away what its own
+  industry is waiting for — a donor offers `held - need`, never its whole shelf.
+- **An unmet request passes OUTWARD as `pending`.** Shallower depots are served first, so by the
+  time a deep one is reached it knows everything being asked of it: that is what makes the middle
+  warehouse ask the eastern one for power because the western one asked IT. One hop a tick, which is
+  the same visible latency `distribute` has always had.
+- It is owner-scoped like the rest of `logistics.js` — a government's depots are never free
+  infrastructure for anybody else's industry — and it moves nothing across a border, so it is not a
+  second way for goods to leave the country.
 
 ### How money actually moves
 
@@ -367,9 +435,28 @@ the cost still growing as the world builds:
   base price, inputs at the higher). A market nobody supplies sits at a shortage premium; a
   government that took it at face value built into it, collapsed the price it was counting on, and
   then paid wages on a plant that no longer covered them.
+- **...but margin alone cannot see a SHORTAGE, so `scarcity` is measured on quantities.**
+  `worldSupply` is the counterpart of `worldDemand` — what the planet can make against what it
+  wants, per commodity per tick — and `scarcityOf` turns the ratio into a multiplier on a plan's
+  score (outputs raise it, inputs divide it, capped by `SCARCITY_CAP`). This exists because the
+  pessimism above is load-bearing AND blinding: cement pays better than limestone, so every
+  government on earth built cement plants, the world ended up burning **twice the limestone it
+  quarried**, and nobody could see that a quarry was the most valuable thing it could build. Prices
+  could not say so, because the pessimistic valuation caps out the shortage premium on purpose —
+  hence measuring it in tonnes, where the premium cannot mislead. A commodity nobody is short of
+  scores 1 and changes nothing. There is a test on the world's feedstock balance and it failed for
+  a long time before this went in.
 - **A broke government closes its most expensive plant** rather than idling every site and paying the
   payroll on all of them for ever. It keeps the warehouse to last, since selling that strands
   everything else.
+- **...and a solvent one clears DEAD CAPITAL.** `closeDeadSites` demolishes a producer that has
+  stood `CONFIG.stateSalvage.deadAfter` ticks without working (`uptime` under `deadUptime`) and
+  takes the refund, so a bad decision becomes capital rather than a permanent drain on the payroll.
+  It runs BEFORE the build decision, so the refund is in the treasury and the ground is free when
+  that decision is taken. Three guards keep it from thrashing: a plant gets a long grace period
+  (a chain takes time to fill, and one judged before its feedstock arrives would be torn down the
+  tick before it started paying), only a genuinely idle one counts, and a warehouse is never
+  touched. `building.builtAt` exists solely for this.
 
 - **An input it cannot dig up still counts as available if the world is offering it.** `bestSite`
   accepts a recipe input the country produces *or* that is standing in warehouses somewhere
@@ -471,6 +558,9 @@ Three rules are load-bearing:
   (`CONFIG.research.share`, and your own slider up to `maxShare`). The consequence is deliberate: a
   big economy climbs faster than a small one for exactly the reason it does in life, and a small
   one's realistic route to the top is to **licence** what somebody else already worked out.
+- **AI research scores what a tech unlocks against world scarcity divided by cost.** Extraction
+  techs only score where the country actually has matching ground; everything reads the shared
+  `worldBalance.js` scarcity numbers so research and state industry want the same missing goods.
 - **A licence carries the whole missing branch.** `techChain` walks the prerequisites the buyer
   lacks — you cannot licence a semiconductor fab to a nation that has never refined a barrel — so
   one purchase can be several techs and the quote says so. The fee lands in the seller's treasury,
@@ -497,14 +587,30 @@ that has not been dug yet.
 - Either side can fail, and failing costs (see *How money actually moves*).
 - Everything left in the warehouses afterwards is what that nation's own people get to buy, which
   is the whole reason contracts are settled first: a promise outranks a shopkeeper. Turning a
-  commodity's `↗`/`↙` flag off in Goods stops your government posting it on the exchange at all
-  and leaves it entirely to contracts you write by hand.
+  commodity's `↗`/`↙` flag off in Goods stops your government posting it on the exchange **and stops
+  anybody putting a contract offer for it to you** — the flag is your whole policy on that
+  commodity, not just an exchange setting — and leaves it entirely to contracts you write by hand.
 
 `signContract` is the only way one comes into being — your button, an accepted offer, and the
 governments' own dealing all land there — so none of them can write terms the others could not.
 Contracts are settled against **depots indexed once per tick** (`depotsByOwner`), like `collect` and
 `distribute`, because a tick that settles a hundred of them must not scan every building in the
 world twice per contract.
+
+**A contract warning says which side is currently at risk, not whether it ever missed once.**
+`lastBuyerShort` and `lastSellerShort` retain the latest settlement's audit, while
+`refreshSupplyHealth` recalculates a seller's `supplyShort` every tick from `spareRates` minus its
+other promises. Thus building enough oil production clears the red seller warning immediately, but
+the earlier missed quantity and penalties remain historical facts. A buyer can still be short because
+it cannot pay past its payroll reserve or has no warehouse space; its own last-delivery warning must
+not be mistaken for the exporter lacking stock.
+
+**The Trade tab can draft an export without guesswork.** `suggestExportContract` starts from the
+selected commodity, subtracts existing export promises from the player's sustainable surplus, then
+chooses the solvent country with unmet demand and the highest live market price (need breaks a price
+tie). It will not recommend a buyer that fails the ordinary underwriting check. The **Suggest best
+buyer** button only fills the draft — partner, one-tick quantity and explanatory price/need/surplus
+data — and the player still sends the contract request explicitly.
 
 There is **no per-nation contract cap**. A country may hold as many contracts as it can arrange; the
 guardrail is commodity cover, not a raw count. Automatic exchange and AI-seeking paths must subtract
@@ -515,21 +621,259 @@ still over-commit, because penalties are the point of making a promise.
 `state.contractOffers` and `state.techOffers` are what other governments have put to you; both lapse
 if you never answer, and both also appear in the floating inbox over the map.
 
-### Military and diplomacy are restrained
+**Nobody may ask you for what you have not got, and nobody may ask you at all for what you will not
+sell.** `offerToPlayer` puts three gates on every commodity before it will let a nation come to you,
+and they answer three different questions:
 
-`state.diplomacy.relations` is a symmetric country-pair table with four values: `neutral`,
-`alliance`, `access`, and `war`. Military movement may enter your own land, unclaimed space, allied
-land, access-granted land, or enemy land during war; it must not treat open trade as open borders.
-War is a diplomatic state, not a random default AI action.
+- **`exportsFrom` — your POLICY.** The `↗` flag off in Goods now means that commodity is not for
+  sale *at all*: no exchange listing (as before) and no contract offer either. `importsTo` is the
+  mirror on the way in. This widened what the flags mean — they used to govern only the exchange —
+  and it is the sense a player actually expects: a switch labelled "sell" that still fills the inbox
+  with people asking to buy is a switch that does nothing.
+- **`spareRates` minus `promisedBy` — your RATE.** Nobody asks for more per tick than you have left
+  once your own factories, your own people and your standing promises are served. A nation that
+  pumps two oil and burns one has **one** to sell, and offers for three simply do not arrive. Worked
+  out ONCE per round rather than per partner.
+- **stock — your SHELF**, which is still checked, because a promise you cannot begin filling this
+  week is not much of a promise either. The old code checked only this, which is why offers used to
+  arrive that could only ever be defaulted on: a warehouse is a one-off and a contract is a rate.
 
-### An army is SUPPLIES, not capital
+**`spareRates` lives in `core/state.js`, not in either place that uses it.** The Goods tab's `Bal`
+column and the offer filter must mean the same thing by "spare" — two definitions would drift the
+first time either was touched, and the panel would then be promising rates the offers refuse.
+
+**`bestSeller` skips `state.home`, and that is load-bearing.** The world signing contracts among
+itself must not be able to conscript YOUR government into supplying something: a contract exists only
+because two governments agreed terms, and yours agrees through `offerToPlayer` or the Trade tab.
+Leaving the player in that candidate list is how a nation ended up promising oil it had switched
+exporting off for, with no offer and no alert.
+
+**World contract sellers compete on price and standing, not only distance.** A seller quotes its own
+ask price, but if a standing ask already exists for that commodity it undercuts the best ask. The
+buyer then scores sellers by quoted price, freight and its opinion of the seller, so reliable trade
+partners naturally keep finding each other. `seekContract` walks the buyer's shortages in order and
+falls through to the next one if the largest shortage has no viable seller.
+
+### Diplomacy is a conversation, with exactly one exception
+
+`src/systems/relations.js`. `state.diplomacy.relations` is still the symmetric country-pair table
+with four values — `neutral`, `alliance`, `access`, `war` — and military movement still may enter
+your own land, unclaimed space, allied land, access-granted land, or enemy land during war; open
+trade is not open borders. What changed is **how a relation comes into being**.
+
+- **Alliance, military access and peace are REQUESTS.** `proposeRelation` puts one on the table and
+  the other government answers it; `answerProposal` is the same function whether a government or you
+  is saying yes, so your yes cannot write a relation theirs could not. `PROPOSABLE` lists the three,
+  and `war` is deliberately not on it — `canPropose` refuses it by name.
+- **War is DECLARED, and then it WAITS.** `declareWar` is unilateral — nobody is asked permission to
+  be invaded — but it does not start a war. It writes an **ultimatum**, and for
+  `CONFIG.diplomacy.warDelay` (**50**) ticks the two are only on notice: any alliance or access
+  between them is torn up on the spot, but no border opens, no shot is fired, and the declaring side
+  may still `callOffWar`. `beginWars` is the ONLY place a relation becomes `war`, which is what
+  makes the delay unconditional — there is no path from a declaration to a shot that avoids it.
+- **The defender's allies are dragged in the same way as everybody else** (`dragInAllies`): their
+  own declaration, their own fifty ticks. There is no back door round the delay, and that is what
+  makes an alliance worth signing and worth thinking twice about.
+- **Peace is agreed, and then it holds.** Accepting a `neutral` proposal out of a war stamps a peace
+  clock (`CONFIG.diplomacy.peaceCooldown`), so a government cannot sign peace and declare again on
+  the same tick.
+- **`relationAppetite(state, from, to, relation)` is how the world answers**, and it is a pure
+  function of `state` — so the Diplomacy tab can show you the answer you will get *before* you ask
+  (hover any button). Three things decide it and they are the three that would decide it in life:
+  distance (`haulShare`, the same measure freight is priced on), relative power (`powerOf` —
+  economy plus army, used only as a ratio so the units cancel), how the two already stand, and what
+  `from` thinks of `to` in the opinion table. A small deterministic `jitter` on `seed` and `tick`
+  keeps it from being a lookup table while leaving a replayed save identical.
+- **Opinion is asymmetric and sparse.** `state.diplomacy.opinion[a][b]` means what `a` thinks of
+  `b`; missing is neutral zero. Contracts nudge both sides up when signed and again when completed,
+  defaults lower the wronged party's opinion of the defaulter, and a declaration of war hits hard.
+  The friends clause is in `declareWar`: if `A` attacks `B`, every `C` that likes `B` lowers its
+  opinion of `A`. Opinion decays each diplomacy review and `packState` rounds it before saving.
+- **The world may declare war without you.** `warAppetite` reads dislike, distance and relative
+  power, then three brakes keep it rare: it must beat `CONFIG.diplomacy.warAppetite`, a review may
+  write at most `warsPerReview` declarations, and `warQuiet` is a worldwide cooldown after any
+  declaration. `declareWar` is still the only writer, so player wars, AI wars and allies joining all
+  share the same ultimatum path.
+- **The world proposes to its NEIGHBOURS, not to a random sample of the planet** (`bestPartnerFor`
+  walks `nearestTo`, a cached 24-nation slice of `neighboursOf`). Sampling uniformly was the first
+  version and it produced 182 basing agreements and not one alliance: a government was only ever
+  asked about strangers, and `relationAppetite` quite correctly refuses to promise to fight a
+  stranger's war. Neighbours are who you have something to settle with, and opinion is part of that
+  score so friendly neighbours find each other more often.
+- **The Diplomacy tab's opinion word and bar are live state.** They must stay in each row's
+  `dataset.sig`; otherwise a contract, default or war can change opinion without repainting the
+  list.
+- **Your inbox is capped** at `CONFIG.diplomacy.maxProposals`, like a government's outbox. A stack
+  of pacts is a stack nobody reads — the same reason a declined licence has a cooldown.
+- **A proposal expires on the TICK clock**, not the wall clock the contract and licence offers use.
+  A treaty is not a thing you answer in five seconds, and a paused game must not decide one for you.
+  `CONFIG.diplomacy.proposalTtl` is **10** ticks, so an unanswered pact clears promptly while the
+  pact card still says its remaining ticks in words rather than using a wall-clock bar.
+
+The file is named `relations.js` rather than `diplomacy.js` on purpose: the old `systems/diplomacy.js`
+was about permission to TRADE and is gone for good (see the footgun below). This one is about
+relations only and moves no goods.
+
+### Ownership MOVES now, and that broke two stated invariants
+
+Conquest was called out in this file as the thing that would break the save, and it does. Both places
+are fixed and both fixes are load-bearing:
+
+- **`setTileOwner` in `core/state.js` is the ONLY place `tile.countryId` may change**, and it does
+  three things at once: moves the tile, writes the change into **`state.claims`** (the diff), and
+  bumps **`state.mapVersion`**.
+- **Tiles are still dropped from the save.** They are regenerated from `seed`, which is only sound
+  while generation is the whole truth — so `rehydrate` lays `state.claims` back over the fresh world.
+  It is a few hundred numbers rather than a million tiles (measured: 2KB against a 1.1MB save). A
+  test saves a conquest and loads it back, because without the diff a border would spring silently
+  back to where the generator put it.
+- **The two AI caches key on `mapVersion` as well as the tile array.** `tilesByCountry`
+  (stateIndustry) and `depositsOf` (research) were both keyed on `state.tiles` identity *on the
+  stated grounds that ownership never moves*. They now rebuild when a border does. The version only
+  moves on a real change, so a world at peace still builds each of them exactly once.
+- **A building goes WITH the ground.** `building.owner` is also the country the site stands in —
+  that is why nothing carries a separate `country` field — so a tile that changes hands takes
+  whatever is built on it. Ground that becomes unowned loses the site entirely, because unclaimed
+  ground has no government to own a factory.
+- Known cosmetic limitation: `provinceForTile` reads the tile's CURRENT owner, so a conquered tile
+  is named from its conqueror's province list. The centroids in `geography.js` are also computed once
+  from the original grid, so freight and map labels use pre-war centres. Neither breaks anything.
+
+### Taking ground, and being taken off the map
+
+- **GROUND IS TAKEN AS IT IS CROSSED.** `advanceUnits` calls `takeGround` after *every step*, so a
+  land formation that walks six tiles into an enemy takes all six. It did not always: conquest ran
+  only on the `CONFIG.war.conquerEvery` cadence against the tile a unit happened to be standing on,
+  so a column that marched 74 tiles across Turkey took **7** of them — 74 ticks over a 10-tick
+  cadence, exactly. `conquerEvery` still exists, but only for a formation that is NOT marching (one
+  already standing on foreign soil when the war broke out, or one that has arrived and stopped);
+  `conquerGround` skips anything with a standing order.
+- **`takeGround` is the single rule** both paths go through, which is what keeps the one thing that
+  must never vary in one place: an aircraft takes nothing, ever.
+- **Aircraft take nothing.** `conquerGround` checks `domain`, not range — an aircraft parked on a
+  tile is not an occupation. That single asymmetry is why a nation still needs infantry.
+- **A nation with no land left is finished** (`eliminate`): `alive` becomes false, `canTrade` and
+  `canPropose` refuse it, every AI decision loop skips it, and its army, contracts, listings and
+  pending diplomacy are all cleared. Conquest by an army is permanent.
+- **AND THE VICTOR INHERITS EVERYTHING.** `eliminate` takes the conqueror as its second argument and
+  moves the treasury, the population and the economy (`demand`) across, plus any site still on the
+  defeated nation's books. Its INDUSTRY has usually moved already — tile by tile, with the ground —
+  so what passes here is what was never on the map. **A terrorist cell inherits nothing**: it is not
+  a government and cannot annex anything, so `seizeForCell` calls `eliminate` with no victor and a
+  test asserts no treasury on earth grows when a cell finishes a country.
+- **AND THE WAR ENDS WITH THE NATION.** `eliminate` calls `forgetRelations`, which deletes every
+  relation involving the dead government from `state.diplomacy.relations`, plus its rows in the
+  sparse `opinion` table and every `history` cooldown keyed on a pair it was in. The proposals and
+  ultimatums were already cleared; the RELATION was not, and that single omission was visible
+  everywhere at once: the annexation alert arrived, the treasury and the people changed hands, and
+  the topbar still read `At war (1)`, the Diplomacy tab still listed the annexed nation under **At
+  war**, and its row still said `AT WAR` — a war with nobody, which could be neither fought nor
+  ended, since `canPropose` quite correctly refuses to let you sue for peace with a nation that no
+  longer exists. Everything that reads a war (`updateStanding`, the tab's urgent badge, the
+  Diplomacy head, `enemiesOf`, `atWar`) goes through that one table, so clearing it is the whole
+  fix. **Anything else that ends a government must go through `eliminate`** for the same reason.
+- **A conquered nation keeps its Diplomacy row and reads `Conquered`.** The 257 rows are built once
+  at mount, so one cannot simply disappear — and left alone it would read `Neutral`, which is what a
+  nation you have never spoken to reads. `isAlive` is in the row's `dataset.sig` for exactly the
+  reason everything else is: without it the row would never repaint after the conquest.
+- **A terrorist cell takes ground too**, both what it walks over and the ground under anything it
+  wrecks. Held ground becomes **nobody's** (`countryId: null`) and `state.occupied` remembers whose
+  it was — a cell is not a government and cannot own anything.
+- **Liberating is not annexing.** `defeatTerrorists` hands every held tile back to the country it was
+  taken FROM, never to whoever cleared the cell. A nation eliminated while a cell held its last
+  ground comes back (`revive`), which is the honest difference between *occupied* and *conquered* —
+  though it comes back with a clean sheet, since `eliminate` forgot its treaties on the way out.
+
+### A war actually does something
+
+Two halves, both in `runMilitary`, both reading `relationOf` and nothing else — no system reads a
+country name:
+
+- **`resolveWarCombat`** — every formation within its own `range` of an enemy formation takes
+  `CONFIG.war.damage` of the attacker's strength off it. **There is no attack order and there never
+  was one**: a garrison standing still fights anything that walks into its reach, and both sides
+  fire whether either was going anywhere. Proximity plus `war` is the entire trigger. Both sides fire in one pass off the SAME
+  snapshot, so position in `state.military.units` cannot decide a battle: the same determinism
+  argument that puts `collect` before `produce`. Units are bucketed by tile block (the longest
+  `range` in the data, read from `UNIT_TYPES` rather than written down) so this is not every unit
+  against every other.
+- **`raidEnemySites`** — a formation on or beside an enemy site wrecks it every
+  `CONFIG.war.raidEvery` ticks, the same cadence and the same "adjacent counts as arrived" rule a
+  terrorist cell uses. A war costs the loser its INDUSTRY, and that is the only reason a government
+  would ever sue for peace.
+
+Two rules make a war finish, and both were added because leaving them out produced a war that could
+not be won:
+
+- **A formation in contact does not make its losses good.** `resolveWarCombat` stamps
+  `unit.engaged`, and `reorganise` skips those next tick. Without it a unit recovers `RECOVERY` a
+  tick, damage falls away with the strength doing it, and two even armies settle into a permanent
+  stalemate at half strength.
+- **`CONFIG.war.breakAt`** — a formation below this share of full strength is destroyed outright.
+  Damage is a share of the ATTACKER's strength, so two units shooting at each other decay
+  geometrically and never reach zero; the break point turns that asymptote into an outcome. Clearing
+  `engaged` on the last unit standing matters for the same reason — left flagged, a survivor could
+  never recover from a war it had won.
+
+### An army is CAPITAL, bought in goods
 
 `UNIT_TYPES` in `systems/military.js` is the unit data, exactly as `buildings.js` is the industry
-data — five formations, each with a `cost` (the batch that raises one) and an `upkeep` (what it draws
-every tick for as long as it stands). A quantity belongs there and never in the code that spends it,
-and no system reads a unit type by name. **There is no military industry at all** — no arms factory,
-no munitions plant, no armor plant; a formation is raised straight out of base commodities, and
-`BUILDINGS` has nothing in the `military` category any more.
+data — five formations, each with a `cost` (the batch that raises one), a `speed` (tiles a tick) and
+a `range` (how far it reaches to fight). A quantity belongs there and never in the code that spends
+it, and no system reads a unit type by name. **There is no military industry at all** — no arms
+factory, no munitions plant, no armor plant; a formation is raised straight out of base commodities,
+and `BUILDINGS` has nothing in the `military` category any more.
+
+**A FORMATION IS PAID FOR IN GOODS FIRST AND MONEY SECOND.** `cost` is a batch of commodities, and
+drawing it out of your own warehouses is much the cheapest way to raise one. Whatever the depots
+cannot cover, the government **buys in** out of the treasury at `CONFIG.army.cashMarkup` (**2.5×**)
+the price — so a nation with a full treasury and a bare warehouse can still field an army, and pays
+through the nose for it. `unitShortfall` is the one place that arithmetic lives; `unitAffordable`
+means "stock or treasury", and `unitInStock` is the narrower question the build dock uses to tell
+"you have this" from "you would have to buy it in" (three states on the box, not two).
+
+- **It is procurement, NOT trade.** No contract is written, no border is crossed, and no other
+  country's stock moves — goods cross a border only under a contract and this is not one. Nothing in
+  `unitShortfall`/`createMilitaryUnit` touches `state.contracts`, `recordFlow` or another nation's
+  depots, and a test asserts a cash purchase leaves both the contract list and the offer list empty.
+- **The price is the DEARER of the local market and the base price**, times the markup — the same
+  rule `marginPerTick` costs a plan's inputs by. A depressed home market is never a bargain and a
+  real shortage makes procurement dearer still.
+- **A depot is no longer required.** The old rule ("a nation with money and no depot cannot field
+  anything") is gone, because money buying the whole batch is precisely the case this exists for.
+  `musterTile` falls back to any free square of the nation's own land when it owns no storage.
+- **The world prefers goods too.** `affordableType` exhausts the stock route first (strongest it can
+  cover) and only then buys, and when it buys it takes the CHEAPEST formation rather than the best —
+  a government paying cash raises riflemen, not aircraft. `stateReserveTicks` guards the treasury
+  the same way it guards `considerBuild`.
+- **Measured effect** over 3,000 ticks: formations 294 → **321**, largest armies 14/7/4/3 → **14/14/10/6**,
+  nations able to beat a terrorist cell 2 → **4**, and the world defeated a cell on its own for the
+  first time. Solvency and median treasury both went UP, so the reserve guard is holding.
+
+**A FORMATION COSTS NOTHING TO KEEP, and that is a deliberate design decision, not an omission.**
+It was a per-tick supply bill once and that is gone: `cost` is the ONLY thing a unit ever draws, on
+the tick it is raised, and after that it consumes nothing at all — no rations, no fuel, no running
+bill of any kind. Do not reintroduce one. `UNIT_TYPES` therefore has no `upkeep` key, and a test
+asserts it stays that way, because a running bill would not merely be unused data — it would
+contradict the rule.
+
+The consequences are worth stating, because each one used to go the other way:
+
+- **The affordability decision is taken once**, at the moment of raising, rather than every tick for
+  the rest of the game. `unitAffordable`/`canDeployUnit` are the whole of it.
+- **Nothing can starve an army.** A unit is lost to an ENEMY and to nothing else. There is no
+  `supplied` flag any more — `unit.engaged` (was it in contact last tick) is what the map's red rim
+  and the inspector's status line read now.
+- **What is left of the old supply pass is `reorganise`**: a formation out of contact makes its
+  losses good at `RECOVERY` a tick. It reads no warehouse, so it is not a cost.
+- **The world's armies stopped dying.** Measured over 900 ticks: 15 formations across 15 nations
+  before, 280 across all 258 after. `security` runs last in the tick, so under the old rule a unit
+  only ate what its nation's contracts, factories and people had already left behind — and most of
+  the planet has no such surplus, so the world's starter infantry quietly starved to death and no
+  government could ever afford to replace them.
+- The distinction between the five still lives in `cost` (an armoured car takes less fuel to build
+  than a tank, a tank less than an aircraft, artillery none at all), so the tests that guarded that
+  ordering simply moved from `upkeep` to `cost`.
 
 - **A unit is not a building.** There is no barracks and no build queue: you pick a formation out of
   the same bottom dock the industries are in and click your own ground. Nothing is charged to the
@@ -546,23 +890,204 @@ no munitions plant, no armor plant; a formation is raised straight out of base c
   tile and opens Selected, which shows a Move button; pressing it sets `ui.moveUnit` to that unit's id,
   and the next tile click is the order (`actions.js`'s `orderMove`, gated by the same
   `canMilitaryEnter` access rule as everything else military). `ui.moveUnit` is a third pointer mode,
-  mutually exclusive with `ui.tool` and `ui.unit` — picking up either of those, or pressing Escape,
-  cancels a pending move order. The map highlights valid destinations the same blue as a deployable
-  tile while an order is pending.
+  mutually exclusive with `ui.tool`, `ui.unit` and `ui.groupUnit` — picking up any of those, or
+  pressing Escape, cancels a pending move order. The map highlights valid destinations the same blue
+  as a deployable tile while an order is pending.
+- **A MOVE ORDER IS A MARCH, NOT A TELEPORT.** `moveMilitaryUnit` writes `unit.orderTileId` and
+  returns; `advanceUnits`, inside `runMilitary`, walks the unit up to `speed` tiles toward it every
+  tick until it arrives. The speeds are the whole point of having five formations on a map rather
+  than five lines on a balance sheet — infantry and artillery **1**, tank **2**, armoured car **3**,
+  aircraft **20** — so the light thing outruns the heavy thing it is lighter than, and an aircraft
+  crosses a continent while a rifleman crosses a field. Three rules in it are load-bearing:
+  - **The step is greedy, not a search**, and `stepToward` is three tie-breaks deep because on this
+    grid the obvious rule is never enough. There is still no A\* — pathfinding a million tiles per
+    formation is not affordable — so a deep concave bay will still defeat it. Each rule below was
+    added because the version without it produced something visibly wrong:
+    1. **Nearest to the goal, over all EIGHT neighbours.** The first version tried three fixed
+       offsets in a fixed order and gave up two tiles short of a destination because all three
+       happened to be blocked while a step to the side would have gone round in one move.
+    2. **It may walk BACKWARDS.** A formation on a coastal spit with the enemy to the east and land
+       only to the west has to be able to go west. "Never move away from the goal" seemed the tidy
+       way to stop ping-ponging and instead pinned **Turkey's entire army on the Black Sea coast for
+       a whole war** — ordered at Iran every fifteen ticks, giving up on the first tick of every
+       order. `unit.trail` (the last dozen tiles it stood on, kept out of the running) is what stops
+       backtracking becoming a shuffle. Measured after the fix, the same army marches east and stands
+       80 tiles inside Iran.
+    3. **Ties are settled on the SIGHT-LINE from where the march began.** Distance here is
+       CHEBYSHEV — a diagonal costs the same as a straight step — so heading 83 east and 27 south,
+       the moves east, north-east and south-east all reduce it by exactly one and tie. Settling that
+       by the order of the neighbour list put north-east first and walked a column up to the
+       northern coast and along it; settling it by "close both axes first" walked the diagonal out
+       and then turned a hard corner. Measuring each candidate's deviation from the start→goal line
+       (`unit.fromX/fromY`) spreads the diagonal steps evenly, which is the line a person would draw.
+       Measured: 83 steps for a distance of 83, deviation under 1.5 tiles across open ground.
+  - **...which is why a march also gives up when it stops making PROGRESS.** `advanceUnits` tracks
+    the closest a unit has ever come, and abandons the order after `CONFIG.war.giveUpAfter` ticks
+    without improving on it. Sidestepping is exactly what lets a unit circle an unreachable target
+    for ever, and the ordinary case is real: the far side of Turkey is an **island**, and a rifleman
+    ordered there marched the length of the country and then shuffled on the beach opposite it.
+    The place is remembered on `unit.unreachable` so the government does not send the same formation
+    at the same island on its very next decision.
+  - A unit that cannot take even one step gives up at once, and either way says so if it is yours.
+  - **Marching happens BEFORE the fighting** inside `runMilitary`, and after supply. A column that
+    closed the last tiles this tick engages this tick.
+  - **Formations STACK.** Only `canDeployUnit` refuses occupied ground — you may not *raise* a unit
+    on top of another, but you may march onto one, and a group converging on a destination does
+    exactly that. `unitOnTile` still returns one unit; the map indexes a tile to a LIST.
+- **A war can be fought automatically, and the only condition is that an ENEMY EXISTS.** A land
+  formation's **Auto conquer** button appears whenever its government is at war with somebody who
+  still holds ground (`enemiesOf`, the whole gate, asked by `canAutoConquer`). `startAutoConquest`
+  fixes the nearest such country as its objective, then `advanceAutoConquests` picks that country's
+  nearest reachable land and walks **one tile per tick** — even for faster formations — taking every
+  crossed tile through the usual `takeGround` rule.
+  - **There is no separate "attack" half, and there must not be one.** `resolveWarCombat` triggers on
+    proximity plus a relation of `war` and has never taken an attack order, so a formation that
+    marches into a defended country is fought by whatever it walks into. "March at the enemy and take
+    its ground" IS "attack the enemy" — adding a combat path here would be a second copy of a rule
+    that already exists.
+  - It used to also require that enemy to have **no formations left**, which made it a tidying-up
+    order for a war already won and nothing else. The fighting is the half a player most wants
+    automated.
+  - **Annexing one enemy does not end the campaign**: `advanceAutoConquests` retargets through
+    `pickCampaignTarget` to the next enemy still holding land, because the last tile of one country
+    silently standing the whole army down while the war ran on was the obvious wrong answer.
+  - **Pressing the button again calls it off** — `cancelAutoConquest`, a separate entry point rather
+    than a toggle inside the start, because "stop" has to work on a formation whose campaign the
+    system has already ended for it and a toggle would restart that one instead. `stopAutoConquest`
+    is the single place a campaign ends either way; its `announce` flag is what lets the deliberate
+    stop say something different from the one that ran out of ground.
+  - **`orderAutoConquestAll` is the same order for many at once** — a selection, or your whole army
+    when nothing is selected (`unitIds == null`). It goes through `startAutoConquest` per formation,
+    so a bulk order cannot write anything a single one could not: an aircraft is refused for the same
+    reason, and so is a campaign in peacetime. What it adds is ONE alert for the lot.
+  - Aircraft never receive the button (an aircraft occupies nothing), and issuing a normal Move
+    replaces a campaign.
+  - **`nearestAutoConquestTile` and `nearestEnemyLandDistance` go through `landOf`, not `state.tiles`.**
+    They walked a million tiles per formation per tick, which was affordable only while this was a
+    rare order. It is an ordinary one now and a whole army may be on it, so both read the country
+    index `stateIndustry` and `stateMilitary` already pay for.
+- **Formations can be GROUPED, and a group is a `groupId` and nothing else** — no object, no list, no
+  `Map` — so it round-trips through the save like everything else on `state`. What it buys is one
+  thing: an order given to any member is given to all of them (`moveMilitaryUnit` walks
+  `groupOf`), and the column moves at its **slowest** member's pace (`groupSpeed`), because
+  otherwise the cars arrive alone and the guns turn up long after. `state.military.nextGroupId` hands
+  out the ids and a group of one dissolves itself (`dissolveIfAlone`), so a stale `groupId` can never
+  lie to the panel.
+  - **Who may group is decided by DOMAIN, which makes "land groups with land, aircraft only with
+    aircraft" ONE rule rather than two** — aircraft are the only `air` formation there is, so
+    `canGroup` comparing domains says both at once. A group is also one government's.
+  - The gesture is a **fourth pointer mode**, shaped exactly like Move: the Group button in Selected
+    sets `ui.groupUnit`, and each following click on one of your own formations adds it, so a column
+    is assembled in a run of clicks. Clicking anything else ends it. The map rings the formations
+    that could legally join in green, which is how "aircraft only with aircraft" is something you
+    see rather than a refusal you discover by clicking.
+- **AN ARMY IS SELECTED THE WAY FILES ARE, and a selection is a thing you HAVE rather than a thing
+  the pointer is carrying.** `ui.selection` is a plain array of unit ids — the only piece of pointer
+  state that is NOT exclusive with the other four, because picking six formations out and then
+  picking up a building are not contradictory statements. `ui.orderSelection` is the mode that
+  SPENDS one: while it is set, the next tile click is a march order for every id in the list
+  (`orderMoveMany`), and it is checked before `ui.moveUnit` because a selection is the bigger order.
+  - **The gesture is a rubber band, because the map has no empty space to drag on.** Panning is
+    dragging — the scrollbars are gone — so a plain drag cannot be the marquee. **Shift-drag** starts
+    a fresh selection box, **Ctrl/⌘-drag** adds to the one you have, and a modified drag under the
+    four-pixel threshold is treated as an additive CLICK, which is how one formation is added or
+    removed. A plain click replaces the selection with whatever it landed on, exactly as it does in a
+    file list; Escape clears it.
+  - **The band itself lives on `view`, not on `ui`.** It exists only between a pointer going down and
+    coming up again, so nothing outside `map.js` has any use for it — and `boxTiles` converts it from
+    content pixels to tiles ONCE, so the drawing and the selection can never disagree about which
+    tiles the box covered. `unitsInBox` in `actions.js` is what turns that rectangle into ids, so the
+    map drags a box without knowing what a formation is.
+  - **Every button on the army card acts on the SELECTION when there is one and on the whole army
+    when there is not**, and says which in its label. That is what makes "order these six" and "order
+    all thirty" one control rather than two sets of them — and it is how the campaign is enabled or
+    disabled for a whole army in one press.
 - **The five are told apart by what they consume**, and that ordering is covered by a test:
   infantry eat food and nothing else; an armoured car burns less fuel than a tank, and a tank less
   than an aircraft; artillery burn no fuel at all and eat less than infantry.
-- **A formation that goes unsupplied wastes away**, half a point of strength a tick, and is gone when
-  it runs out. Recovery is the same rate, so intermittent supply keeps an army alive. `supplyUnits`
-  indexes depots ONCE for the world's armies, like `collect` and `contracts`.
-- Upkeep is drawn in the `security` phase, at the END of the tick, so an army eats what its nation's
-  contracts, its factories and its people have already left behind.
+- **...and by how far they REACH.** `range` is 1 for everything except artillery, which is 3, and
+  that single asymmetry is the whole reason to drag a gun anywhere: a battery fights what it cannot
+  touch. `resolveTerrorCombat` sums the strength of every unit within its own `range` (Chebyshev) of
+  the cell rather than only those standing on its tile. **Reaching across a border is governed by the
+  same access rule as walking over one** — you cannot shell a camp in a neutral country from your own
+  side of the line — which is why that function still asks `canMilitaryEnter` against the camp's tile.
+- **A formation loses strength to enemies and to nothing else**, and makes it good at `RECOVERY` a
+  tick whenever it is out of contact. Everything military still happens in the `security` phase at
+  the END of the tick, so a formation is raised out of whatever a nation's contracts, its factories
+  and its people have already left behind — the cost is drawn once, there, and never again.
+
+### The world raises armies too
+
+`src/systems/stateMilitary.js`, and it is the same shape of file as `stateIndustry.js` for the same
+reason: it decides only how many formations a government wants and where it sends them, and goes
+through `createMilitaryUnit`/`moveMilitaryUnit` exactly as your own buttons do. Nothing is
+special-cased.
+
+- **An army is sized by the ECONOMY, not the treasury** (`armyTarget`: `CONFIG.army.perDemand`
+  against `demand`, floored and capped, multiplied when the nation is at war or has a cell on its
+  soil).
+- **A government MOBILISES before the shooting starts.** `mobilising` counts an ultimatum with
+  `CONFIG.diplomacy.mobiliseAt` (**20**) ticks or fewer left to run as a war for sizing purposes, so
+  both sides of a declaration raise their armies during the countdown rather than on the day. The
+  whole point of a declared war waiting is that it can be seen coming; a government that only began
+  arming once it was fired on wasted every tick of the warning. Formations cost supplies, so a rich nation with an empty depot fields nothing — a test
+  asserts that, for them exactly as for you.
+- **The type is the DEAREST it can afford out of stock**, walked from the strongest down, so an
+  economy shows up in an order of battle without a line of code reading a country's name.
+- **`CONFIG.army.costHeadroom` is the only brake there is.** A unit costs nothing to keep, so
+  without wanting some multiple of the batch in stock before spending one, a government would
+  convert every scrap of surplus into infantry on the tick it appeared and have nothing left to
+  trade.
+- **WHAT ACTUALLY LIMITS THE WORLD'S ARMIES IS THE ECONOMY, and it is worth knowing before tuning
+  anything here.** Measured at tick 700, every large nation held **zero** food in its depots at
+  *every* phase of the tick — the United States runs about −75 food a tick against an appetite of
+  115 — so nothing accumulates and a formation, which is bought out of goods, cannot be raised.
+  That is why the world fields ~290 formations across 258 nations, nearly all of them single, while
+  a genuine surplus economy like China fields ten and can clear a terrorist cell on its own.
+  **Moving the `army` phase earlier in the tick does not fix this** — it was tried and measured and
+  changed nothing, because the depots are empty at every phase, not merely at the last one. See the
+  note in `systems/index.js`. If the world's armies are to grow, the lever is food and feedstock
+  production, not phase order and not `army` tuning.
+- **It moves with a reason** (`orderArmy`): a cell on its own soil first — that is a threat it can
+  do something about, and defeating one pays — then the nearest site of somebody it is actually at
+  war with. A formation already under orders is left alone; re-deciding every fifteen ticks is how
+  an army ends up oscillating between two targets and arriving at neither.
+- **Current target ladder:** after a home terrorist cell, `orderArmy` now aims at enemy formations,
+  then enemy sites, then enemy land. The land fallback reads `landOf` from `worldIndex.js`, so wars
+  still progress after the buildings and armies are gone.
+- **AN ARMY FANS OUT.** One objective per formation while there are objectives to go round (a
+  `taken` set passed into `nearestEnemySite`), and each is then nudged to its own corner of that
+  objective by `spreadOut` — an offset that is a pure function of the unit's id, so it is stable
+  across ticks and identical on a replayed save. Every idle unit used to be sent at the single
+  nearest enemy site, so an army marched down one road in single file and arrived as a stack on one
+  tile. That wastes it twice over: a stack takes one tile, because `takeGround` only takes the tile a
+  unit is actually standing on. Measured: four formations on four distinct tiles instead of three
+  piled on one. The claims are released once there are more formations than sites, since by then
+  converging is the right answer.
 
 Terrorism is deliberately a single pressure point, not world chaos, and every number in it is in
 `CONFIG.terrorism`. `state.terrorism.active` starts null and `runMilitary` spawns one presence only
 if none exists, no earlier than `firstAt` (600 ticks into a fresh game); destroying it clears it and
 schedules the next after `cooldown` (also 600). Do not spawn parallel terrorist areas while one is
 already active.
+
+**A CELL IS ANNOUNCED BEFORE IT ARRIVES.** `CONFIG.terrorism.warnBefore` (**100**) ticks ahead of the
+spawn, `warnTerrorists` chooses the ground and writes `state.terrorism.warning` — country, tile, and
+the tick it will appear on — and the red card over the map counts it down. That is what the mechanic
+was always for: a cell you cannot see coming is an ambush, and one you can is a problem you get to
+march an army toward first. Three rules hold it together:
+
+- **The choice is seeded on `nextSpawnTick`, not on the current tick.** It has to give the same
+  answer on every tick of the countdown, or the camp would wander around the map while the clock ran
+  and the warning would be worth nothing.
+- **`spawnTerrorists` spawns where the warning said and nowhere else**, and if it somehow finds no
+  warning it writes one and waits — so there is no path to a cell nobody was told about.
+- **A defeat clears the warning too** (the next cell has not been chosen yet), and so does the spawn
+  itself.
+
+The map marks the announced ground with a dashed amber ring (`drawOmen`) rather than the camp's solid
+red, because "a cell will be here" and "a cell is here" must not look the same. The card is the same
+card in the same place for the same reason the inbox is one stack: they are two states of one thing.
 
 - **A cell is INFANTRY and a few armoured cars, and nothing else — and it is FIXED at spawn.**
   `terroristForce` derives the cars from the rifleman count (`carsPer`) rather than storing them, so
@@ -576,12 +1101,33 @@ already active.
   destroys that one site and picks the next nearest; it never leaves the country it appeared in,
   because every target comes from that one nation's buildings. **It builds nothing, buys nothing, and
   sells nothing** — the only thing it does is walk and wreck.
-- **Your own army can defeat it, and defeating it PAYS.** `resolveTerrorCombat` runs every tick before
-  the cell gets to spawn a replacement or take a step: any government whose units, stacked on the
-  cell's own tile, together match or exceed its strength clears the presence immediately and is paid
-  `CONFIG.terrorism.bounty` straight into its treasury — real money, for the same reason the clearing
-  fund's fee is real. Reaching a cell on FOREIGN soil still needs the ordinary access/alliance/war
+- **FIGHTING A CELL IS A FIGHT, NOT A THRESHOLD.** `resolveTerrorCombat` runs every tick before the
+  cell can spawn a replacement or take a step, and everything in reach of the camp wears it down at
+  `CONFIG.war.damage` while the cell wears them down in return — off the same snapshot, exactly as
+  two armies do in `resolveWarCombat`. **One combat rule in this game, not two.** When the cell has
+  no riflemen left, whoever had the most strength in reach is paid `CONFIG.terrorism.bounty` straight
+  into its treasury. Reaching a cell on FOREIGN soil still needs the ordinary access/alliance/war
   relation; reaching one on your own soil needs nothing but marching your own units there.
+
+  It was **all-or-nothing** until measured: a government whose strength in reach matched the cell
+  cleared it instantly, and anything less did nothing whatever. A cell is 46 strength and almost no
+  nation fields that in one place, so what actually happened over 3,000 ticks was a lone formation
+  marching onto the camp and **standing there for 2,400 ticks** — taking no losses, inflicting none —
+  while the cell walked off and wrecked every site its host owned. Attrition fixes both halves: a
+  partial force grinds a cell down instead of being ignored, and one that is badly outmatched dies,
+  which is feedback rather than a stalemate. Measured after the change, China (10 formations) clears
+  a cell and its industry keeps growing through the fight.
+
+  **Damage lands on the cell's RIFLEMEN**, not on an abstract pool, because `terroristForce` derives
+  its armoured cars from the rifleman count — the damage has to reach the thing everything else is
+  derived from, or the two would disagree. `terroristForce` therefore floors the count, and a cell
+  that floors to nobody is finished. A weakened cell is visibly smaller on the red card.
+
+- **A government with a cell on its soil wants enough formations to BEAT it** — `armyTarget` works
+  the count out from the data (`terroristStrength` against the weakest formation anyone could raise,
+  times `CONFIG.army.terrorMargin`). It was a multiplier once and did nothing: a small nation's
+  target is 1 and one-and-a-half rounds back to 1, which is how Andorra came to send its single
+  rifleman at a cell four times its strength and lose every factory it had.
 - The red card over the map (`src/ui/terror.js`) is driven from `terrorism.active` and does NOT
   expire — it is a standing situation, not news. Clicking it centres the map on the camp. The one-off
   spawn alert beside it expires like every other message.
@@ -627,9 +1173,17 @@ Consequences worth knowing:
   and `.terror-popup[hidden]` exist for that reason. **Any element that is both hidden by attribute
   and given a `display` by class needs its own `[hidden] { display: none }` rule.**
 
-- **The top information panel starts folded away and opens on hover or click.** Moving the pointer
-  out closes it again; the collapse control or active-tab click do the same explicitly. It leaves its
-  tab strip (`ui.panelOpen`, hovering a tab, or clicking the tab you are already on).
+- **The top information panel is opened and closed by CLICKING, and by nothing else.** It starts
+  folded to its tab strip; a tab click opens it on that tab, and it then STAYS open. It closes on the
+  active tab, the collapse control, or **a click on the map** (`onTileClick`/`onTileRightClick` set
+  `ui.panelOpen = false` before every branch, so it holds whether the click was a build, a
+  deployment, an order or a plain selection).
+  It used to unfold on HOVER and fold again the instant the pointer left it, and there are no
+  pointer listeners left in `tabs.js` because that could not be lived with: reading a table and
+  reaching for the map dismissed the table. Do not add `pointerenter`/`pointerleave` back.
+  Clicking bare ground still primes `ui.tab = 'selected'` — primed rather than shown, since the same
+  click just closed the panel: one click to get the world back, one on the strip to read about what
+  you clicked.
 - **Messages sit above every panel.** Alerts, inbox cards and the red terrorist card use the high
   overlay layer (`z-index: 100`) so a popup is visible even when the top or bottom dock is open. All
   three are repainted on every render, outside the pane dispatch, because they are always visible.
@@ -652,17 +1206,99 @@ Consequences worth knowing:
   including the map. They cost more width than the figures beside them. Everything still scrolls by
   wheel, drag, trackpad and keyboard, so a box that can overflow must say `overflow: auto`;
   `hidden` now means "this genuinely cannot be reached", which is almost never what you want.
+- **There is exactly one mobile breakpoint: 820px.** Below it the top panel becomes a full-width
+  sheet, the tab strip is one sideways-scrolling row with sticky close/tall buttons, and the build
+  dock deliberately overrides the desktop "two rows, always" grid into **one row** of touch-sized
+  boxes. The dock height is the `--dock` custom property; tune that variable rather than chasing
+  individual panel heights.
+- **The mobile overflow menu is `data-open`, not `hidden`.** `.controls__more` is a real sheet under
+  the `...` button on phones and ordinary controls on desktop, so the closed mobile state is
+  `.controls__more[data-open="false"] { display: none; }`. The renderer toggles `data-open`; do not
+  reintroduce `hidden` or desktop controls disappear in the wrong mode.
+- **`.overlays` uses `display: contents` on mobile.** The alerts, inbox and terrorism card stack
+  over the map as their own fixed layers instead of adding another box to the page. That is why the
+  verified phone shell has no page scroll in either axis.
+- **Pinch zoom is real map zoom.** `src/ui/map.js` tracks two active pointers in `attachPan`, calls
+  `zoomTo`, and snaps through `levelNearest`, the same zoom levels the wheel and buttons use.
 
-### The top panel has nine tabbed views
+### The top panel has ten tabbed views
 
 `index.html` declares a `<section class="pane" data-pane="…">` per view; `src/ui/tabs.js` owns the
 strip and the `TABS` list that names them. `ui.tab` says which is on screen, `ui.panelOpen` whether
 the panel is unfolded at all, `ui.leftOpen` whether the build panel is, `ui.openFactoryId` which site
 has its numbers unfolded, `ui.goodsView` whether the commodity book reads the tick or the game,
 `ui.rankSort` which column the nation table is ranked by, `ui.bookFilter` whether the exchange shows
-everybody's terms or only yours, and `ui.draft` the contract you are writing but have not signed —
-all on `ui`, so none of it reaches the save file. Nine tabs do not fit one row of the panel, so
-**the strip wraps**: a tab you cannot read is not a tab you will click.
+everybody's terms or only yours, `ui.moveUnit`/`ui.groupUnit` which formation is waiting for a
+destination or for companions, `ui.selection`/`ui.orderSelection` which formations you have picked
+out and whether their march order is armed, and `ui.draft` the contract you are writing but have not signed —
+`ui.panelTall` how much room the panel gets when it is open, and `ui.eventFilter` whose world news
+the News tab is showing — all on `ui`, so none of it reaches the save file. Ten tabs do not fit one
+row of the panel, so **the strip wraps**: a tab you cannot read is not a tab you will click.
+
+Four things about the strip itself, and each is there because the panel is one you move around in
+constantly:
+
+- **Every tab prints the number that opens it.** `1`–`9` already worked and nobody could have known;
+  a shortcut you cannot see is a shortcut nobody uses. `←`/`→` walk the strip and wrap.
+- **The active tab wears a bright edge along its top** (`.tab[data-active]::before`). Nine tabs in
+  two wrapped rows all shaded the same colour made "which one am I on" a question you answered by
+  reading rather than by looking.
+- **`⤢` (or `T`) makes the panel TALL** — `ui.panelTall`, capped at a share of the viewport rather
+  than a fixed height, because the panel docks over the map and must never replace it. The summary
+  card is read in one look; the Ranks table and the tech tree are not, and scrolling a pane sized
+  for a card is the wrong answer to both. It is a second control beside the collapse button because
+  it answers a different question: how tall, versus whether at all.
+- **A war, or a declaration counting down toward one, marks the Diplomacy tab urgent**
+  (`data-urgent`, a pulsing badge — and it respects `prefers-reduced-motion`). It is the one thing
+  on the strip worth interrupting whatever you are reading.
+
+**The keyboard is a whole control surface, and `main.js`'s keydown handler is all of it**:
+`Space` runs/pauses, `Esc` drops whatever the pointer is carrying — and clears the marquee selection
+and any march order armed on it, since "I am carrying nothing" and "I have picked nothing out" are
+the same statement — `B` folds the build dock,
+`T` makes the top panel tall, `+`/`-` zoom, `1`–`9` and `←`/`→` pick a view, **`H` finds your own
+country again** (`onCenterHome`, the same call the ⌖ button makes) and **`M` moves the selected
+formation** (`onMoveSelected` → `onMoveUnit`, the same call the Move button makes). Two rules hold
+for all of them:
+
+- **A key goes through the same ctx method its button does**, never round the side. `M` toggles like
+  the button and explains itself when nothing of yours is selected, rather than failing silently.
+- **Every shortcut is written down where the thing it does lives** — the number on each tab, `(H)`
+  and `(B)` on the panel buttons, `(M)` on the Move button, and the full list in the build dock's
+  "How building works". A shortcut nobody can see is one nobody uses, which is exactly what `1`–`9`
+  were before.
+- `event.target.matches('input, textarea, select')` guards the lot, so typing in the contract draft
+  or the market select never fires a shortcut. Note it assumes an ELEMENT target — true of every real
+  keypress, and the reason a test that dispatches on `document` rather than `document.body` will
+  appear to prove the shortcuts are broken when they are not.
+
+The fixed `.topbar` gained a **Standing** figure for the same reason: it says the most alarming true
+thing about your diplomacy — a war being fought, else a war counting down, else your alliances —
+because "fighting begins in twelve ticks" is not something a player should have to open a panel to
+find out. Its stats also wrap now: the bar is fixed, and a stat pushed off the end of it is a stat
+you can never see.
+
+**Save, Load, the nation select and New game are icon buttons, not spelled-out ones.** Three words
+were what made the bar wrap into an orphaned second row at ordinary desktop widths (a lone `Tick`
+stat stranded on its own line) — `.icon-btn` is the glyph alone (💾/📂/✚), and `#home-select` is
+capped to 130px rather than however wide a country's full name runs. The word itself is not gone:
+`.btn-label` clips it the same way `.visually-hidden` used to (off-screen, not `display:none`, so a
+screen reader still reads it), and the one place it is genuinely useful — the phone's `⋯` overflow
+sheet, which has no crowding at all — un-clips it back to a plain inline label beside the glyph. Same
+DOM, same handlers, two renderings of the same word for two different amounts of room.
+
+**A build box's name is single-line and ellipsised on a phone too, not wrapped.** It briefly wrapped
+to fit the extra width `--dock` gets on mobile, and a two-word name like "Fishing Fleet" wrapping to
+a second line pushed that one box's cost and recipe down by a line while its neighbours in the same
+scrolling row did not move — a carousel where every third box sits a little lower reads as broken
+alignment rather than as a longer name. `.build__recipe` was already single-line for exactly this
+reason (see the note above it); `.build__name` now follows the same rule on both breakpoints, and the
+full name is still on the tooltip.
+
+**The phone's stat strip fades at its scrolled edge.** `.stats` already scrolled sideways rather than
+wrapping into four rows on a 360px bar; a plain hard cut at the edge of the visible strip looked like
+`Trade balance` was the last figure rather than the fourth of eight. The mask is cosmetic only — the
+scroll itself is unchanged, `Standing` and `Tick` are exactly as reachable as they were.
 
 **Only the visible pane is repainted.** `src/ui/render.js` dispatches through `PANES` and returns
 early when the panel is folded away; the topbar, build menu, map and alerts are outside that, because
@@ -679,15 +1315,18 @@ Five things earn their own view rather than sharing one:
 - **Summary** is derived from the other four and owns nothing. It exists so the answer to "how is the
   nation doing" is not four tabs of reading.
 - **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book: **ONE table, one line
-  a commodity, thirteen columns.** Prices and Goods were two tabs, then two tables stacked in one
+  a commodity, fourteen columns.** Prices and Goods were two tabs, then two tables stacked in one
   pane, then two tables side by side — every one of which meant the price of coal was in one place
   and what you were doing with coal was in another, though both were the same thirty-four rows in the
-  same order. On one line: the first group of columns is the market named in the header (price,
+  same order. On one line: the first group of columns is the market named in the header (live price,
+  base price,
   drift, need, met, held — any nation on earth, chosen in the select), the second is your own book
   (made, burned, sold, balance, shipped out, bought in, per tick or for the whole game from
   `state.ledger`), and the `↗`/`↙` flags at the end are your policy. It fits because the table is
-  `table-layout: fixed` with one fixed name column and twelve even figure columns, at a font size
-  smaller than the rest of the panel.
+  `table-layout: fixed` with one fixed name column and thirteen even figure columns, at a font size
+  smaller than the rest of the panel. **Base** sits directly beside the selected market's live
+  **Price**: it is the commodity definition's fixed reference price, so the adjacent drift is
+  readable without inferring its baseline.
   **The two halves are different nations whenever the select is not you**, which is the point — what
   Germany pays and how short it is, beside what you can actually spare — so the group header row is
   load-bearing and says whose figures each half is. The bracket in the `In` column is the feedstock
@@ -698,15 +1337,56 @@ Five things earn their own view rather than sharing one:
   button whose work is invisible — you pressed "Sell all" on a book that was already all-sell — is
   indistinguishable from a broken one. They also `pushAlert`, since a policy set on a paused game
   changes nothing you can watch happening.
+  **`Bal` comes from `spareRates` in `core/state.js`, not from a sum written here** — it is the same
+  function the contract-offer filter reads, so what this column promises and what the world is
+  allowed to ask you for can never disagree.
+- **News** (`src/ui/events.js`, pane id `events`) is the WORLD's log, as against the alerts in the
+  corner, which are yours. Every pact agreed or refused, every declaration and every war, every
+  contract signed, every formation raised, every cell that appears or is destroyed, and every border
+  that moves — for all 258 governments. Filters are **World / Yours / one nation**, and `eventsFor`
+  matches a nation under `who` OR `about`, so a pact put to you is your news as much as the
+  proposer's. Three rules hold it up:
+  - **It expires on the TICK clock** — `CONFIG.events.ttl` (50) ticks — not the wall clock the
+    alerts use. It is "what is going on now", not a history of the game, and a history of the game
+    would not fit in localStorage beside the markets.
+  - **It is bounded TWICE.** `noteEvent` also caps the list at `CONFIG.events.max` whatever the age,
+    because the world acts in BURSTS: every nation reviews its army on the same decision tick, and
+    the sweep only runs once a tick. A test asserts the cap holds inside a single tick and that it
+    is the NEWEST rows that survive.
+  - **The systems store DATA, never sentences** (`kind`, `who`, `about`, `what`, `qty`). This file
+    is the only place a row becomes English — `src/systems` may not contain presentation text, and
+    a formatted string per row would multiply the size for nothing. Measured on a long game: the
+    whole log is 8KB of a 1.1MB save.
 - **Ranks** scores all countries against each other. The scoring rule (`scoreNations` in
   `src/ui/ranks.js`) is the one piece of UI with a rule rather than a layout in it, so it is covered
   by the suite — which means it must stay free of the DOM, like a system. Its measures are
-  normalised against the best in the world, so a score is a standing rather than a unit.
-- **Diplomacy** shows `state.diplomacy.relations` from your nation's point of view and is where
-  neutral, alliance, military-access and war states are changed. Military movement checks those
-  relation values; trade still uses `canTrade` and remains open to every non-self country.
+  normalised against the best in the world, so a score is a standing rather than a unit. Headers and
+  cells are centred deliberately: dense comparative columns scan vertically more cleanly when their
+  labels and values share the same centre line.
+- **Diplomacy** is where relations are asked for, and it is no longer a dropdown per nation — that
+  said the quiet part out loud, that a relation was something you SET. Each of the 257 rows carries
+  four buttons in a fixed order (**Ally / Access / Peace / War**), a line saying where the two of
+  you stand, and a countdown when a declaration is running. Three of the four are proposals; War is
+  the one that is declared, and it is styled and placed apart for that reason. Hovering a button
+  says roughly how much that government wants what you are offering (`relationAppetite`) or, when it
+  is disabled, exactly why. Anything waiting on YOUR answer sits at the top of the pane rather than
+  among 257 neutral neighbours, and the same cards appear in the floating inbox — two doors onto one
+  state, calling one action, exactly as the contract and licence offers are.
+  Rows are built ONCE at mount like the commodity book and the ranks table, and each diffs on its
+  own `dataset.sig`, so a tick in which nothing diplomatic happened touches no DOM at all. The
+  countdown is in that signature — but only the handful of pairs that actually have a declaration
+  standing ever change it.
+  Military movement checks those relation values; trade still uses `canTrade` and remains open to
+  every non-self country.
 - **Selected** is the old inspector. Clicking the map lands there only when no build tool is in hand:
   laying out a chain must not yank the panel away from the list you were reading.
+  It renders **two cards, not one**: an ARMY card above whatever the clicked tile is, shown whenever
+  you have a formation at all. That card is the only place a selection can be spent, and having to
+  hunt for a formation to click on before you can order the other twenty is not a gesture — so it is
+  not gated on the click having landed on one. Both cards are in the pane's single `dataset.sig`
+  (`armySig` — the army's size, how much of it is selected, how much is campaigning, and whether a
+  campaign is available at all), because a formation joining a campaign while you are looking at a
+  coalfield still has to repaint the buttons.
 
 ### Messages and offers expire differently
 
@@ -724,6 +1404,12 @@ clock time. `main.js` advances the offer clock only while `state.paused === fals
 stamps `offer.activeAt` on the first active sweep and compares against that. A paused or freshly
 loaded game must not auto-decline an inbox decision.
 
+**A diplomatic proposal is the third clock, and it is a TICK clock.** It lapses after
+`CONFIG.diplomacy.proposalTtl` ticks inside `runRelations`, not in the wall-clock sweep — a treaty
+is not a thing you answer in five seconds, and a paused game simply does not advance it. Letting one
+lapse counts as an answer and stamps the cooldown, the same rule a declined licence follows, so the
+same government does not come straight back with it.
+
 ## Footguns
 
 **The inspector, the nation card, the trade head, the inbox, the order book, the deal list, the trade-by-
@@ -732,6 +1418,11 @@ and the alerts all diff on signature strings** via `dataset.sig`. If you make on
 those visuals depend on a new piece of state, you **must** add it to that signature or it will simply
 never repaint — with no error. The tech-row signature uses a **boolean** for whether a licence is
 affordable rather than the cash figure, so the tree does not rebuild on every tick the treasury moves.
+The unit inspector carries the formation's `orderTileId` and its group's **SIZE** rather than its
+`groupId`: a companion joining or standing down leaves the id untouched, and the panel is showing the
+size — so the id alone would have gone quietly stale. It also carries `armySig`, and that one is in
+the signature **even when no tile is selected at all** (`none|${armySig}`), because the army card is
+shown whether or not a click has landed anywhere.
 
 **The factory list diffs on two levels, and the outer one is a list of ids** (`dataset.ids`). Rows are
 rebuilt only when the set of your sites changes; every tick after that writes the numbers into the
@@ -825,15 +1516,39 @@ Consequences worth knowing before editing the map:
   stale observer would keep painting the detached one.
 - Buildings are indexed into a `Map` by `tileId` once per draw. Searching `state.buildings` per tile
   is `O(tiles × buildings)` and dominates everything else.
+- **Formations are indexed the same way, but a tile maps to a LIST**, because they stack. The draw
+  paints the top of the stack and writes `×n` beside it — without that a column of five reads as a
+  lone scout. Your own standing ORDERS are indexed in the same pass into `ordersByTile`, so a
+  destination is marked on the ground (`drawWaypoint`): a march takes many ticks now, and an army
+  crossing a continent with no visible waypoint looks like an army that has stopped.
+- **A selected formation's strike range is ONE rectangle drawn after the tile loop**, not a highlight
+  per tile inside it. Only artillery's is bigger than the ground it stands on, so it is worth
+  showing — and not worth a per-tile question over a viewport that can be the whole planet. A
+  grouped unit wears a second ring for the same reason: grouping changes nothing you can see until
+  an order moves four formations at once, which is exactly the surprise a marker prevents.
+- **A formation in `ui.selection` wears a cyan rim, and the rubber band is painted LAST**, over the
+  frontiers and the labels, because it is a gesture rather than part of the world. The selection is
+  turned into a `Set` once per draw for the same reason everything else in the tile loop is indexed
+  once. The rim and the band are deliberately the same colour: "these six" has to mean one thing in
+  both places, and it is the same cyan the army card's Move button lights up in.
+- **A drag with Shift or Ctrl/⌘ held is a SELECTION BOX, not a pan**, and `attachPan` decides that on
+  `pointerdown` — before `from` is ever set, so the map cannot lurch. `draw` is called directly on
+  each `pointermove` of a band: a render happens on a TICK, and a paused game would otherwise show
+  a rubber band that never moved.
 
 Zoom is `ui.zoom`, an index into `CONFIG.zoomLevels`. It lives on `ui`, not `state`, so it never
 reaches the save file. Glyphs are dropped below 10px because they are illegible there.
 
 **Tiles are not saved.** A million tile objects run to about 110 megabytes and blow the localStorage
 quota, so `packState` strips them and `loadState` calls `rehydrate`, which regenerates them from
-`seed` and reattaches each building via its `tileId`. This works only because **nothing in the game
-mutates terrain or `countryId` after generation** — if you add a mechanic that does (terraforming,
-conquest), the save breaks silently and you must persist a diff.
+`seed` and reattaches each building via its `tileId`.
+
+**TERRAIN is still fixed for the life of a world; OWNERSHIP is not.** Conquest is exactly the
+mechanic this note used to warn about, and it carries the diff the warning demanded:
+`state.claims` (tile id → new owner) is written by `setTileOwner` and reapplied by `rehydrate` over
+the regenerated world. Anything else that starts moving `countryId` MUST go through `setTileOwner`
+or it will load back wrong with no error. **Terraforming would still break the save** — nothing
+persists a terrain diff, and nothing may mutate `tile.terrain` after generation.
 
 **Commodity bags are compacted on the way out and refilled on the way in.** Every bag carries a key
 per commodity and quantities go fractional once spoilage and part-filled orders touch them, so a bag
@@ -890,11 +1605,16 @@ countries", `state.offers` and `systems/diplomacy.js` are gone, and `report.expo
 ARE the contract settlements — `runContracts` writes them and resets them, which is why
 `sellDomestic` must NOT reset them any more. If you add another way for goods to move, it has to
 write those two lines or the whole trade half of the UI goes quiet.
+`src/systems/relations.js` is NOT that old file coming back: it decides who is allied with whom and
+who is at war, and it moves no goods at all. The name is different on purpose.
 
 **The inbox and the tabs are two doors onto the same offers.** `src/ui/inbox.js` floats over the map
-and calls the very same actions the Trade and Tech panes do; it is not a second copy of the state.
-It is repainted on every render whether the panel is open or not, so it diffs on a signature like
-everything else that floats.
+and calls the very same actions the Trade, Tech and Diplomacy panes do; it is not a second copy of
+the state. It is repainted on every render whether the panel is open or not, so it diffs on a
+signature like everything else that floats. **The pact card is the one with no countdown BAR**: the
+bar animates over `CONFIG.offerTtlMs` of WALL clock, and a treaty lapses on the TICK clock, so it
+prints its remaining ticks in words instead. Do not give it a bar — the two clocks would disagree
+visibly, and a paused game would show a bar running out under an offer that is not going anywhere.
 
 **`state.exchange` rides along in the save** like the contracts do — plain arrays and numbers, no
 `Map`s. `exchangeOf(state)` tolerates a state built before it existed rather than making every
@@ -906,6 +1626,14 @@ and what the player sees is a button that does nothing.
 **Save compatibility.** Anything put on `state` must be JSON-round-trippable — no `Map`, `Set`,
 `Date`, or class instances, or load will silently produce a broken game. Bump `SAVE_VERSION` in
 `src/core/state.js` when the shape changes; mismatched saves are discarded rather than migrated.
+It is at **15** for sparse asymmetric `state.diplomacy.opinion`. Fourteen was raised for
+`state.events`, `state.claims`, `state.occupied` and `mapVersion`; thirteen was
+`state.diplomacy` gaining `proposals`, `ultimatums`, `history` and `nextId`; twelve was formations
+gaining `orderTileId` and `groupId`. Thirteen also had buildings gaining
+`builtAt`, and units trading `supplied` for `engaged`. Both are exactly the kind of change that has
+to bump it: a marching column loaded out of a save that never heard of orders would stand still for
+ever, and a declaration of war loaded out of one that never heard of ultimatums would never mature,
+with no error anywhere. Everything added is a plain array, object or number, so it round-trips.
 
 **Do not verify tick behavior through headless Chrome.** Headless fires `requestAnimationFrame`
 exactly once regardless of `--virtual-time-budget`, so the game will always report 0 ticks there.
@@ -920,7 +1648,17 @@ deadlock chains and is covered by a test.
 site — which scans every building in the world — is the hottest pair of loops in the game, and at two
 thousand buildings it was over half the tick on its own. The index is built in `state.buildings`
 order, so the order goods are drawn in is unchanged and ticks stay deterministic. `warehousesServing`
-itself is still the answer for one-off questions from the UI and from state industry.
+itself is still the answer for one-off questions from the UI and from state industry. `relay` pays
+the same index once and then works per OWNER rather than per site: the depot graph is quadratic in
+one nation's depots (tens, not thousands) and the BFS is per commodity over that graph, so it costs
+about what `distribute` costs and does not grow with the world.
+
+**`worldIndex.js` and `worldBalance.js` are shared AI infrastructure.** `worldIndex.js` owns
+`tilesByCountry`/`landOf`, cached on `state.tiles` plus `state.mapVersion`, and is used by state
+industry, state military and `military.js` itself — an automatic campaign asks "where is that
+country" every tick per formation, and walking a million tiles to answer it is what the index is for.
+`worldBalance.js` owns world demand, supply, offered stock and scarcity;
+state industry and research should read it rather than growing private copies of the same scan.
 
 **The exchange indexes stock and payroll once per posting round.** Asking `warehouseStock`/`projectedWages` per
 country per commodity — the obvious way to write it — is hundreds of countries times thirty-four scans of

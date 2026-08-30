@@ -9,8 +9,23 @@
 <link rel="stylesheet" href="styles/panel.css">
 </head>
 <body>
+<section class="auth-screen" id="auth-screen" aria-labelledby="auth-title">
+  <form class="auth-card" id="login-form">
+    <p class="brand">Statecraft</p>
+    <h1 id="auth-title">Welcome back</h1>
+    <p class="muted">Sign in to keep your own saves. A new username creates an account.</p>
+    <label>Username<input id="login-username" autocomplete="username" minlength="2" maxlength="30" required></label>
+    <label>Password<input id="login-password" type="password" autocomplete="current-password" minlength="4" required></label>
+    <p class="auth-error" id="login-error" role="alert"></p>
+    <button type="submit" class="primary">Login / create account</button>
+    <button type="button" id="btn-guest">Continue as guest</button>
+    <p class="hint">Guest games cannot be saved or loaded.</p>
+  </form>
+</section>
+<div id="game-app" hidden>
 <header class="topbar">
   <h1 class="brand">Statecraft</h1>
+  <button type="button" id="btn-profile" class="profile-button" title="Open profile"><span id="profile-name"></span></button>
   <div class="stats">
     <div class="stat"><span>Treasury</span><b id="stat-cash">—</b></div>
     <div class="stat"><span>Net / tick</span><b id="stat-net">—</b></div>
@@ -18,15 +33,32 @@
     <div class="stat"><span>Trade balance</span><b id="stat-trade">—</b></div>
     <div class="stat"><span>Supply</span><b id="stat-supply">—</b></div>
     <div class="stat"><span>Economy</span><b id="stat-demand">—</b></div>
+    <!-- Where the nation stands with the rest of the world. It is on the fixed
+         bar rather than only in the Diplomacy tab because a war beginning in
+         twelve ticks is not something you should have to open a panel to find
+         out about. -->
+    <div class="stat"><span>Standing</span><b id="stat-standing" title="Wars, ultimatums and alliances">—</b></div>
     <div class="stat"><span>Tick</span><b id="stat-tick">0</b></div>
   </div>
+  <!-- Running or paused is the one control that must never be behind a menu, so
+       it stays on the bar at every width. Everything else — speed, the save
+       pair, which nation you govern, a new game — moves into `.controls__more`,
+       which is plain inline flex on a desktop and a popover sheet on a phone.
+       It is the SAME DOM either way: a second copy of these buttons would be a
+       second source of truth for the same five actions. -->
   <div class="controls">
     <button type="button" id="btn-pause" class="primary">▶ Run</button>
-    <div class="speeds" id="speed-buttons"></div>
-    <button type="button" id="btn-save">Save</button>
-    <button type="button" id="btn-load">Load</button>
-    <label class="home">Nation <select id="home-select"></select></label>
-    <button type="button" id="btn-reset">New game</button>
+    <div class="controls__more" id="controls-more">
+      <div class="speeds" id="speed-buttons"></div>
+      <button type="button" id="btn-save" class="icon-btn" title="Save game"><span aria-hidden="true">💾</span><span class="btn-label">Save</span></button>
+      <button type="button" id="btn-load" class="icon-btn" title="Load game"><span aria-hidden="true">📂</span><span class="btn-label">Load</span></button>
+      <label class="home" title="Which nation you govern">
+        <span class="home__icon" aria-hidden="true">🌐</span><span class="btn-label">Nation</span>
+        <select id="home-select"></select>
+      </label>
+      <button type="button" id="btn-reset" class="icon-btn" title="Start a new game"><span aria-hidden="true">✚</span><span class="btn-label">New game</span></button>
+    </div>
+    <button type="button" id="btn-menu" class="topbar__more" aria-expanded="false" title="Speed, saving and which nation you govern">⋯</button>
   </div>
 </header>
 
@@ -42,15 +74,24 @@
     <span class="maptools__label" id="zoom-label">1px</span>
   </div>
 
-  <!-- Anything waiting on your answer, over the map where you cannot miss it.
-       The same offers appear in their own tabs; this is so that saying yes never
-       costs you the pane you were reading. -->
-  <div id="inbox" class="inbox"></div>
+  <!-- The two STANDING overlays share a parent so they can be stacked.
+       On a desktop this box is `display: contents` — it has no layout of its
+       own and both children stay absolutely positioned against `.layout`,
+       exactly as they were. On a phone it becomes a flex column above the build
+       dock, because a 262px inbox and a 236px card on opposite edges of a 360px
+       screen simply overlap. Alerts are not in here: they are transient and keep
+       the top band. -->
+  <div class="overlays">
+    <!-- One red card, over everything, for as long as a terrorist cell is standing.
+         It is not an alert: it does not expire, and clicking it jumps the map to
+         the camp. There is only ever one presence, so there is only ever one card. -->
+    <div id="terror" class="terror-popup" hidden></div>
 
-  <!-- One red card, over everything, for as long as a terrorist cell is standing.
-       It is not an alert: it does not expire, and clicking it jumps the map to
-       the camp. There is only ever one presence, so there is only ever one card. -->
-  <div id="terror" class="terror-popup" hidden></div>
+    <!-- Anything waiting on your answer, over the map where you cannot miss it.
+         The same offers appear in their own tabs; this is so that saying yes never
+         costs you the pane you were reading. -->
+    <div id="inbox" class="inbox"></div>
+  </div>
 
   <ul id="alerts" class="alerts"></ul>
 
@@ -59,7 +100,7 @@
   <aside class="panel panel--left" id="left-panel">
     <header class="panel__head">
       <h2 id="nation-name">Your nation</h2>
-      <button type="button" class="panel__action" id="btn-home-map" title="Center the map on your nation">⌖</button>
+      <button type="button" class="panel__action" id="btn-home-map" title="Center the map on your nation (H)">⌖</button>
       <button type="button" class="panel__close" id="btn-left-close" title="Hide this panel (B)">&times;</button>
     </header>
     <div class="panel__body">
@@ -70,7 +111,7 @@
       <div id="build-menu" class="build-menu"></div>
       <details class="hint">
         <summary>How building works</summary>
-        Pick a tool, then click a highlighted tile on <em>your own soil</em> — a government licenses industry at home and nowhere else. Right-click a building to demolish it for half its cost. <kbd>Space</kbd> runs/pauses, <kbd>Esc</kbd> clears the tool, <kbd>B</kbd> folds this panel away.
+        Pick a tool, then click a highlighted tile on <em>your own soil</em> — a government licenses industry at home and nowhere else. Right-click a building to demolish it for half its cost. <kbd>Space</kbd> runs/pauses, <kbd>Esc</kbd> clears the tool, <kbd>B</kbd> folds this panel away, <kbd>H</kbd> finds your country again, <kbd>M</kbd> moves the selected formation, <kbd>T</kbd> makes the top panel taller, <kbd>1</kbd>–<kbd>9</kbd> and the arrow keys pick a view.
       </details>
     </div>
   </aside>
@@ -104,19 +145,26 @@
             <button type="button" id="all-buy-off" title="Bid for nothing on the exchange (&#8601; off for all)">Buy none</button>
           </div>
         </div>
+        <!-- Fourteen columns do not fit a phone, and dropping any of them would
+             break the one thing this table is for: the market half and your own
+             half of a commodity on ONE line. So it scrolls sideways inside its
+             own box, exactly as the nine-column Ranks table does — the pane
+             itself still never scrolls sideways. -->
+        <div class="scroller">
         <table class="market prices">
           <thead>
             <!-- The group row is load-bearing: whenever the select is not you,
                  the two halves of a line are two different nations. -->
             <tr class="prices__groups">
               <td></td>
-              <th colspan="5" id="prices-where">That market</th>
+              <th colspan="6" id="prices-where">That market</th>
               <th colspan="6">Your nation</th>
               <th></th>
             </tr>
             <tr>
               <th>Commodity</th>
               <th title="What a unit fetches in the market named above">Price</th>
+              <th title="The commodity's reference price before local supply and demand move it">Base</th>
               <th title="Against the commodity's base price">&plusmn;</th>
               <th title="What that nation's people want per tick">Need</th>
               <th title="How much of that need is actually reaching them">Met</th>
@@ -132,6 +180,7 @@
           </thead>
           <tbody id="prices-body"></tbody>
         </table>
+        </div>
         <p class="hint" id="prices-note"></p>
         <details class="hint">
           <summary>What am I reading?</summary>
@@ -211,9 +260,36 @@
         <p class="hint hint--tight">Every market on earth is open to you. Click a nation to see what its people pay and what it is sitting on.</p>
       </section>
 
+      <!-- Diplomacy is a CONVERSATION. Alliance, access and peace are put to a
+           government and answered by it; war is the one thing declared rather
+           than asked, and even that waits out an ultimatum before anybody
+           fires. Anything waiting on your answer sits at the top, where the
+           decision is, rather than among 257 neutral neighbours. -->
       <section class="pane" data-pane="diplomacy" role="tabpanel" aria-labelledby="tab-diplomacy">
         <div id="diplomacy-head" class="diplomacy__head"></div>
+        <div id="diplomacy-pending" class="dip__offers"></div>
         <div id="diplomacy-list" class="diplomacy"></div>
+        <details class="hint">
+          <summary>How diplomacy works</summary>
+          <b>Ally</b>, <b>Access</b> and <b>Peace</b> are <em>requests</em> — you put them and that government answers on its own reading of how near you are, how big you are and how you already stand. Hover a button to see roughly how much it wants what you are offering. <b>War</b> is the exception: nobody is asked permission to be invaded, so it is <em>declared</em>. Any alliance between you breaks on the spot, but the fighting does not start for <b>50 ticks</b> — time for both sides to move armies, and time for you to call it off. When it does start, the defender's allies declare on you too, each with their own fifty. Peace has to be agreed like anything else.
+        </details>
+      </section>
+
+      <!-- What the rest of the world has just DONE. It is the world's news, not
+           yours: the alerts in the corner are yours and expire on a wall clock,
+           while these expire on the TICK clock and are dropped after 50 of them,
+           because 258 governments acting constantly will not fit in a save. -->
+      <section class="pane" data-pane="events" role="tabpanel" aria-labelledby="tab-events">
+        <div class="prices__head">
+          <div class="speeds" id="event-filters" aria-label="Whose notifications"></div>
+          <label class="home">Nation <select id="event-country"></select></label>
+          <span class="muted" id="event-head"></span>
+        </div>
+        <div id="event-list" class="events"></div>
+        <details class="hint">
+          <summary>What am I reading?</summary>
+          Every pact agreed or refused, every declaration of war and the wars that follow them, every supply contract signed, every formation raised and every terrorist cell that appears or is destroyed &mdash; for all 258 governments, not just yours. <b>World</b> is everybody, <b>Yours</b> is anything you were a party to, and the select narrows it to one nation. The number on the right is how many ticks ago it happened; a notification is dropped once it is <b>50 ticks</b> old, so this is what is going on now rather than a history of the game.
+        </details>
       </section>
 
       <section class="pane" data-pane="ranks" role="tabpanel" aria-labelledby="tab-ranks">
@@ -259,6 +335,16 @@
     </div>
   </aside>
 </main>
+</div>
+<dialog id="profile-dialog" class="profile-dialog">
+  <form method="dialog" class="profile-card">
+    <button class="dialog-close" aria-label="Close profile">×</button>
+    <p class="brand">Profile</p>
+    <h2 id="profile-title"></h2>
+    <p id="profile-save-status" class="muted"></p>
+    <button type="button" id="btn-logout">Log out</button>
+  </form>
+</dialog>
 
 <script type="module" src="src/main.js"></script>
 </body>

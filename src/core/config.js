@@ -29,6 +29,19 @@ export const CONFIG = {
   // thirty ticks is the thing that makes an inbox worth ignoring.
   offerCooldown: 400,
   maxFlows: 40,
+
+  // THE WORLD LOG behind the Notifications tab. Two hundred and fifty-eight
+  // governments act constantly, so this is bounded twice over — see `noteEvent`.
+  events: {
+    // Ticks a line survives. Short on purpose: this is "what is going on right
+    // now", not a history of the game, and a history of the game would not fit
+    // in localStorage beside the markets.
+    ttl: 50,
+    // ...and a hard ceiling whatever the age, because the world acts in BURSTS:
+    // every nation reviews its army on the same decision tick, so a single tick
+    // can produce hundreds of lines and the sweep only runs once a tick.
+    max: 400,
+  },
   speeds: [1, 2, 4],
   // Tile sizes in px. The world is far wider than a screen, so zoom is a
   // first-class control rather than a nicety.
@@ -254,11 +267,188 @@ export const CONFIG = {
   // (`worldShare`). Without this a resource-rich nation carpets its deposits and
   // then goes bankrupt paying wages on goods nobody will buy.
   stateCapacity: { homeShare: 1.0, worldShare: 0.05 },
+  // BUILDING THE THING THAT UNBLOCKS THE THING.
+  //
+  // A plan whose feedstock a government can neither dig up nor buy used to be
+  // discarded outright, so a nation with no coalfield never built the coal mine
+  // that would have let it build a steel mill — and half the map stayed a pure
+  // extraction economy for the whole game.
+  //
+  // `lookahead` is how much of a blocked plan's value carries back to the plant
+  // that would unblock it. Well under 1 on purpose: the downstream plant is not
+  // built, may never be built, and the government has to want the upstream one
+  // for more than a promise. `reach` is how far out of reach a blocked plan may
+  // be — as a multiple of what the treasury can spend today — and still be worth
+  // planning around at all.
+  stateChain: { lookahead: 0.6, reach: 3 },
   // Spare depot space, as a share of one warehouse, below which a government
   // builds another before it builds anything else.
   stateDepotHeadroom: 0.35,
   // ...and at most one depot per this many sites, whatever else is going on.
   stateSitesPerDepot: 6,
+  // Clearing dead capital. A plant that has stood this long without working is
+  // wages leaving the treasury every tick for nothing, so a government
+  // demolishes it and takes the refund. `deadAfter` is generous on purpose — a
+  // chain takes time to fill, and a plant judged before its feedstock arrives
+  // would be torn down the tick before it started paying.
+  stateSalvage: { deadAfter: 220, deadUptime: 0.02 },
+
+  // DIPLOMACY. A relation is a thing two governments AGREE to — except one.
+  //
+  // Alliance, military access and peace are all REQUESTS: you put them, and the
+  // other government answers on its own reading of who you are and where you
+  // are. War is the exception, and it is the exception on purpose — nobody has
+  // ever been asked permission to be invaded. It is DECLARED, unilaterally, and
+  // then it WAITS: `warDelay` ticks of ultimatum in which the whole world can
+  // see it coming, armies march and either side can still call it off.
+  diplomacy: {
+    // Ticks a proposal stands before it lapses unanswered, and how many one
+    // government may have outstanding at once. Tick-based rather than the
+    // wall-clock the inbox uses for contracts: a pact is not a thing you answer
+    // in five seconds, and a paused game must not decide it for you.
+    proposalTtl: 10,
+    maxProposals: 3,
+    // Ticks between the world reviewing its diplomacy, and how many governments
+    // consider putting a proposal on one of those ticks. Both deliberately slow:
+    // an inbox that fills with pacts is an inbox you stop reading.
+    every: 12,
+    seekersPerTick: 3,
+    // How much a government has to WANT a relation before it says yes. Appetite
+    // is distance, relative power and how the two already stand — see
+    // `relationAppetite` — plus a small deterministic jitter, so the same
+    // proposal put again in fifty ticks is not guaranteed the same answer.
+    accept: 0.55,
+    jitter: 0.18,
+    // ...and how long before the same pair may be asked the same thing again.
+    cooldown: 150,
+    // Whether the world ever puts a pact to YOU unasked. It does — an inbox
+    // that only ever carries contracts makes diplomacy feel like a menu rather
+    // than a world.
+    unsolicitedToPlayer: true,
+
+    // WAR IS NOT A REQUEST.
+    //
+    // A declaration is unilateral and immediate; the FIGHTING is not. For this
+    // many ticks the two are merely on notice — the alliance between them (if
+    // any) is broken the moment it is declared, but no shot is fired, no border
+    // is open, and either side may still call it off. It is the single most
+    // consequential thing a government can do, so it is the one thing the game
+    // gives you time to think about and your enemy time to prepare for.
+    warDelay: 50,
+    // ...and how long BEFORE the fighting a government starts raising its army.
+    // The whole point of a declared war having a delay is that both sides can
+    // SEE it coming, so they had better use it: mobilising only once the
+    // shooting started meant an army arrived a hundred ticks after it was
+    // needed. This is ticks remaining on the ultimatum, not ticks elapsed.
+    mobiliseAt: 20,
+    // The defender's allies are dragged in when the fighting starts, and they
+    // are dragged in the same way as everybody else: their own declaration,
+    // their own hundred ticks. There is no back door round the delay.
+    alliesJoin: true,
+    // Ticks after a war ends before those two may fight again. Peace has to be
+    // worth something.
+    peaceCooldown: 120,
+    // The world may start wars without you, but only rarely: appetite has to
+    // clear a high bar, one declaration at most can come out of a review, and
+    // the whole planet then gets a quiet stretch before another countdown.
+    warAppetite: 0.82,
+    warsPerReview: 1,
+    warQuiet: 240,
+    opinion: {
+      signed: 4,
+      completed: 6,
+      defaulted: -14,
+      war: -55,
+      attacker: -22,
+      friendAttack: -18,
+      friendThreshold: 18,
+      decay: 0.985,
+      deadband: 0.25,
+    },
+  },
+
+  // WHAT A WAR ACTUALLY DOES. Restrained on purpose: an army in this game is a
+  // running supply bill that can take ground and wreck industry, not a
+  // tactical wargame. Everything here is per tick and applies to BOTH sides
+  // identically — `runMilitary` never reads a country name.
+  war: {
+    // What a formation takes off an enemy formation within its own `range` each
+    // tick, as a share of the attacker's strength. Two evenly matched
+    // formations grind each other down over roughly a dozen ticks, which is
+    // slow enough to reinforce or withdraw and fast enough to matter.
+    damage: 0.09,
+    // A formation this far below its full strength has stopped being a
+    // formation and is destroyed outright.
+    //
+    // This is not decoration, it is what makes a battle END. Damage is a share
+    // of the attacker's own strength, so two formations shooting at each other
+    // decay geometrically and NEVER reach zero — they would sit at a hundredth
+    // of a point of strength for ever, both still on the map, both still eating.
+    // A break point turns that asymptote into an outcome.
+    breakAt: 0.15,
+    // Ticks between a formation standing on (or beside) an enemy SITE wrecking
+    // it. A war costs the loser its industry, which is the only reason a
+    // government would ever sue for peace.
+    raidEvery: 14,
+    // Ticks between a LAND formation standing on enemy soil TAKING the ground it
+    // stands on. Only the tile under it, and only land units — an aircraft
+    // overflies everything and holds nothing, which is the whole reason a nation
+    // still needs infantry. Slower than the raid cadence on purpose: wrecking a
+    // factory is a raid, taking a country is a campaign.
+    conquerEvery: 10,
+    // Ticks a march may go without getting any CLOSER before it is abandoned.
+    // The step rule walks round obstacles, which is what carries a column
+    // along a coastline — and is also what lets one circle an unreachable
+    // target for ever. An island is the ordinary case.
+    giveUpAfter: 90,
+  },
+
+  // THE WORLD'S ARMIES. Governments raise formations out of their own
+  // warehouses exactly as you do — `createMilitaryUnit`, same costs, same
+  // refusal when the depot is empty. What this decides is only how many one
+  // wants and where it sends them.
+  stateArmyEvery: 15,
+  army: {
+    // Formations a government keeps per point of `demand`, floored and capped
+    // so neither a microstate nor the United States ends up absurd.
+    perDemand: 0.2,
+    min: 1,
+    max: 14,
+    // ...multiplied when it has a reason. A nation at war wants an army; one
+    // with a cell on its soil wants enough to go and clear it.
+    warFactor: 2.5,
+    // ...and a cell on its soil is answered by STRENGTH, not by a percentage:
+    // this multiple of the cell's own strength is what the host wants standing
+    // before it is done raising. A factor was useless here — a small nation's
+    // target is one formation, and one and a half rounds back to one.
+    terrorMargin: 1.4,
+    // How much MORE than the batch a government wants standing in its depots
+    // before it spends one on a formation. A unit costs nothing to keep, so
+    // this is the only brake there is — without it a nation converts every
+    // scrap of surplus into soldiers on the tick it appears and never has
+    // anything left to sell.
+    costHeadroom: 2,
+    // How far around an objective a government spreads its formations. Two
+    // units given the same tile walk the same line and arrive as a stack; each
+    // taking its own corner sends them down their own roads and puts each on
+    // its own ground, which matters because a unit takes only the tile it
+    // stands on. Small: they are still converging on one objective.
+    spread: 2,
+    // WHAT A GOVERNMENT PAYS TO BUY IN WHAT IT HAS NOT GOT, as a multiple of
+    // the commodity's price. This applies to EVERY government including yours.
+    //
+    // A formation is still made of goods, and taking them out of your own
+    // warehouses is still much the cheapest way to raise one. But a treasury
+    // with no steel in it is not a treasury that cannot field an army: it makes
+    // up the shortfall in money, at a markup, and the markup is the whole
+    // point — it is dearer than producing the stuff, so building the industry
+    // remains the better answer wherever you can manage it.
+    //
+    // It is NOT a purchase from anybody. No contract is written, no border is
+    // crossed and no other nation's warehouse is touched — see the note in
+    // `military.js`. It is the government paying its own economy to procure.
+    cashMarkup: 2.5,
+  },
 
   // TERRORISM is deliberately one pressure point, not world chaos. There is
   // never more than one active presence, and everything below is tuned so that
@@ -269,6 +459,11 @@ export const CONFIG = {
     // the tick the first one may appear on at all.
     cooldown: 600,
     firstAt: 600,
+    // ...and how long BEFORE a spawn the world is told about it. The ground is
+    // chosen at this point and stands, so the red card can name the country and
+    // count the ticks down. A cell you cannot see coming is an ambush; one you
+    // can is a problem you get to move an army toward first.
+    warnBefore: 100,
     // A cell is INFANTRY and a few armoured cars, and NOTHING ELSE — it cannot
     // build, cannot trade, and cannot field a tank, an aircraft or a gun, and it
     // never grows past this. `carsPer` is one armoured car per this many

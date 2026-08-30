@@ -34,7 +34,8 @@
   position: absolute; z-index: 4; left: 12px; bottom: 12px;
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
 }
-.maptools { bottom: calc(min(156px, 25vh) + 12px); }
+/* Above the build dock, whatever height that dock currently is. */
+.maptools { bottom: calc(var(--dock) + 12px); }
 .maptools__label {
   font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
 }
@@ -80,6 +81,13 @@
 .map::-webkit-scrollbar { width: 0; height: 0; display: none; }
 /* Dragging the map should not select the country names painted on it. */
 .map { user-select: none; -webkit-user-select: none; touch-action: none; }
+
+/* THE STANDING OVERLAYS SHARE A PARENT so they can be stacked on a phone.
+   `display: contents` means this box has no layout of its own: the inbox and the
+   terrorist card stay absolutely positioned against `.layout` exactly as they
+   were, and nothing about the desktop changes. The phone rule at the bottom of
+   this file turns it into a real flex column instead. */
+.overlays { display: contents; }
 
 /* Everything waiting on your answer, stacked in the corner over the map. It is
    deliberately not a modal that blocks: you can ignore it, and the same offers
@@ -145,3 +153,48 @@
 .terror__name { font-size: 12px; color: #ffd9d5; }
 .terror__where, .terror__force { font-size: 10px; color: #e0b3ae; line-height: 1.35; }
 .terror__hint { font-size: 9px; text-transform: uppercase; letter-spacing: .07em; color: #ff8078; }
+
+/* The card before the cell exists: same place, same shape, amber rather than
+   red, and it PULSES because it is a clock running down rather than a situation
+   standing still. `data-home` still means "this is on your own soil", which is
+   the one case where you can do something about it without a treaty. */
+.terror--warning { border-color: #f0a04b8c; background: #3a2a15f2; }
+.terror--warning:hover { background: #4a3418f2; border-color: #f0b76b; }
+.terror--warning .terror__mark { color: var(--accent); animation: terror-tick 1.8s ease-in-out infinite; }
+.terror--warning .terror__name { color: #ffe4bd; }
+.terror--warning .terror__where, .terror--warning .terror__force { color: #ddc198; }
+.terror--warning .terror__hint { color: var(--accent); }
+.terror--warning[data-home="true"] { box-shadow: 0 0 0 1px #f0a04b73, 0 10px 30px #00000073; }
+@keyframes terror-tick { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) {
+  .terror--warning .terror__mark { animation: none; }
+}
+
+/* ---- THE PHONE ----------------------------------------------------------
+   A 262px inbox on the right edge and a 236px card on the left edge overlap on
+   a 360px screen. Both go into their shared parent's column instead, anchored
+   above the build dock — which is also where the thumb is. Alerts stay in the
+   top band (base.css), so the three never collide. */
+@media (max-width: 820px) {
+  .overlays {
+    display: flex; flex-direction: column; gap: 6px;
+    position: absolute; z-index: 100;
+    left: 8px; right: 8px; bottom: calc(var(--dock) + 8px);
+    max-height: 44vh; pointer-events: none;
+  }
+  /* Static inside the column: the parent does the positioning now. */
+  .inbox, .terror-popup {
+    position: static; left: auto; right: auto; top: auto;
+    width: auto; max-height: 32vh;
+  }
+  /* `.terror-popup` sets `display: flex`, so it still needs its own hidden rule
+     — and it needs it here too, because this block re-states the display. */
+  .terror-popup[hidden] { display: none; }
+
+  .maptools { bottom: calc(var(--dock) + 8px); left: 8px; padding: 4px 7px; }
+
+  /* Three columns of nation buttons is three ellipses. */
+  .countries { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .country { padding: 4px 5px; }
+  .country__name { font-size: 11px; }
+}

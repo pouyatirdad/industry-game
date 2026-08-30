@@ -9,6 +9,11 @@
   --good: #5fbf7f;
   --bad: #e2685f;
   --radius: 8px;
+  /* How tall the bottom build dock is. It is a variable rather than a repeated
+     `min()` because three things have to agree about it — the dock itself, the
+     zoom label that sits above it, and the floating overlays that stack above
+     that — and on a phone all three change together. */
+  --dock: min(156px, 25vh);
   color-scheme: dark;
 }
 
@@ -27,6 +32,21 @@ body {
   color: var(--ink);
   font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
 }
+
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+/* The login screen has a display rule, so it needs an explicit hidden rule
+   rather than relying on the browser's lower-specificity `[hidden]` default. */
+.auth-screen[hidden] { display: none; }
+#game-app:not([hidden]) { height: 100vh; min-height: 0; display: flex; flex-direction: column; }
+.auth-card, .profile-card { width: min(100%, 390px); display: grid; gap: 12px; padding: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.auth-card label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.auth-card input { width: 100%; padding: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); font: inherit; }
+.auth-error { min-height: 1.4em; margin: 0; color: var(--bad); }
+.profile-button { padding: 4px 9px; font-size: 12px; white-space: nowrap; }
+.profile-dialog { padding: 0; background: transparent; border: 0; color: var(--ink); }
+.profile-dialog::backdrop { background: #000a; }
+.profile-card { position: relative; }
+.dialog-close { position: absolute; top: 8px; right: 8px; padding: 2px 8px; font-size: 18px; }
 
 /* Scrollbars are INVISIBLE everywhere — the map, the panes, the build menu.
    There are a lot of scrollable boxes on this screen and a bar down the side of
@@ -57,13 +77,57 @@ kbd { background: var(--panel-2); border: 1px solid var(--line); border-radius: 
   padding: 5px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .brand { font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
-.stats { display: flex; gap: 15px; }
-.stat { display: flex; flex-direction: column; }
+/* The seven figures that say how the nation is doing. They wrap rather than
+   overflowing, because the topbar is fixed and a stat pushed off the end of it
+   is a stat you can never see. */
+.stats { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.stat {
+  display: flex; flex-direction: column; padding: 1px 8px 1px 0;
+  border-right: 1px solid var(--line);
+}
+.stat:last-child { border-right: 0; }
 .stat span { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .stat b { font-size: 13px; font-variant-numeric: tabular-nums; }
 .stat b.is-negative { color: var(--bad); }
+/* A figure that has just moved the wrong way is worth a glance, and a colour is
+   how a fixed bar says so without growing a line. */
+.stat b.is-good { color: var(--good); }
 .controls { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* Save, Load and New game used to spell themselves out, which is what made the
+   bar wrap: three words cost more than the two extra stats they crowded out.
+   A glyph plus a tooltip says the same thing at a third of the width — the same
+   trade the map's own ⌖ and &times; buttons already make.
+   `.btn-label` carries the word for a screen reader (clipped, not `display:none`,
+   so it stays in the accessible name) and for the phone's overflow SHEET, where
+   there is no crowding and an icon alone would be a guess — see the mobile rule
+   below that un-clips it there. */
+.icon-btn { padding: 5px 9px; font-size: 15px; line-height: 1; display: flex; align-items: center; gap: 6px; }
+.home__icon { font-size: 12px; }
+.btn-label {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+/* Everything that is NOT run/pause. Inline on a desktop, a popover sheet on a
+   phone — the same buttons either way, because two copies of Save and New game
+   would be two things to keep in step.
+
+   `ui.menuOpen` is published onto it as `data-open`, and that flag means nothing
+   at this width: there is no sheet to open on a desktop, so only the phone rule
+   below reads it. Writing `hidden` from the renderer instead would have taken
+   Save and the nation select off the desktop bar as well. */
+.controls__more { display: flex; align-items: center; gap: 8px; }
+/* The handle that opens it. There is nothing to overflow on a desktop, so it is
+   not shown there at all. */
+.topbar__more { display: none; flex: none; padding: 5px 10px; line-height: 1; }
 .speeds { display: flex; gap: 2px; }
+/* Running or paused is the single most important thing on this bar — it decides
+   whether anything you are watching is happening at all — so it is stated
+   rather than left to the shape of a glyph. */
+#btn-pause { min-width: 92px; }
+/* At war is a state of the nation, not a note in a tab. It only appears when it
+   is true, so the bar is otherwise unchanged. */
+#stat-standing[data-war="true"] { color: var(--bad); font-weight: 700; }
+#stat-standing[data-looming="true"] { color: var(--accent); font-weight: 700; }
 
 button {
   background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
@@ -88,14 +152,19 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 }
 .panel--left {
   left: 0; right: 0; bottom: 0; transform: none;
-  width: 100%; height: min(156px, 25vh);
+  width: 100%; height: var(--dock);
   border-left: 0; border-right: 0; border-bottom: 0;
   border-radius: var(--radius) var(--radius) 0 0;
 }
 .panel--tabs {
   left: 50%; right: auto; top: 8px; transform: translateX(-50%);
   width: min(980px, calc(100vw - 20px)); height: min(286px, 38vh);
+  transition: height .12s ease;
 }
+/* The tall state, from the ⤢ button or T. The cap is still a share of the
+   VIEWPORT rather than a fixed height, so the map is never entirely covered —
+   the panel docks over the map, it does not replace it. */
+.panel--tabs[data-tall="true"] { height: min(620px, 72vh); width: min(1180px, calc(100vw - 20px)); }
 .layout[data-left="false"] .panel--left { display: flex; }
 .rail, .panel--left .panel__close { display: none; }
 
@@ -222,10 +291,10 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* Messages hover over the bottom of the map rather than taking a row of layout
    away from it, so the world never shifts when one arrives. */
 .alerts {
-  position: absolute; z-index: 100; left: 50%; transform: translateX(-50%); top: 46px;
+  position: absolute; z-index: 100; left: 12px; top: 46px;
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: 4px;
-  width: min(560px, calc(100vw - 40px)); min-width: 320px; pointer-events: none;
+  width: min(420px, calc(100vw - 40px)); min-width: 260px; pointer-events: none;
 }
 .alert { pointer-events: auto; }
 .alert {
@@ -274,14 +343,142 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 .bag b { font-variant-numeric: tabular-nums; }
 
 /* A selected FORMATION's own two actions, in the Selected pane. */
-.inspect__actions { display: flex; gap: 6px; }
-.inspect__actions button { flex: 1; padding: 4px 8px; font-size: 12px; }
+/* Four buttons now, so they wrap rather than squeezing "Click a formation to
+   add…" into a column of single letters. */
+.inspect__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.inspect__actions button { flex: 1 1 44%; padding: 4px 8px; font-size: 12px; }
 .unit-move[data-active="true"] { background: #7fa8ff; color: #0b1626; border-color: transparent; font-weight: 600; }
+/* Green while a group is being assembled, matching the ring the map draws round
+   the formations that could join it. */
+.unit-group[data-active="true"] { background: #7fdca0; color: #0b1626; border-color: transparent; font-weight: 600; }
+/* A running campaign, and the button that calls it off. Amber rather than the
+   blue of a pending order: this one is a standing state, not a gesture waiting
+   for its second half. */
+.unit-auto-conquer[data-active="true"] { background: var(--accent); color: #221606; border-color: transparent; font-weight: 600; }
+
+/* THE ARMY CARD, above whatever the clicked tile is. It is separated by a rule
+   rather than by a gap, because two stacked cards with the same spacing inside
+   and between them read as one long card. */
+.army { padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.army h3 { margin: 0; }
+/* The selection's own colour, the same cyan the map rings a picked formation
+   in — so "these six" means one thing in both places. */
+.army-move[data-active="true"] { background: #8fe3ff; color: #0b1626; border-color: transparent; font-weight: 600; }
+.inspect__actions button:disabled { opacity: .45; cursor: default; }
 
 /* On a narrow window the panels stay modals; they just take the width they need
    and the map runs on underneath. */
 @media (max-width: 1100px) {
-  .alerts { width: min(560px, calc(100vw - 40px)); }
+  .alerts { width: min(420px, calc(100vw - 40px)); }
+}
+
+/* ---- THE PHONE ----------------------------------------------------------
+   ONE breakpoint means "this is a phone", and it is this one. The pane-stacking
+   rule in panel.css was written at 760px and now shares this number: a second
+   breakpoint is a second place to forget.
+
+   Nothing below changes what the game IS. The map still fills the layer and the
+   panels still dock over it — they simply take the whole width, because half a
+   phone is not a panel, and every target grows to something a thumb can hit. */
+@media (max-width: 820px) {
+  :root {
+    /* Taller, because the build boxes below are one row of touch targets rather
+       than two rows of 47px slivers. */
+    --dock: min(184px, 30vh);
+  }
+
+  .topbar { gap: 8px; padding: 4px 8px; }
+  /* The brand is the one thing on the bar that says nothing about the game. */
+  .brand { display: none; }
+  /* Eight figures do not fit 360px and must not wrap into four rows on a fixed
+     bar. They scroll instead: everything is still reachable, and the first four
+     — treasury, net, standing, tick — are the ones already in view. The fade
+     on the right edge is the only hint that there is more to scroll to — a
+     plain cut-off looked like the fourth stat was the last one. */
+  .stats {
+    flex-wrap: nowrap; overflow-x: auto; flex: 1 1 auto; gap: 0 10px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  }
+  .stat { flex: 0 0 auto; }
+  .controls { gap: 6px; flex: none; }
+  #btn-pause { min-width: 0; padding: 6px 10px; }
+  .topbar__more { display: block; }
+
+  /* The overflow controls become a sheet under the ⋯ button. It is positioned
+     against the topbar rather than the layout so it hangs off the bar itself. */
+  .topbar { position: relative; }
+  .controls__more {
+    position: absolute; z-index: 200; right: 6px; top: calc(100% + 4px);
+    flex-direction: column; align-items: stretch; gap: 6px;
+    padding: 8px; min-width: 190px;
+    background: #1c1f26f7; border: 1px solid var(--line); border-radius: var(--radius);
+    backdrop-filter: blur(8px); box-shadow: 0 14px 40px #00000073;
+  }
+  /* HERE is where `data-open` finally means something. It is a class-driven
+     `display`, so it needs an explicit closed rule for the same reason
+     `.build[hidden]` does — there is no user-agent default to fall back on. */
+  .controls__more[data-open="false"] { display: none; }
+  .controls__more .speeds { justify-content: space-between; }
+  .controls__more .speed { flex: 1; }
+  .controls__more button, .controls__more select { min-height: 36px; }
+  .controls__more .home { justify-content: space-between; }
+  /* In the sheet there is no crowding, so the icon buttons say what they do
+     rather than making a thumb guess: the label comes off the clip that hides
+     it on the bar and takes its place in the row, left-aligned beside the
+     glyph rather than centred under it. */
+  .controls__more .icon-btn { justify-content: flex-start; }
+  .controls__more .btn-label {
+    position: static; width: auto; height: auto; margin: 0; padding: 0;
+    overflow: visible; clip: auto; white-space: nowrap;
+  }
+  #home-select { max-width: none; flex: 1; }
+
+  /* The information panel is a full-width sheet flush under the bar. Half a
+     phone screen centred with a margin either side is not a panel, it is a
+     letterbox. */
+  .panel--tabs {
+    left: 0; right: 0; top: 0; transform: none;
+    width: 100%; height: min(60vh, 520px);
+    border-left: 0; border-right: 0;
+    border-radius: 0 0 var(--radius) var(--radius);
+  }
+  .panel--tabs[data-tall="true"] { width: 100%; height: 88vh; }
+
+  /* The build dock: one row of boxes big enough to hit. This deliberately
+     overrides the "TWO ROWS, always" rule above — that rule exists so the row
+     count is a DECISION rather than a leftover of the container height, and
+     this is a decision. Two rows in a phone dock leave a 40px box. */
+  .build-menu {
+    grid-template-rows: minmax(0, 1fr);
+    grid-auto-columns: 132px; gap: 6px;
+  }
+  .build { padding: 7px 8px; gap: 5px; }
+  /* Still one line, still ellipsised — a name that wraps to a second line
+     pushes the cost and the recipe below it down by however many words it
+     ran to, so one box in the row would carry its price a line lower than
+     its neighbours. Touch made the box wider (132px) and the type bigger
+     (12px) instead; the full name is still on the tooltip. */
+  .build__name { font-size: 12px; }
+  .build__recipe { line-height: 1.25; }
+  /* Seven categories, scrolled rather than squeezed. */
+  .build-tabs { overflow-x: auto; }
+  .build-tab { min-height: 34px; padding: 4px 12px; }
+
+  .panel__head { padding: 6px 6px 5px 10px; }
+  .panel__action, .panel__close { min-width: 36px; min-height: 32px; }
+
+  /* Alerts keep the top band and take the width. */
+  .alerts { top: 4px; left: 8px; right: 8px; width: auto; min-width: 0; transform: none; }
+
+  /* Two facts side by side is one truncated word each at this width. */
+  .facts { grid-template-columns: 1fr; }
+  .summary__inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* Anything the thumb has to find. */
+  .flag { padding: 3px 8px; }
+  .prices__flags .flag { height: auto; padding: 3px 7px; }
+  .sell, .listing__act, .dip__act { min-height: 30px; }
 }
 
 /* ---- world-map additions ---- */
@@ -292,6 +489,10 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 5px 6px; font: inherit; font-size: 12px;
 }
+/* The topbar's own nation select, specifically — the ones inside a panel
+   (Goods, News) have the room to spell out a long country name and should
+   keep it; this is the one squeezed onto a bar with six other controls. */
+#home-select { max-width: 130px; }
 .panel__body h2, .pane h2 { margin-top: 12px; }
 .panel__body > h2:first-child, .pane > h2:first-child, .panel__head h2 { margin-top: 0; }
 .good-text { color: var(--good); font-weight: 600; }
@@ -341,3 +542,9 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 .flow__what { flex: none; }
 .flow__who { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow__value { font-variant-numeric: tabular-nums; }
+
+/* A formation you could raise only by BUYING the goods in. Amber rather than
+   full brightness, because it is affordable but dear — the shelves cannot cover
+   it and the treasury is making up the difference at a markup. */
+.build[data-affordable="cash"] { opacity: .8; border-color: #f0a04b59; }
+.build[data-affordable="cash"] .build__recipe { color: var(--accent); }
