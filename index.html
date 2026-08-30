@@ -9,8 +9,23 @@
 <link rel="stylesheet" href="styles/panel.css">
 </head>
 <body>
+<section class="auth-screen" id="auth-screen" aria-labelledby="auth-title">
+  <form class="auth-card" id="login-form">
+    <p class="brand">Statecraft</p>
+    <h1 id="auth-title">Welcome back</h1>
+    <p class="muted">Sign in to keep your own saves. A new username creates an account.</p>
+    <label>Username<input id="login-username" autocomplete="username" minlength="2" maxlength="30" required></label>
+    <label>Password<input id="login-password" type="password" autocomplete="current-password" minlength="4" required></label>
+    <p class="auth-error" id="login-error" role="alert"></p>
+    <button type="submit" class="primary">Login / create account</button>
+    <button type="button" id="btn-guest">Continue as guest</button>
+    <p class="hint">Guest games cannot be saved or loaded.</p>
+  </form>
+</section>
+<div id="game-app" hidden>
 <header class="topbar">
   <h1 class="brand">Statecraft</h1>
+  <button type="button" id="btn-profile" class="profile-button" title="Open profile"><span id="profile-name"></span></button>
   <div class="stats">
     <div class="stat"><span>Treasury</span><b id="stat-cash">—</b></div>
     <div class="stat"><span>Net / tick</span><b id="stat-net">—</b></div>
@@ -130,7 +145,7 @@
             <button type="button" id="all-buy-off" title="Bid for nothing on the exchange (&#8601; off for all)">Buy none</button>
           </div>
         </div>
-        <!-- Thirteen columns do not fit a phone, and dropping any of them would
+        <!-- Fourteen columns do not fit a phone, and dropping any of them would
              break the one thing this table is for: the market half and your own
              half of a commodity on ONE line. So it scrolls sideways inside its
              own box, exactly as the nine-column Ranks table does — the pane
@@ -142,13 +157,14 @@
                  the two halves of a line are two different nations. -->
             <tr class="prices__groups">
               <td></td>
-              <th colspan="5" id="prices-where">That market</th>
+              <th colspan="6" id="prices-where">That market</th>
               <th colspan="6">Your nation</th>
               <th></th>
             </tr>
             <tr>
               <th>Commodity</th>
               <th title="What a unit fetches in the market named above">Price</th>
+              <th title="The commodity's reference price before local supply and demand move it">Base</th>
               <th title="Against the commodity's base price">&plusmn;</th>
               <th title="What that nation's people want per tick">Need</th>
               <th title="How much of that need is actually reaching them">Met</th>
@@ -319,6 +335,16 @@
     </div>
   </aside>
 </main>
+</div>
+<dialog id="profile-dialog" class="profile-dialog">
+  <form method="dialog" class="profile-card">
+    <button class="dialog-close" aria-label="Close profile">×</button>
+    <p class="brand">Profile</p>
+    <h2 id="profile-title"></h2>
+    <p id="profile-save-status" class="muted"></p>
+    <button type="button" id="btn-logout">Log out</button>
+  </form>
+</dialog>
 
 <script type="module" src="src/main.js"></script>
 </body>

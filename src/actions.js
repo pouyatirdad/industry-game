@@ -6,11 +6,12 @@ import { TECHS, canResearch, techChain } from './data/technology.js';
 import { buildingOnTile, exchangeOf, pushAlert, isOwnSoil, isPlayer, ownerById, ownerName,
   knowsTech, learnTech, contractById, contractLeft, declineTech } from './core/state.js';
 import { licenceCost, clampShare } from './systems/research.js';
-import { canSignContract, signContract, quotePrice, describe as describeContract } from './systems/contracts.js';
+import { canSignContract, signContract, quotePrice, describe as describeContract, suggestExportContract } from './systems/contracts.js';
 import { post, withdraw, takeListing, borrow, repay } from './systems/exchange.js';
 import { canDeployUnit, createMilitaryUnit, disbandUnit, unitOnTile,
   moveMilitaryUnit, canMilitaryEnter, joinGroup, leaveGroup, groupOf, groupSpeed,
-  speedOf, UNIT_TYPES } from './systems/military.js';
+  speedOf, UNIT_TYPES, startAutoConquest, cancelAutoConquest, canAutoConquer,
+  canGroup, unitsOf } from './systems/military.js';
 import { proposeRelation, answerProposal, withdrawProposal, declareWar,
   callOffWar } from './systems/relations.js';
 
@@ -199,6 +200,118 @@ export function orderMove(state, unitId, tile, owner = state.home) {
   return result;
 }
 
+// AUTOMATIC CAMPAIGNS — the order, and the same order pressed again to stop it.
+//
+// Both go through one function because they are one button. `on` says which way
+// it is being pressed, and everything else — who owns the formation, what the
+// system will actually accept — is asked exactly once for either.
+export function orderAutoConquest(state, unitId, on = true, owner = state.home) {
+  const unit = (state.military?.units ?? []).find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (unit.owner !== owner) return { ok: false, reason: `That formation belongs to ${ownerName(unit.owner)}.` };
+  const result = on ? startAutoConquest(state, unitId) : cancelAutoConquest(state, unitId);
+  if (!result.ok) { if (isPlayer(state, owner)) pushAlert(state, result.reason, 'warn'); return result; }
+  if (isPlayer(state, owner)) {
+    pushAlert(state, on
+      ? `${UNIT_TYPES[unit.type].name} is campaigning against ${COUNTRIES[result.countryId].name} — it marches at their ground and takes a tile a tick, fighting whatever it meets.`
+      : `${UNIT_TYPES[unit.type].name} called off its campaign against ${COUNTRIES[result.countryId].name}.`, 'info');
+  }
+  return result;
+}
+
+// THE SAME ORDER GIVEN TO MANY FORMATIONS AT ONCE — a marquee selection, or your
+// whole army when nothing in particular is selected.
+//
+// It goes through `startAutoConquest`/`cancelAutoConquest` per formation exactly
+// as the single button does, so a bulk order cannot write anything a single one
+// could not: an aircraft is refused here for the same reason it is refused
+// there, and so is a campaign in peacetime. What this adds is ONE alert for the
+// lot, because thirty of them is not a report, it is a wall.
+export function orderAutoConquestAll(state, unitIds = null, on = true, owner = state.home) {
+  const army = unitsOf(state, owner);
+  const wanted = unitIds == null ? army : army.filter((u) => unitIds.includes(u.id));
+  let done = 0;
+  let reason = on
+    ? 'None of those formations can campaign — only land formations can, and only against an enemy at war that still holds land.'
+    : 'None of those formations was campaigning.';
+  for (const unit of wanted) {
+    const result = on ? startAutoConquest(state, unit.id) : cancelAutoConquest(state, unit.id);
+    if (result.ok) done++; else reason = result.reason;
+  }
+  if (!isPlayer(state, owner)) return { ok: done > 0, ordered: done };
+  if (!done) { pushAlert(state, reason, 'warn'); return { ok: false, reason, ordered: 0 }; }
+  pushAlert(state, on
+    ? `${done} formation${done === 1 ? '' : 's'} campaigning — they march at the nearest enemy and take a tile a tick until its ground is gone.`
+    : `${done} campaign${done === 1 ? '' : 's'} called off.`, on ? 'good' : 'info');
+  return { ok: true, ordered: done };
+}
+
+// ONE DESTINATION, MANY FORMATIONS. The counterpart of `orderMove` for a
+// selection, and it goes through the same `moveMilitaryUnit` per formation — so
+// the access rule, the group rule and the march are all identical. A member
+// already ordered by an earlier formation's group is skipped rather than
+// ordered twice.
+export function orderMoveMany(state, unitIds, tile, owner = state.home) {
+  if (!tile) return { ok: false, reason: 'No such tile.' };
+  const wanted = unitsOf(state, owner).filter((u) => unitIds.includes(u.id));
+  if (!wanted.length) return { ok: false, reason: 'No formations of yours are selected.' };
+  const moved = new Set();
+  let refused = 'No military access to that ground.';
+  for (const unit of wanted) {
+    if (moved.has(unit.id)) continue;
+    const result = moveMilitaryUnit(state, unit.id, tile.id);
+    if (!result.ok) { refused = result.reason; continue; }
+    for (const member of result.ordered) moved.add(member.id);
+  }
+  if (!isPlayer(state, owner)) return { ok: moved.size > 0, ordered: moved.size };
+  if (!moved.size) { pushAlert(state, refused, 'warn'); return { ok: false, reason: refused, ordered: 0 }; }
+  pushAlert(state, `${moved.size} formation${moved.size === 1 ? '' : 's'} march for (${tile.x}, ${tile.y}).`, 'info');
+  return { ok: true, ordered: moved.size };
+}
+
+// EVERY SELECTED FORMATION INTO ONE COLUMN. `joinGroup` decides who may stand
+// with whom — land with land, aircraft with aircraft, one government's — so the
+// domains simply fall out into as many groups as there are domains, rather than
+// this file knowing anything about them.
+export function groupMany(state, unitIds, owner = state.home) {
+  const wanted = unitsOf(state, owner).filter((u) => unitIds.includes(u.id));
+  if (wanted.length < 2) return { ok: false, reason: 'Select at least two of your own formations to group them.' };
+  let joined = 0;
+  const leaders = [];
+  for (const unit of wanted) {
+    const lead = leaders.find((other) => canGroup(other, unit));
+    if (!lead) { leaders.push(unit); continue; }
+    if (joinGroup(state, lead.id, unit.id).ok) joined++;
+  }
+  if (!isPlayer(state, owner)) return { ok: joined > 0, joined };
+  if (!joined) {
+    const reason = 'Those formations are already grouped, or none of them can march together.';
+    pushAlert(state, reason, 'warn');
+    return { ok: false, reason };
+  }
+  pushAlert(state, `${joined + leaders.length} formations grouped into ${leaders.length} column${leaders.length === 1 ? '' : 's'} — an order to any of them is an order to all.`, 'good');
+  return { ok: true, joined };
+}
+
+// WHICH OF YOUR FORMATIONS A MARQUEE JUST CAUGHT. It reads `state` and decides
+// nothing, so the map can drag a box without knowing what a formation is.
+export function unitsInBox(state, x0, y0, x1, y1, owner = state.home) {
+  const left = Math.min(x0, x1);
+  const right = Math.max(x0, x1);
+  const top = Math.min(y0, y1);
+  const bottom = Math.max(y0, y1);
+  return unitsOf(state, owner)
+    .filter((u) => u.x >= left && u.x <= right && u.y >= top && u.y <= bottom)
+    .map((u) => u.id);
+}
+
+// Whether an automatic campaign is available to this government at all — the
+// panel asks it to decide whether to offer the button for the whole army, and it
+// is the same gate one formation's button goes through.
+export function canCampaign(state, owner = state.home) {
+  return unitsOf(state, owner).some((unit) => canAutoConquer(state, unit).ok);
+}
+
 // --- groups ---------------------------------------------------------------
 
 // Putting two of your formations in one group. From then on an order given to
@@ -385,6 +498,22 @@ export function contractQuote(state, draft) {
   const terms = contractTerms(state, draft);
   if (!terms.seller || !terms.buyer || terms.seller === terms.buyer) return null;
   return quotePrice(state, terms.seller, terms.buyer, terms.commodity);
+}
+
+export function suggestContractExport(state, draft, owner = state.home) {
+  const result = suggestExportContract(state, owner, draft.commodity);
+  if (!result.ok) { if (isPlayer(state, owner)) pushAlert(state, result.reason, 'warn'); return result; }
+  return {
+    ok: true,
+    draft: {
+      ...draft,
+      dir: 'sell',
+      partner: result.buyerId,
+      qty: result.qty,
+      every: 1,
+      suggestion: { partner: result.buyerId, need: result.need, price: result.price, available: result.available },
+    },
+  };
 }
 
 // A government signs what it can keep. Asking one to promise ten coal a tick

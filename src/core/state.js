@@ -5,8 +5,8 @@ import { COUNTRIES, COUNTRY_IDS, DEFAULT_HOME, TREASURY_PER_DEMAND, TREASURY_FLO
 import { WORLD_COUNTRY_ROWS, WORLD_W, WORLD_H, AREA_SCALE } from '../data/world.js';
 import { WORLD_COUNTRY_INFO } from '../data/worldCountries.js';
 import { STARTING_TECHS } from '../data/technology.js';
+import { saveKey } from './accounts.js';
 
-const SAVE_KEY = 'industry-game.save.v9';
 const SAVE_VERSION = 15;
 
 // You are a NATION, not a firm. There is no separate player object: the country
@@ -979,6 +979,18 @@ export function createUiState(home = DEFAULT_HOME) {
     // ends the gesture. Mutually exclusive with the three above, for the same
     // reason they are with each other — the pointer carries one thing.
     groupUnit: null,
+    // ...and a FIFTH: the formations caught by a selection box, as a plain array
+    // of unit ids. This is the one pointer mode that is not exclusive with the
+    // others — a marquee selection is a thing you HAVE, not a thing the pointer
+    // is carrying — and `orderSelection` is the mode that spends it: while it is
+    // set, the next tile click is a march order for every id in the list.
+    //
+    // Ids rather than unit objects, for the same reason a group is a number: a
+    // formation destroyed while it is selected has to leave nothing behind that
+    // could lie to the panel, and `unitsOf` is the only thing that says what a
+    // formation is.
+    selection: [],
+    orderSelection: false,
     selectedTileId: null,
     hoveredTileId: null,
     zoom: CONFIG.defaultZoom,
@@ -1308,8 +1320,10 @@ export function packState(state) {
 }
 
 export function saveState(state) {
+  const key = saveKey();
+  if (!key) return { ok: false, reason: 'Guests cannot save games.' };
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(packState(state)));
+    localStorage.setItem(key, JSON.stringify({ ...packState(state), savedAt: Date.now() }));
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: String(err) };
@@ -1359,8 +1373,10 @@ export function rehydrate(saved) {
 }
 
 export function loadState() {
+  const key = saveKey();
+  if (!key) return null;
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed?.version !== SAVE_VERSION) return null;
@@ -1371,5 +1387,7 @@ export function loadState() {
 }
 
 export function clearSave() {
-  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+  const key = saveKey();
+  if (!key) return;
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
 }

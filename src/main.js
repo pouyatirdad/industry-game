@@ -8,21 +8,43 @@ import { build, canBuild, demolish, toggleExport, toggleImport,
   proposeContract, acceptContractOffer, declineContractOffer, cancelContract,
   postListing, cancelListing, take, takeLoan, repayLoan, changeRelation,
   deployUnit, standDown, standDownUnit, orderMove, groupUnits, ungroupUnit,
-  answerPact, withdrawPact, standDownWar } from './actions.js';
-import { unitOnTile } from './systems/military.js';
+  orderAutoConquest, orderAutoConquestAll, orderMoveMany, groupMany, unitsInBox,
+  suggestContractExport, answerPact, withdrawPact, standDownWar } from './actions.js';
+import { unitOnTile, unitsOf } from './systems/military.js';
 import { suggestListing } from './systems/exchange.js';
 import { sellersOf } from './systems/research.js';
 import { COUNTRIES } from './data/countries.js';
 import { createRenderer } from './ui/render.js';
 import { TABS } from './ui/tabs.js';
 import { buildCategory } from './ui/dashboard.js';
+import { signInOrCreate, continueAsGuest, restoreSession, currentUser, saveKey, signOut } from './core/accounts.js';
 
 const ctx = {
   state: createInitialState(),
   ui: createUiState(),
 
-  onTileClick(tileId) {
+  onTileClick(tileId, mods = {}) {
     const tile = ctx.state.tiles[tileId];
+    // AN ADDITIVE CLICK IS ABOUT THE SELECTION AND NOTHING ELSE.
+    //
+    // Ctrl or Shift held, on one of your own formations, adds it to the
+    // selection or takes it out again — the gesture every file list has taught
+    // everybody. It deliberately does NOT close the panel the way an ordinary
+    // click does: you are assembling a selection in order to press a button in
+    // that panel, and shutting it on every click would make the whole thing
+    // unusable.
+    if (mods.additive) {
+      const picked = unitOnTile(ctx.state, tileId);
+      if (picked && picked.owner === ctx.state.home) {
+        const at = ctx.ui.selection.indexOf(picked.id);
+        if (at < 0) ctx.ui.selection.push(picked.id); else ctx.ui.selection.splice(at, 1);
+        ctx.ui.selectedTileId = tileId;
+        ctx.ui.tab = 'selected';
+        ctx.ui.panelOpen = true;
+        render();
+        return;
+      }
+    }
     // Clicking the world puts the panel away. It is the counterpart of clicking
     // a tab to open one: the panel docks OVER the map, so reaching for the map
     // is the plainest possible statement that you have finished reading. Set
@@ -46,6 +68,18 @@ const ctx = {
         return;
       }
       ctx.ui.groupUnit = null;
+    }
+    // A SELECTION waiting for a destination, which is the same gesture as the
+    // single formation's Move below and takes priority for the same reason. It
+    // is checked first only because a selection is the bigger order: pressing
+    // Move on the army card while one formation happened to be in "move" mode
+    // must send the selection, not the one.
+    if (ctx.ui.orderSelection) {
+      orderMoveMany(ctx.state, ctx.ui.selection, tile);
+      ctx.ui.orderSelection = false;
+      ctx.ui.selectedTileId = tileId;
+      render();
+      return;
     }
     // An order for a formation you already have takes priority over everything
     // else the pointer could mean: it was put into "move" mode from the
@@ -81,6 +115,15 @@ const ctx = {
       pushAlert(ctx.state, check.reason, 'warn');
     }
     ctx.ui.selectedTileId = tileId;
+    // A PLAIN click replaces the selection with whatever it landed on — one of
+    // your formations, or nothing. Same rule as a file list: no modifier means
+    // "just this". Guarded on `tool`, because laying out a chain of factories is
+    // not a statement about your army.
+    if (!ctx.ui.tool && !ctx.ui.unit) {
+      const picked = unitOnTile(ctx.state, tileId);
+      ctx.ui.selection = picked && picked.owner === ctx.state.home ? [picked.id] : [];
+      ctx.ui.orderSelection = false;
+    }
     // Clicking bare ground with no tool in hand IS the question "what is this",
     // so Selected is the pane the panel will show when it is next opened. It is
     // primed rather than shown, because the click just closed the panel — one
@@ -109,6 +152,7 @@ const ctx = {
     ctx.ui.unit = null;
     ctx.ui.moveUnit = null;
     ctx.ui.groupUnit = null;
+    ctx.ui.orderSelection = false;
     render();
   },
   // Picking up a formation puts down whatever building was in hand, and the
@@ -118,6 +162,7 @@ const ctx = {
     ctx.ui.tool = null;
     ctx.ui.moveUnit = null;
     ctx.ui.groupUnit = null;
+    ctx.ui.orderSelection = false;
     render();
   },
   onBuildView(view) {
@@ -134,6 +179,7 @@ const ctx = {
     ctx.ui.tool = null;
     ctx.ui.unit = null;
     ctx.ui.groupUnit = null;
+    ctx.ui.orderSelection = false;
     render();
   },
   // ...and into "group" mode, which is the same shape of gesture: the next
@@ -144,6 +190,7 @@ const ctx = {
     ctx.ui.tool = null;
     ctx.ui.unit = null;
     ctx.ui.moveUnit = null;
+    ctx.ui.orderSelection = false;
     render();
   },
   // The keyboard's way into "move" mode: it acts on whatever formation of yours
@@ -159,6 +206,66 @@ const ctx = {
     }
     ctx.onMoveUnit(ctx.ui.moveUnit === unit.id ? null : unit.id);
   },
+  onAutoConquerUnit(unitId, on = true) {
+    orderAutoConquest(ctx.state, unitId, on);
+    ctx.ui.moveUnit = null;
+    ctx.ui.groupUnit = null;
+    render();
+  },
+
+  // --- the selection ------------------------------------------------------
+  //
+  // A selection is a thing you HAVE rather than a thing the pointer is
+  // carrying, so it is not exclusive with the four pointer modes. What IS a
+  // pointer mode is `orderSelection`: while it is set, the next tile click is a
+  // march order for every formation in the list.
+
+  // A selection box let go on the map. `unitsInBox` decides what it caught, so
+  // the map can drag a rectangle without knowing what a formation is.
+  onMarquee(box, additive = false) {
+    const caught = unitsInBox(ctx.state, box.x0, box.y0, box.x1, box.y1);
+    ctx.ui.selection = additive
+      ? [...new Set([...ctx.ui.selection, ...caught])]
+      : caught;
+    ctx.ui.orderSelection = false;
+    if (caught.length) { ctx.ui.tab = 'selected'; ctx.ui.panelOpen = true; }
+    render();
+  },
+  onSelectAllUnits() {
+    ctx.ui.selection = unitsOf(ctx.state, ctx.state.home).map((u) => u.id);
+    ctx.ui.tab = 'selected';
+    ctx.ui.panelOpen = true;
+    render();
+  },
+  onClearUnitSelection() {
+    ctx.ui.selection = [];
+    ctx.ui.orderSelection = false;
+    render();
+  },
+  // Arming the selection's march order. It puts down whatever else the pointer
+  // was carrying, for the same reason every other pointer mode does.
+  onOrderSelection(on = true) {
+    ctx.ui.orderSelection = on && ctx.ui.selection.length > 0;
+    ctx.ui.tool = null;
+    ctx.ui.unit = null;
+    ctx.ui.moveUnit = null;
+    ctx.ui.groupUnit = null;
+    render();
+  },
+  onGroupSelection() {
+    groupMany(ctx.state, ctx.ui.selection);
+    render();
+  },
+  // AUTO CONQUER FOR MANY AT ONCE: the selection if there is one, your whole
+  // army if there is not. Passing `null` for the ids is what says "all", and it
+  // is the action rather than this file that decides what all means.
+  onAutoConquerMany(on = true) {
+    orderAutoConquestAll(ctx.state, ctx.ui.selection.length ? ctx.ui.selection : null, on);
+    ctx.ui.moveUnit = null;
+    ctx.ui.groupUnit = null;
+    ctx.ui.orderSelection = false;
+    render();
+  },
   onUngroupUnit(unitId) {
     ungroupUnit(ctx.state, unitId);
     render();
@@ -167,6 +274,7 @@ const ctx = {
     standDownUnit(ctx.state, unitId);
     if (ctx.ui.moveUnit === unitId) ctx.ui.moveUnit = null;
     if (ctx.ui.groupUnit === unitId) ctx.ui.groupUnit = null;
+    ctx.ui.selection = ctx.ui.selection.filter((id) => id !== unitId);
     render();
   },
 
@@ -217,7 +325,12 @@ const ctx = {
 
   // --- contracts ----------------------------------------------------------
 
-  onDraft(patch) { Object.assign(ctx.ui.draft, patch); render(); },
+  onDraft(patch) { Object.assign(ctx.ui.draft, patch, { suggestion: null }); render(); },
+  onSuggestContract() {
+    const result = suggestContractExport(ctx.state, ctx.ui.draft);
+    if (result.ok) Object.assign(ctx.ui.draft, result.draft);
+    render();
+  },
   onSignContract() { proposeContract(ctx.state, ctx.ui.draft); render(); },
   onAcceptContract(offer) { acceptContractOffer(ctx.state, offer); render(); },
   onDeclineContract(offer) { declineContractOffer(ctx.state, offer); render(); },
@@ -383,20 +496,20 @@ function replaceState(next, message) {
   render();
 }
 
-const renderer = createRenderer(ctx);
-const render = () => renderer.render();
-
-const loop = createLoop({
-  ctx,
-  onTick: () => runTick(ctx.state),
-  onRender: render,
-});
+let renderer;
+let loop;
+let initialized = false;
+const render = () => renderer?.render();
 
 document.addEventListener('keydown', (event) => {
+  if (!initialized) return;
   if (event.target.matches('input, textarea, select')) return;
   if (event.code === 'Space') { event.preventDefault(); ctx.onTogglePause(); }
   if (event.key === 'Escape') {
     ctx.ui.tool = null; ctx.ui.unit = null; ctx.ui.moveUnit = null; ctx.ui.groupUnit = null;
+    // ...including a selection and its pending order. Escape means "I am
+    // carrying nothing and I have picked nothing out".
+    ctx.ui.selection = []; ctx.ui.orderSelection = false;
     // Escape drops whatever the pointer is carrying AND whatever is covering the
     // map, which on a phone includes the topbar sheet.
     ctx.ui.menuOpen = false;
@@ -441,8 +554,45 @@ setInterval(() => {
   if (swept || answered) render();
 }, 500);
 
-pushAlert(ctx.state, opening(ctx.state.home), 'info');
-render();
-loop.start();
+function startGame() {
+  if (initialized) return;
+  initialized = true;
+  document.getElementById('auth-screen').hidden = true;
+  document.getElementById('game-app').hidden = false;
+  renderer = createRenderer(ctx);
+  renderer.refs.profile.addEventListener('click', openProfile);
+  loop = createLoop({ ctx, onTick: () => runTick(ctx.state), onRender: render });
+  pushAlert(ctx.state, opening(ctx.state.home), 'info');
+  render();
+  loop.start();
+  globalThis.__game = ctx;
+}
 
-globalThis.__game = ctx;
+function openProfile() {
+  const user = currentUser();
+  const dialog = document.getElementById('profile-dialog');
+  document.getElementById('profile-title').textContent = user?.guest ? 'Guest mode' : user?.username ?? 'Profile';
+  let save = null;
+  try { save = JSON.parse(localStorage.getItem(saveKey())); } catch { /* ignore malformed save */ }
+  document.getElementById('profile-save-status').textContent = user?.guest
+    ? 'Guest games are not saved.'
+    : (!save ? 'No saved game yet.' : `Current save: tick ${save.tick} · ${new Date(save.savedAt).toLocaleString()}`);
+  dialog.showModal();
+}
+
+document.getElementById('login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const username = document.getElementById('login-username').value;
+  const password = document.getElementById('login-password').value;
+  const result = await signInOrCreate(username, password);
+  const error = document.getElementById('login-error');
+  if (!result.ok) { error.textContent = result.reason; return; }
+  startGame();
+});
+document.getElementById('btn-guest').addEventListener('click', () => { continueAsGuest(); startGame(); });
+document.getElementById('btn-logout').addEventListener('click', () => {
+  signOut();
+  location.reload();
+});
+
+if (restoreSession()) startGame();
