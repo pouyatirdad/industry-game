@@ -363,8 +363,11 @@ Terrain gates placement via `def.terrain`: `plain`, `water`, `desert`, and nine 
 (limestone), `farmland`, `forest`. Desert takes extraction and warehouses but no factories, so an
 oil-rich desert nation cannot refine its own crude — that asymmetry is deliberate.
 
-`warehouse` is the only building with `recipe: null`, and that null is how the systems distinguish
-storage from production.
+The three warehouse tiers (`warehouse`/Small, `mediumWarehouse`, `bigWarehouse`) are the buildings
+with `recipe: null`, and that null is how the systems distinguish storage from production. Their
+cost, capacity and Chebyshev service radius are defined per type in `src/data/buildings.js`; logistics
+must always read those values from `BUILDINGS[depot.type]`, never assume the small warehouse's values.
+The legacy `warehouse` id intentionally remains the Small Warehouse so existing saves keep working.
 
 ### Three silent traps when editing country data
 
@@ -1151,6 +1154,11 @@ top dock is capped around 286px/38vh and the bottom dock around 156px/25vh. The 
 the layout does not move. Neither the page nor the body scrolls: `body` is a flex column of a fixed
 topbar and the layout, and the only things that scroll are the map and panel interiors.
 
+**Phone density is intentionally lower.** Under the shared 820px breakpoint, `base.css`,
+`panel.css`, and `map.css` reduce type size, control padding, tab height, overlay spacing, panel
+height, and the build dock (`--dock: min(148px, 24vh)`). Keep those rules mobile-only: the map needs
+the recovered vertical space, while desktop retains the larger, more readable layout.
+
 Consequences worth knowing:
 
 - **The bottom build panel is always visible and spans the bottom edge.** Do not add a hide state,
@@ -1228,8 +1236,8 @@ has its numbers unfolded, `ui.goodsView` whether the commodity book reads the ti
 everybody's terms or only yours, `ui.moveUnit`/`ui.groupUnit` which formation is waiting for a
 destination or for companions, `ui.selection`/`ui.orderSelection` which formations you have picked
 out and whether their march order is armed, and `ui.draft` the contract you are writing but have not signed —
-`ui.panelTall` how much room the panel gets when it is open, and `ui.eventFilter` whose world news
-the News tab is showing — all on `ui`, so none of it reaches the save file. Ten tabs do not fit one
+`ui.eventFilter` whose world news the News tab is showing — all on `ui`, so none of it reaches the
+save file. Ten tabs do not fit one
 row of the panel, so **the strip wraps**: a tab you cannot read is not a tab you will click.
 
 Four things about the strip itself, and each is there because the panel is one you move around in
@@ -1240,11 +1248,8 @@ constantly:
 - **The active tab wears a bright edge along its top** (`.tab[data-active]::before`). Nine tabs in
   two wrapped rows all shaded the same colour made "which one am I on" a question you answered by
   reading rather than by looking.
-- **`⤢` (or `T`) makes the panel TALL** — `ui.panelTall`, capped at a share of the viewport rather
-  than a fixed height, because the panel docks over the map and must never replace it. The summary
-  card is read in one look; the Ranks table and the tech tree are not, and scrolling a pane sized
-  for a card is the wrong answer to both. It is a second control beside the collapse button because
-  it answers a different question: how tall, versus whether at all.
+- **The `▸` collapse control (or `T`) shows or hides the top panel.** There is only one panel
+  visibility state (`ui.panelOpen`); content that exceeds the dock scrolls inside its pane.
 - **A war, or a declaration counting down toward one, marks the Diplomacy tab urgent**
   (`data-urgent`, a pulsing badge — and it respects `prefers-reduced-motion`). It is the one thing
   on the strip worth interrupting whatever you are reading.
@@ -1253,7 +1258,7 @@ constantly:
 `Space` runs/pauses, `Esc` drops whatever the pointer is carrying — and clears the marquee selection
 and any march order armed on it, since "I am carrying nothing" and "I have picked nothing out" are
 the same statement — `B` folds the build dock,
-`T` makes the top panel tall, `+`/`-` zoom, `1`–`9` and `←`/`→` pick a view, **`H` finds your own
+`T` shows or hides the top panel, `+`/`-` zoom, `1`–`9` and `←`/`→` pick a view, **`H` finds your own
 country again** (`onCenterHome`, the same call the ⌖ button makes) and **`M` moves the selected
 formation** (`onMoveSelected` → `onMoveUnit`, the same call the Move button makes). Two rules hold
 for all of them:
@@ -1453,6 +1458,10 @@ Consequences worth knowing before editing the map:
   owner-scoped logistics (`depotsByOwner` + `servedBy`) during the draw, not from a DOM overlay and
   not from cross-owner depots. The marker belongs on producers only (`building.output`), never on
   warehouses themselves.
+- **Clicking a warehouse draws its service range.** It is a translucent, dashed square because
+  logistics uses Chebyshev distance (`max(dx, dy) <= radius`), not a circular radius. Draw this once
+  after the tile loop from the selected warehouse's `BUILDINGS[type].radius`; do not calculate it
+  per tile or make a DOM overlay that drifts while the canvas scrolls.
 - **Frontiers, coastlines, a graticule and country names are painted over the terrain**, and the
   border segments are COLLECTED during the tile loop rather than found in a sweep of their own: at
   one pixel a tile the visible window is the whole planet, and a second pass over a million tiles

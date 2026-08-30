@@ -215,6 +215,15 @@ function levelNearest(px) {
 // rather than to put a building on it.
 function attachPan(host, view, ctx, toTile) {
   let from = null;
+  // The selection box being dragged right now, in CONTENT coordinates — the
+  // same space the spacer is sized in — so it survives nothing moving under it
+  // and converts to tiles with one division. It hangs on `view` as well, because
+  // `draw` is what paints it.
+  let marquee = null;
+  const contentPoint = (event) => {
+    const rect = host.getBoundingClientRect();
+    return { x: event.clientX - rect.left + host.scrollLeft, y: event.clientY - rect.top + host.scrollTop };
+  };
   // EVERY pointer currently down, because a second one means a PINCH.
   //
   // A phone has no wheel, so without this the map cannot be zoomed at all — it
@@ -245,12 +254,46 @@ function attachPan(host, view, ctx, toTile) {
       pinch = { gap: spread().gap, level: ctx.ui.zoom };
       return;
     }
+    // A MODIFIER TURNS THE DRAG INTO A SELECTION BOX rather than a pan.
+    //
+    // The map is panned by dragging it — there are no scrollbars left — so a
+    // rubber band cannot simply be "drag on empty space" the way it is on a
+    // desktop. Shift starts a fresh selection and Ctrl/⌘ adds to the one you
+    // have, which is the pair of gestures a file list already taught everybody.
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      from = null;
+      view.dragged = false;
+      const at = contentPoint(event);
+      marquee = { x0: at.x, y0: at.y, x1: at.x, y1: at.y, moved: 0, additive: event.ctrlKey || event.metaKey };
+      view.marquee = marquee;
+      return;
+    }
     from = { x: event.clientX, y: event.clientY, left: host.scrollLeft, top: host.scrollTop, moved: 0 };
   });
 
   host.addEventListener('pointerup', (event) => {
     down.delete(event.pointerId);
     if (down.size < 2) pinch = null;
+    // A SELECTION BOX being let go. Under the threshold it was not a drag at
+    // all, so it is an additive CLICK — holding the key and clicking one
+    // formation is how you add or remove a single one, exactly as it is in a
+    // file list.
+    if (marquee) {
+      event.preventDefault();
+      host.releasePointerCapture?.(event.pointerId);
+      const box = marquee;
+      marquee = null;
+      view.marquee = null;
+      if (box.moved >= 4) {
+        const tiles = boxTiles(view, box);
+        if (tiles) ctx.onMarquee(tiles, box.additive);
+      } else {
+        const id = toTile(event);
+        if (id != null) ctx.onTileClick(id, { additive: true });
+      }
+      draw(host, view, ctx);
+      return;
+    }
     if (!from || event.button !== 0) { host.releasePointerCapture?.(event.pointerId); return; }
     event.preventDefault();
     host.releasePointerCapture?.(event.pointerId);
@@ -259,7 +302,7 @@ function attachPan(host, view, ctx, toTile) {
     view.dragged = false;
     if (wasDrag) return;
     const id = toTile(event);
-    if (id != null) ctx.onTileClick(id);
+    if (id != null) ctx.onTileClick(id, { additive: false });
   });
 
   const end = (event) => {
@@ -268,12 +311,23 @@ function attachPan(host, view, ctx, toTile) {
     if (from) host.releasePointerCapture?.(event.pointerId);
     from = null;
     view.dragged = false;
+    if (marquee) { marquee = null; view.marquee = null; draw(host, view, ctx); }
   };
   host.addEventListener('pointerleave', end);
   host.addEventListener('pointercancel', end);
 
   host.addEventListener('pointermove', (event) => {
     if (down.has(event.pointerId)) down.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (marquee) {
+      event.preventDefault();
+      const at = contentPoint(event);
+      marquee.moved = Math.max(marquee.moved, Math.abs(at.x - marquee.x0) + Math.abs(at.y - marquee.y0));
+      marquee.x1 = at.x;
+      marquee.y1 = at.y;
+      draw(host, view, ctx);
+      return;
+    }
 
     // Two fingers: the map zooms and does not pan. The tile between the fingers
     // is what stays put, which is the same promise the wheel makes about the
@@ -300,6 +354,22 @@ function attachPan(host, view, ctx, toTile) {
     host.scrollLeft = from.left - dx;
     host.scrollTop = from.top - dy;
   });
+}
+
+// The selection box as a rectangle of TILES. Content pixels are what the
+// pointer gives and tiles are what a formation stands on, so the conversion
+// happens once, here, and both the drawing and the selection read the same
+// numbers. Clamped to the world: a box dragged off the edge selects what is on
+// the map rather than nothing.
+function boxTiles(view, box) {
+  const tilePx = view.tilePx;
+  if (!tilePx) return null;
+  return {
+    x0: Math.floor(Math.min(box.x0, box.x1) / tilePx),
+    y0: Math.floor(Math.min(box.y0, box.y1) / tilePx),
+    x1: Math.floor(Math.max(box.x0, box.x1) / tilePx),
+    y1: Math.floor(Math.max(box.y0, box.y1) / tilePx),
+  };
 }
 
 // Puts a tile in the middle of the viewport. Picking a site out of the factory
@@ -409,7 +479,19 @@ function draw(host, view, ctx) {
   // Move button in the Selected pane. Valid destinations light up the same way
   // a deployable tile does, since both answer the same question: where may
   // this unit be.
-  const moveUnit = ui.moveUnit != null ? (state.military?.units ?? []).find((u) => u.id === ui.moveUnit) : null;
+  //
+  // A SELECTION works the same way for the highlight: while its order is
+  // pending, the first formation in it stands for the lot. They are all one
+  // government's, and a destination one of them may stand on is one the others
+  // may too unless a domain differs — and `orderMoveMany` is the authoritative
+  // answer either way, so this only has to be the right colour under the
+  // pointer rather than the whole rule.
+  const selection = new Set(ui.selection ?? []);
+  const moveUnit = ui.moveUnit != null
+    ? (state.military?.units ?? []).find((u) => u.id === ui.moveUnit)
+    : ui.orderSelection && selection.size
+      ? (state.military?.units ?? []).find((u) => selection.has(u.id))
+      : null;
   // ...and the formation whose group is being assembled. While one is in hand,
   // the OTHER formations it could legally march with light up, so "aircraft
   // group only with aircraft" is something you can see rather than a refusal
@@ -481,8 +563,12 @@ function draw(host, view, ctx) {
       const movable = !building && moveUnit && tile.id !== moveUnit.tileId
         && canMilitaryEnter(state, moveUnit, tile);
       const groupable = groupUnit && unit && unit.id !== groupUnit.id && canGroup(groupUnit, unit);
+      // Anything in the marquee selection wears a bright rim. It is the whole
+      // feedback for a gesture that otherwise changes nothing you can see: a box
+      // dragged over eight formations has to say which eight it caught.
+      const picked = stack ? stack.some((u) => selection.has(u.id)) : false;
       const selected = ui.selectedTileId === tile.id;
-      if (building || unit || camp || omen || bound || buildable || raisable || movable || selected) flush(x + 1, py);
+      if (building || unit || camp || omen || bound || buildable || raisable || movable || selected || picked) flush(x + 1, py);
 
       if (building) {
         const stranded = building.output && !servedBy(depots.get(building.owner) ?? [], building.x, building.y);
@@ -515,6 +601,11 @@ function draw(host, view, ctx) {
       // A formation is drawn ON TOP of whatever ground it holds rather than
       // recolouring it: an army occupies land, it does not replace it. A stack
       // draws its topmost unit and carries a count.
+      if (picked) {
+        g.strokeStyle = '#8fe3ff';
+        g.lineWidth = 2;
+        g.strokeRect(px + 1, py + 1, tilePx - 2, tilePx - 2);
+      }
       if (unit) drawUnit(g, unit, px, py, tilePx, glyphs, isPlayer(state, unit.owner), stack.length);
       if (bound) drawWaypoint(g, px, py, tilePx);
       if (camp) drawCamp(g, px, py, tilePx, glyphs);
@@ -537,6 +628,12 @@ function draw(host, view, ctx) {
     flush(x1, py);
   }
 
+  // Warehouses use a Chebyshev (square) service radius: `servedBy` compares
+  // the larger of the horizontal and vertical distances. Draw the same square
+  // after terrain, so clicking any warehouse shows the exact tiles it reaches
+  // without turning the hot per-tile paint loop into a coverage calculation.
+  const selectedBuilding = ui.selectedTileId == null ? null : byTile.get(ui.selectedTileId);
+  if (selectedBuilding?.store) drawWarehouseRange(g, state, selectedBuilding, tilePx, left, top);
   // How far the selected formation can reach to fight, drawn as ONE rectangle
   // after the tile loop rather than as a highlight per tile inside it. Only
   // artillery's is bigger than the ground it stands on, so this is the whole
@@ -569,6 +666,46 @@ function draw(host, view, ctx) {
     drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1);
     drawLabels(g, state, tilePx, left, top, cssW, cssH);
   }
+
+  // THE RUBBER BAND, painted over the whole map because it is a gesture rather
+  // than part of the world. It lives on `view` rather than on `ui`: it exists
+  // only between a pointer going down and coming up again, so nothing outside
+  // this file and `attachPan` has any use for it.
+  if (view.marquee) {
+    const bx = Math.min(view.marquee.x0, view.marquee.x1) - left;
+    const by = Math.min(view.marquee.y0, view.marquee.y1) - top;
+    const bw = Math.abs(view.marquee.x1 - view.marquee.x0);
+    const bh = Math.abs(view.marquee.y1 - view.marquee.y0);
+    g.save();
+    g.fillStyle = '#8fe3ff22';
+    g.fillRect(bx, by, bw, bh);
+    g.strokeStyle = '#8fe3ff';
+    g.lineWidth = 1;
+    g.setLineDash([5, 3]);
+    g.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+    g.restore();
+  }
+}
+
+function drawWarehouseRange(g, state, building, tilePx, left, top) {
+  const radius = BUILDINGS[building.type].radius ?? 0;
+  if (!radius) return;
+  const fromX = Math.max(0, building.x - radius);
+  const fromY = Math.max(0, building.y - radius);
+  const toX = Math.min(state.grid.w - 1, building.x + radius);
+  const toY = Math.min(state.grid.h - 1, building.y + radius);
+  const x = fromX * tilePx - left;
+  const y = fromY * tilePx - top;
+  const width = (toX - fromX + 1) * tilePx;
+  const height = (toY - fromY + 1) * tilePx;
+  g.save();
+  g.fillStyle = '#f0a04b20';
+  g.fillRect(x, y, width, height);
+  g.strokeStyle = '#f0a04b';
+  g.lineWidth = Math.max(1, Math.min(2, tilePx / 5));
+  g.setLineDash(tilePx >= 4 ? [5, 4] : []);
+  g.strokeRect(x + g.lineWidth / 2, y + g.lineWidth / 2, width - g.lineWidth, height - g.lineWidth);
+  g.restore();
 }
 
 function drawProvinceLabels(g, state, tilePx, left, top, cssW, cssH, x0, y0, x1, y1) {

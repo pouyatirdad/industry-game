@@ -61,6 +61,7 @@ export function runContracts(state) {
     nudgeOpinion(state, contract.buyer, contract.seller, CONFIG.diplomacy.opinion.completed);
   }
   state.contracts = kept;
+  refreshSupplyHealth(state);
 }
 
 function settle(state, c, depots, payroll) {
@@ -111,6 +112,15 @@ function settle(state, c, depots, payroll) {
   // on what the buyer stood ready to take and it could not supply.
   const buyerShort = Math.max(0, c.qty - takeable);
   const sellerShort = Math.max(0, takeable - landed);
+  // The MOST RECENT delivery's shortfall, overwritten every settle — unlike
+  // `c.missed` below, which is a lifetime total and only ever grows. The UI's
+  // "in default" badge reads this one, so a contract that starts missing goes
+  // red and one that catches back up (production increased, warehouse
+  // refilled) goes quiet again on its very next delivery instead of staying
+  // flagged for a shortfall that is long since fixed.
+  c.lastShort = buyerShort + sellerShort;
+  c.lastBuyerShort = buyerShort;
+  c.lastSellerShort = sellerShort;
   charge(state, c, buyer, seller, buyerShort, unit, 'buyer');
   charge(state, c, seller, buyer, sellerShort, unit, 'seller');
 
@@ -130,6 +140,30 @@ function settle(state, c, depots, payroll) {
       qty: Math.round(landed * 10) / 10,
       value: Math.round(landed * unit),
     });
+  }
+}
+
+// `lastShort` is an audit of the delivery that just happened. It must not be
+// used as the red, live warning for a seller: a rig added after a missed cargo
+// means the old cargo was still missed, but the contract is no longer in
+// trouble. Recalculate the seller's sustainable capacity every tick from the
+// same production-minus-use rate used when offering contracts.
+function refreshSupplyHealth(state) {
+  const totals = new Map();
+  for (const c of state.contracts ?? []) {
+    if (state.tick < c.started || c.term === 0) { c.supplyShort = 0; continue; }
+    const key = `${c.seller}|${c.commodity}`;
+    totals.set(key, (totals.get(key) ?? 0) + c.qty / c.every);
+  }
+  const spareBySeller = new Map();
+  for (const c of state.contracts ?? []) {
+    if (state.tick < c.started || c.term === 0) continue;
+    let spare = spareBySeller.get(c.seller);
+    if (!spare) { spare = spareRates(state, c.seller); spareBySeller.set(c.seller, spare); }
+    const rate = c.qty / c.every;
+    const promisedElsewhere = (totals.get(`${c.seller}|${c.commodity}`) ?? 0) - rate;
+    const available = Math.max(0, (spare[c.commodity] ?? 0) - promisedElsewhere);
+    c.supplyShort = Math.max(0, rate - available);
   }
 }
 
@@ -179,6 +213,36 @@ export function quotePrice(state, sellerId, buyerId, commodityId) {
   return Math.round(mid * (1 + CONFIG.contracts.premium) * 100) / 100;
 }
 
+// A sell-side starting point for the Trade tab. It deliberately picks a real
+// shortage, not merely the highest quoted price: a rich country with no need
+// is how a player gets a contract the buyer cannot actually receive. The rate
+// is what the seller can sustain after domestic use and existing promises.
+export function suggestExportContract(state, sellerId, commodityId) {
+  if (!COMMODITIES[commodityId]) return { ok: false, reason: 'No such commodity.' };
+  const available = Math.max(0, (spareRates(state, sellerId)[commodityId] ?? 0)
+    - promisedBy(state, sellerId, commodityId));
+  if (available <= 0.05) return { ok: false, reason: `You have no sustainable ${COMMODITIES[commodityId].name} surplus to contract.` };
+
+  let best = null;
+  for (const buyerId of COUNTRY_IDS) {
+    if (buyerId === sellerId || !canTrade(state, sellerId, buyerId)) continue;
+    const buyer = state.countries[buyerId];
+    const need = unmet(state, buyerId, commodityId);
+    if (!buyer?.solvent || need <= 0.05) continue;
+    const qty = Math.floor(Math.min(available, need) * 10) / 10;
+    if (qty <= 0.05) continue;
+    const quote = quotePrice(state, sellerId, buyerId, commodityId);
+    // Match the other-side affordability check before offering this country as
+    // the suggestion. It avoids a polished draft that is refused immediately.
+    if (buyer.cash < quote * qty * 4) continue;
+    const price = state.markets[buyerId]?.[commodityId]?.price ?? 0;
+    if (!best || price > best.price || (price === best.price && need > best.need)) {
+      best = { buyerId, qty, need, price, available };
+    }
+  }
+  return best ? { ok: true, ...best } : { ok: false, reason: 'No solvent country currently needs enough of that commodity.' };
+}
+
 export function countContracts(state, countryId) {
   return (state.contracts ?? []).reduce((n, c) => n + (c.seller === countryId || c.buyer === countryId ? 1 : 0), 0);
 }
@@ -225,7 +289,7 @@ export function signContract(state, terms) {
     // same rule that puts `distribute` after `produce`.
     started: state.tick + 1,
     delivered: 0, paid: 0, missed: 0, penalties: 0, deliveries: 0,
-    lastMiss: null, lastMissBy: null,
+    lastMiss: null, lastMissBy: null, lastShort: 0, lastBuyerShort: 0, lastSellerShort: 0, supplyShort: 0,
   };
   state.contracts.push(contract);
   nudgeOpinion(state, contract.seller, contract.buyer, CONFIG.diplomacy.opinion.signed);

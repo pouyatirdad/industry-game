@@ -30,7 +30,10 @@ export function mountContracts(refs, ctx) {
         <label class="draft__field"><span>For (ticks)</span><input class="draft__term" type="number" min="0" step="5"></label>
       </div>
       <p class="draft__quote muted"></p>
-      <button type="button" class="primary draft__sign">Propose contract</button>
+      <div class="draft__act">
+        <button type="button" class="draft__suggest">Suggest best buyer</button>
+        <button type="button" class="primary draft__sign">Propose contract</button>
+      </div>
     </div>`);
   refs.contractDraft.replaceChildren(wrap);
 
@@ -52,6 +55,7 @@ export function mountContracts(refs, ctx) {
   for (const el of wrap.querySelectorAll('select, input')) {
     el.addEventListener('change', () => ctx.onDraft(read()));
   }
+  wrap.querySelector('.draft__suggest').addEventListener('click', () => ctx.onSuggestContract());
   wrap.querySelector('.draft__sign').addEventListener('click', () => ctx.onSignContract());
   refs.contractDraft.dataset.mounted = 'true';
 }
@@ -105,9 +109,14 @@ function updateDraft(refs, ctx) {
   const perTick = draft.every > 0 ? draft.qty / draft.every : draft.qty;
   const value = (quote ?? 0) * perTick;
   const held = warehouseStock(state, draft.commodity);
+  const suggestion = draft.suggestion;
+  const suggestedNote = suggestion && suggestion.partner === draft.partner && draft.dir === 'sell'
+    ? ` · suggested: ${COUNTRIES[suggestion.partner].name} pays ${price(suggestion.price)} and needs ${qtyShort(suggestion.need)}/tick; your sustainable surplus is ${qtyShort(suggestion.available)}/tick`
+    : '';
   // `setText` writes textContent, so this is the character rather than an entity.
   setText(note, `${price(quote ?? 0)} a unit · ${qtyShort(perTick)}/tick · ${draft.dir === 'buy' ? '-' : '+'}${money(value)}/tick`
     + (draft.dir === 'sell' ? ` · you hold ${qtyShort(held)}` : ''));
+  if (suggestedNote) note.textContent += suggestedNote;
   setText(sign, draft.term > 0
     ? `Propose ${draft.dir} for ${num(draft.term)} ticks`
     : `Propose a single ${draft.dir === 'buy' ? 'purchase' : 'sale'}`);
@@ -155,7 +164,7 @@ function updateOffers(refs, ctx) {
 function updateList(refs, ctx) {
   const { state } = ctx;
   const rows = contractsOf(state, state.home);
-  const sig = rows.map((c) => `${c.id}${Math.round(c.delivered ?? 0)}${Math.round(c.penalties ?? 0)}${contractLeft(state, c)}`).join('|');
+  const sig = rows.map((c) => `${c.id}${Math.round(c.delivered ?? 0)}${Math.round(c.penalties ?? 0)}${Math.round((c.supplyShort ?? c.lastShort ?? 0) * 10)}${Math.round((c.lastBuyerShort ?? 0) * 10)}${contractLeft(state, c)}`).join('|');
   if (refs.contractList.dataset.sig === sig) return;
   refs.contractList.dataset.sig = sig;
 
@@ -169,8 +178,16 @@ function updateList(refs, ctx) {
     const other = out ? c.buyer : c.seller;
     const owed = ((state.tick - c.started + c.every) / c.every) * c.qty;
     const kept = owed > 0 ? Math.min(1, (c.delivered ?? 0) / owed) : 1;
+    // Seller capacity is live: adding oil production clears this warning on
+    // the next tick, while `lastShort` remains the historical delivery record.
+    const sellerShort = c.supplyShort ?? c.lastSellerShort ?? c.lastShort ?? 0;
+    const buyerShort = c.lastBuyerShort ?? 0;
+    const troubled = sellerShort > 0.5 || buyerShort > 0.5;
+    const issue = sellerShort > 0.5
+      ? `${qtyShort(sellerShort)} / tick production short`
+      : buyerShort > 0.5 ? `${qtyShort(buyerShort)} short last delivery` : '';
     const node = html(`
-      <div class="contract" data-dir="${out ? 'out' : 'in'}" data-late="${(c.missed ?? 0) > 0.5}">
+      <div class="contract" data-dir="${out ? 'out' : 'in'}" data-late="${troubled}">
         <div class="contract__row">
           <span class="contract__arrow">${out ? '↗' : '↙'}</span>
           <span class="contract__what">${c.qty} ${good.name}<span class="muted">/${c.every}t</span></span>
@@ -179,7 +196,7 @@ function updateList(refs, ctx) {
           <button type="button" class="contract__kill" title="Break this contract — you pay ${Math.round(CONFIG.contracts.penalty * 100)}% of what is still owed">&times;</button>
         </div>
         <div class="contract__bar"><i class="contract__fill" style="--fill:${Math.round(kept * 100)}%"></i></div>
-        <p class="contract__note muted">${price(c.price)} a unit fixed &middot; ${num(contractLeft(state, c))}t left &middot; ${qtyShort(c.delivered ?? 0)} moved${(c.missed ?? 0) > 0.5 ? ` &middot; <span class="is-negative">${qtyShort(c.missed)} short, ${money(c.penalties ?? 0)} in penalties</span>` : ''}</p>
+        <p class="contract__note muted">${price(c.price)} a unit fixed &middot; ${num(contractLeft(state, c))}t left &middot; ${qtyShort(c.delivered ?? 0)} moved${troubled ? ` &middot; <span class="is-negative">${issue}${(c.penalties ?? 0) > 0.5 ? `, ${money(c.penalties)} in penalties so far` : ''}</span>` : ''}</p>
       </div>`);
     node.querySelector('.contract__kill').addEventListener('click', () => ctx.onCancelContract(c.id));
     return node;

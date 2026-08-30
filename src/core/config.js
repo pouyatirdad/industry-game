@@ -306,7 +306,7 @@ export const CONFIG = {
     // government may have outstanding at once. Tick-based rather than the
     // wall-clock the inbox uses for contracts: a pact is not a thing you answer
     // in five seconds, and a paused game must not decide it for you.
-    proposalTtl: 90,
+    proposalTtl: 10,
     maxProposals: 3,
     // Ticks between the world reviewing its diplomacy, and how many governments
     // consider putting a proposal on one of those ticks. Both deliberately slow:

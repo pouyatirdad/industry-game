@@ -33,6 +33,21 @@ body {
   font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
 }
 
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+/* The login screen has a display rule, so it needs an explicit hidden rule
+   rather than relying on the browser's lower-specificity `[hidden]` default. */
+.auth-screen[hidden] { display: none; }
+#game-app:not([hidden]) { height: 100vh; min-height: 0; display: flex; flex-direction: column; }
+.auth-card, .profile-card { width: min(100%, 390px); display: grid; gap: 12px; padding: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.auth-card label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.auth-card input { width: 100%; padding: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); font: inherit; }
+.auth-error { min-height: 1.4em; margin: 0; color: var(--bad); }
+.profile-button { padding: 4px 9px; font-size: 12px; white-space: nowrap; }
+.profile-dialog { padding: 0; background: transparent; border: 0; color: var(--ink); }
+.profile-dialog::backdrop { background: #000a; }
+.profile-card { position: relative; }
+.dialog-close { position: absolute; top: 8px; right: 8px; padding: 2px 8px; font-size: 18px; }
+
 /* Scrollbars are INVISIBLE everywhere — the map, the panes, the build menu.
    There are a lot of scrollable boxes on this screen and a bar down the side of
    each cost more width than the numbers it sat beside. Everything still
@@ -146,10 +161,6 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   width: min(980px, calc(100vw - 20px)); height: min(286px, 38vh);
   transition: height .12s ease;
 }
-/* The tall state, from the ⤢ button or T. The cap is still a share of the
-   VIEWPORT rather than a fixed height, so the map is never entirely covered —
-   the panel docks over the map, it does not replace it. */
-.panel--tabs[data-tall="true"] { height: min(620px, 72vh); width: min(1180px, calc(100vw - 20px)); }
 .layout[data-left="false"] .panel--left { display: flex; }
 .rail, .panel--left .panel__close { display: none; }
 
@@ -276,10 +287,10 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* Messages hover over the bottom of the map rather than taking a row of layout
    away from it, so the world never shifts when one arrives. */
 .alerts {
-  position: absolute; z-index: 100; left: 50%; transform: translateX(-50%); top: 46px;
+  position: absolute; z-index: 100; left: 12px; top: 46px;
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: 4px;
-  width: min(560px, calc(100vw - 40px)); min-width: 320px; pointer-events: none;
+  width: min(420px, calc(100vw - 40px)); min-width: 260px; pointer-events: none;
 }
 .alert { pointer-events: auto; }
 .alert {
@@ -336,11 +347,25 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
 /* Green while a group is being assembled, matching the ring the map draws round
    the formations that could join it. */
 .unit-group[data-active="true"] { background: #7fdca0; color: #0b1626; border-color: transparent; font-weight: 600; }
+/* A running campaign, and the button that calls it off. Amber rather than the
+   blue of a pending order: this one is a standing state, not a gesture waiting
+   for its second half. */
+.unit-auto-conquer[data-active="true"] { background: var(--accent); color: #221606; border-color: transparent; font-weight: 600; }
+
+/* THE ARMY CARD, above whatever the clicked tile is. It is separated by a rule
+   rather than by a gap, because two stacked cards with the same spacing inside
+   and between them read as one long card. */
+.army { padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.army h3 { margin: 0; }
+/* The selection's own colour, the same cyan the map rings a picked formation
+   in — so "these six" means one thing in both places. */
+.army-move[data-active="true"] { background: #8fe3ff; color: #0b1626; border-color: transparent; font-weight: 600; }
+.inspect__actions button:disabled { opacity: .45; cursor: default; }
 
 /* On a narrow window the panels stay modals; they just take the width they need
    and the map runs on underneath. */
 @media (max-width: 1100px) {
-  .alerts { width: min(560px, calc(100vw - 40px)); }
+  .alerts { width: min(420px, calc(100vw - 40px)); }
 }
 
 /* ---- THE PHONE ----------------------------------------------------------
@@ -353,12 +378,17 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
    phone is not a panel, and every target grows to something a thumb can hit. */
 @media (max-width: 820px) {
   :root {
-    /* Taller, because the build boxes below are one row of touch targets rather
-       than two rows of 47px slivers. */
-    --dock: min(184px, 30vh);
+    /* A phone has less usable height than width. Keep the build dock compact
+       so the map remains the primary surface. */
+    --dock: min(148px, 24vh);
   }
 
-  .topbar { gap: 8px; padding: 4px 8px; }
+  body { font-size: 12px; }
+  h2 { font-size: 10px; margin-bottom: 4px; }
+  h3 { font-size: 13px; }
+  h4 { font-size: 10px; }
+  .hint, details.hint > summary { font-size: 10px; }
+  .topbar { gap: 5px; padding: 3px 6px; }
   /* The brand is the one thing on the bar that says nothing about the game. */
   .brand { display: none; }
   /* Eight figures do not fit 360px and must not wrap into four rows on a fixed
@@ -367,13 +397,16 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
      on the right edge is the only hint that there is more to scroll to — a
      plain cut-off looked like the fourth stat was the last one. */
   .stats {
-    flex-wrap: nowrap; overflow-x: auto; flex: 1 1 auto; gap: 0 10px;
+    flex-wrap: nowrap; overflow-x: auto; flex: 1 1 auto; gap: 0 7px;
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
     mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
   }
-  .stat { flex: 0 0 auto; }
-  .controls { gap: 6px; flex: none; }
-  #btn-pause { min-width: 0; padding: 6px 10px; }
+  .stat { flex: 0 0 auto; padding-right: 6px; }
+  .stat span { font-size: 8px; }
+  .stat b { font-size: 11px; }
+  .controls { gap: 4px; flex: none; }
+  #btn-pause { min-width: 0; padding: 4px 7px; font-size: 12px; }
+  .topbar__more { padding: 4px 7px; }
   .topbar__more { display: block; }
 
   /* The overflow controls become a sheet under the ⋯ button. It is positioned
@@ -381,8 +414,8 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   .topbar { position: relative; }
   .controls__more {
     position: absolute; z-index: 200; right: 6px; top: calc(100% + 4px);
-    flex-direction: column; align-items: stretch; gap: 6px;
-    padding: 8px; min-width: 190px;
+    flex-direction: column; align-items: stretch; gap: 4px;
+    padding: 6px; min-width: 170px;
     background: #1c1f26f7; border: 1px solid var(--line); border-radius: var(--radius);
     backdrop-filter: blur(8px); box-shadow: 0 14px 40px #00000073;
   }
@@ -392,7 +425,7 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   .controls__more[data-open="false"] { display: none; }
   .controls__more .speeds { justify-content: space-between; }
   .controls__more .speed { flex: 1; }
-  .controls__more button, .controls__more select { min-height: 36px; }
+  .controls__more button, .controls__more select { min-height: 30px; font-size: 12px; }
   .controls__more .home { justify-content: space-between; }
   /* In the sheet there is no crowding, so the icon buttons say what they do
      rather than making a thumb guess: the label comes off the clip that hides
@@ -410,11 +443,10 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
      letterbox. */
   .panel--tabs {
     left: 0; right: 0; top: 0; transform: none;
-    width: 100%; height: min(60vh, 520px);
+    width: 100%; height: min(52vh, 440px);
     border-left: 0; border-right: 0;
     border-radius: 0 0 var(--radius) var(--radius);
   }
-  .panel--tabs[data-tall="true"] { width: 100%; height: 88vh; }
 
   /* The build dock: one row of boxes big enough to hit. This deliberately
      overrides the "TWO ROWS, always" rule above — that rule exists so the row
@@ -422,22 +454,23 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
      this is a decision. Two rows in a phone dock leave a 40px box. */
   .build-menu {
     grid-template-rows: minmax(0, 1fr);
-    grid-auto-columns: 132px; gap: 6px;
+    grid-auto-columns: 112px; gap: 4px;
   }
-  .build { padding: 7px 8px; gap: 5px; }
+  .build { padding: 4px 6px; gap: 3px; }
   /* Still one line, still ellipsised — a name that wraps to a second line
      pushes the cost and the recipe below it down by however many words it
      ran to, so one box in the row would carry its price a line lower than
      its neighbours. Touch made the box wider (132px) and the type bigger
      (12px) instead; the full name is still on the tooltip. */
-  .build__name { font-size: 12px; }
-  .build__recipe { line-height: 1.25; }
+  .build__name { font-size: 10px; }
+  .build__cost, .build__recipe { font-size: 9px; }
+  .build__recipe { line-height: 1.1; }
   /* Seven categories, scrolled rather than squeezed. */
   .build-tabs { overflow-x: auto; }
-  .build-tab { min-height: 34px; padding: 4px 12px; }
+  .build-tab { min-height: 28px; padding: 3px 8px; font-size: 10px; }
 
-  .panel__head { padding: 6px 6px 5px 10px; }
-  .panel__action, .panel__close { min-width: 36px; min-height: 32px; }
+  .panel__head { padding: 4px 5px 4px 8px; }
+  .panel__action, .panel__close { min-width: 30px; min-height: 28px; }
 
   /* Alerts keep the top band and take the width. */
   .alerts { top: 4px; left: 8px; right: 8px; width: auto; min-width: 0; transform: none; }
@@ -447,9 +480,13 @@ button.primary { background: var(--accent); color: #221606; border-color: transp
   .summary__inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
   /* Anything the thumb has to find. */
-  .flag { padding: 3px 8px; }
-  .prices__flags .flag { height: auto; padding: 3px 7px; }
-  .sell, .listing__act, .dip__act { min-height: 30px; }
+  .flag { padding: 2px 6px; font-size: 10px; }
+  .prices__flags .flag { height: auto; padding: 2px 5px; }
+  .sell, .listing__act, .dip__act { min-height: 26px; }
+
+  .auth-screen { padding: 12px; }
+  .auth-card, .profile-card { width: min(100%, 330px); gap: 8px; padding: 18px; }
+  .auth-card input { padding: 7px; }
 }
 
 /* ---- world-map additions ---- */

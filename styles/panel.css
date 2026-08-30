@@ -47,9 +47,7 @@
 }
 .tab[data-active="true"] .tab__key { opacity: .8; }
 .tab__label { overflow: hidden; text-overflow: ellipsis; }
-.tab--collapse, .tab--grow { flex: 0 0 auto; padding: 6px 8px; }
-.tab--grow[data-active="true"] { color: var(--accent); background: var(--panel-2); }
-.tab--grow[data-active="true"]::before { display: none; }
+.tab--collapse { flex: 0 0 auto; padding: 6px 8px; }
 
 /* How many sites you own, and whether any of them wants looking at. */
 .tab__badge:empty { display: none; }
@@ -555,17 +553,18 @@
      three short rows cost 90px of a 286px panel; on a phone the same ten tabs
      wrap to three rows of a 60vh sheet and the pane underneath is a slot. One
      scrolling row costs one row at any width. */
-  .tabs { flex-wrap: nowrap; overflow-x: auto; padding: 6px 4px 0 8px; }
-  .tab { flex: 0 0 auto; min-height: 38px; padding: 6px 10px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding: 4px 3px 0 6px; }
+  .tab { flex: 0 0 auto; min-height: 30px; padding: 4px 7px; font-size: 10px; }
+  .tab__key { font-size: 8px; }
+  .tab__badge { font-size: 9px; padding: 0 4px; }
   /* ...but the two chrome buttons must never scroll away: they are the only way
      to close the sheet other than reaching past it to the map. */
-  .tab--collapse, .tab--grow {
+  .tab--collapse {
     position: sticky; right: 0; background: var(--panel);
-    min-width: 36px; padding: 6px;
+    min-width: 30px; padding: 4px;
   }
-  .tab--grow { right: 36px; }
 
-  .panes { padding: 8px 8px 10px; }
+  .panes { padding: 5px 6px 7px; }
 
   /* 257 nations two to a row is two truncated names. */
   .diplomacy { grid-template-columns: minmax(0, 1fr); }
@@ -574,7 +573,7 @@
     grid-template-areas:
       "name acts"
       "state opinion";
-    padding: 4px 6px;
+    padding: 3px 5px;
   }
   .dip__name { grid-area: name; }
   .dip__state { grid-area: state; text-align: left; }

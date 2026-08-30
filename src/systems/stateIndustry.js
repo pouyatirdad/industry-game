@@ -97,7 +97,7 @@ function considerBuild(state, countryId, land, offered, wants, supply, scarce) {
   // government that only ever builds plants ends up with one full warehouse and
   // thirty sites blocked behind it, which is exactly what used to happen.
   const candidate = needsDepot(own, depots)
-    ? bestDepot(state, countryId, spendable, land.all)
+    ? bestDepot(state, countryId, spendable, land.all, depots)
     : bestSite(state, countryId, spendable, own, depots, land, offered, wants, supply, scarce);
   if (!candidate) return false;
   return build(state, candidate.type, candidate.tile, countryId).ok;
@@ -134,9 +134,15 @@ function closeWorstSite(state, countryId) {
 // Scored on a COARSE density grid, not by comparing every tile against every
 // other. Russia holds tens of thousands of tiles, so the pairwise version is
 // hundreds of millions of comparisons per decision; bucketing is a single pass.
-function bestDepot(state, countryId, spendable, tiles) {
-  const def = BUILDINGS.warehouse;
-  if (def.cost > spendable) return null;
+function bestDepot(state, countryId, spendable, tiles, depots = []) {
+  // The first depot is deliberately small: it gets a new economy moving for
+  // little capital. Once a country already has storage and needs more, prefer
+  // the largest warehouse it can responsibly afford instead of endlessly
+  // scattering small depots across the map.
+  const type = (depots.length ? ['bigWarehouse', 'mediumWarehouse', 'warehouse'] : ['warehouse'])
+    .find((id) => BUILDINGS[id].cost <= spendable);
+  if (!type) return null;
+  const def = BUILDINGS[type];
 
   const cell = Math.max(1, def.radius);
   const density = new Map();
@@ -151,8 +157,8 @@ function bestDepot(state, countryId, spendable, tiles) {
     const key = `${Math.floor(tile.x / cell)},${Math.floor(tile.y / cell)}`;
     const score = density.get(key) ?? 0;
     if (best && score <= best.score) continue;
-    if (!canBuild(state, 'warehouse', tile, countryId).ok) continue;
-    best = { type: 'warehouse', tile, score };
+    if (!canBuild(state, type, tile, countryId).ok) continue;
+    best = { type, tile, score };
   }
   return best;
 }

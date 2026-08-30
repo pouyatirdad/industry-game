@@ -36,6 +36,7 @@ const ID_MAP = {
   wages: 'stat-wages', trade: 'stat-trade', supply: 'stat-supply', demand: 'stat-demand',
   tick: 'stat-tick', standing: 'stat-standing', pause: 'btn-pause', save: 'btn-save',
   load: 'btn-load', reset: 'btn-reset',
+  profile: 'btn-profile', profileName: 'profile-name',
   menu: 'btn-menu', controlsMore: 'controls-more',
   panel: 'side-panel', tabs: 'tabs', panes: 'panes', summary: 'summary-card',
   factoryHead: 'factory-head', factoryList: 'factory-list',
