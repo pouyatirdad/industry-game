@@ -177,24 +177,24 @@
    top band (base.css), so the three never collide. */
 @media (max-width: 820px) {
   .overlays {
-    display: flex; flex-direction: column; gap: 6px;
+    display: flex; flex-direction: column; gap: 4px;
     position: absolute; z-index: 100;
-    left: 8px; right: 8px; bottom: calc(var(--dock) + 8px);
-    max-height: 44vh; pointer-events: none;
+    left: 6px; right: 6px; bottom: calc(var(--dock) + 6px);
+    max-height: 38vh; pointer-events: none;
   }
   /* Static inside the column: the parent does the positioning now. */
   .inbox, .terror-popup {
     position: static; left: auto; right: auto; top: auto;
-    width: auto; max-height: 32vh;
+    width: auto; max-height: 28vh;
   }
   /* `.terror-popup` sets `display: flex`, so it still needs its own hidden rule
      — and it needs it here too, because this block re-states the display. */
   .terror-popup[hidden] { display: none; }
 
-  .maptools { bottom: calc(var(--dock) + 8px); left: 8px; padding: 4px 7px; }
+  .maptools { bottom: calc(var(--dock) + 6px); left: 6px; padding: 3px 5px; font-size: 10px; }
 
   /* Three columns of nation buttons is three ellipses. */
   .countries { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .country { padding: 4px 5px; }
-  .country__name { font-size: 11px; }
+  .country { padding: 3px 4px; }
+  .country__name { font-size: 10px; }
 }

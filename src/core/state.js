@@ -1000,10 +1000,6 @@ export function createUiState(home = DEFAULT_HOME) {
     // rides along in the save file.
     tab: 'summary',
     panelOpen: false,
-    // ...and how much room it gets when it is. Nine views do not all want the
-    // same height: a summary card is read in one look, the ranks table and the
-    // tech tree are not. A view preference, so it never reaches the save.
-    panelTall: false,
     leftOpen: true,
     // Whether the topbar's overflow sheet is open. It only exists on a phone —
     // on a desktop those controls are simply on the bar — so it is a view

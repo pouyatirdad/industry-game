@@ -349,14 +349,6 @@ const ctx = {
   },
 
   onTogglePanel() { ctx.ui.panelOpen = !ctx.ui.panelOpen; render(); },
-  // How much room the panel gets. Nine views do not want the same height: the
-  // summary is read in one look, the ranks table and the tech tree are not, and
-  // scrolling a pane that was sized for a card is the wrong answer to both.
-  onTogglePanelHeight() {
-    ctx.ui.panelTall = !ctx.ui.panelTall;
-    ctx.ui.panelOpen = true;
-    render();
-  },
   // Walking the strip without reaching for the mouse. Wraps, because a nine-tab
   // strip you have to back out of is a strip you stop using.
   onStepTab(by) {
@@ -475,7 +467,7 @@ function opening(home) {
 }
 
 function replaceState(next, message) {
-  const { zoom, tab, panelOpen, panelTall, leftOpen, buildView, goodsView, rankSort, eventFilter } = ctx.ui;
+  const { zoom, tab, panelOpen, leftOpen, buildView, goodsView, rankSort, eventFilter } = ctx.ui;
   ctx.state = next;
   ctx.state.paused = true;
   ctx.ui = createUiState(next.home);
@@ -483,7 +475,6 @@ function replaceState(next, message) {
   ctx.ui.zoom = zoom;
   ctx.ui.tab = tab;
   ctx.ui.panelOpen = panelOpen;
-  ctx.ui.panelTall = panelTall;
   ctx.ui.leftOpen = leftOpen;
   ctx.ui.buildView = buildView;
   ctx.ui.goodsView = goodsView;
@@ -516,7 +507,7 @@ document.addEventListener('keydown', (event) => {
     render();
   }
   if (event.key === 'b' || event.key === 'B') ctx.onToggleLeft();
-  if (event.key === 't' || event.key === 'T') ctx.onTogglePanelHeight();
+  if (event.key === 't' || event.key === 'T') ctx.onTogglePanel();
   // Move the selected formation, and find your own country again. Both are
   // things you reach for constantly once an army is on the map — a column is
   // ordered every few ticks, and at high zoom a planet is very easy to get lost

@@ -1154,6 +1154,11 @@ top dock is capped around 286px/38vh and the bottom dock around 156px/25vh. The 
 the layout does not move. Neither the page nor the body scrolls: `body` is a flex column of a fixed
 topbar and the layout, and the only things that scroll are the map and panel interiors.
 
+**Phone density is intentionally lower.** Under the shared 820px breakpoint, `base.css`,
+`panel.css`, and `map.css` reduce type size, control padding, tab height, overlay spacing, panel
+height, and the build dock (`--dock: min(148px, 24vh)`). Keep those rules mobile-only: the map needs
+the recovered vertical space, while desktop retains the larger, more readable layout.
+
 Consequences worth knowing:
 
 - **The bottom build panel is always visible and spans the bottom edge.** Do not add a hide state,
@@ -1231,8 +1236,8 @@ has its numbers unfolded, `ui.goodsView` whether the commodity book reads the ti
 everybody's terms or only yours, `ui.moveUnit`/`ui.groupUnit` which formation is waiting for a
 destination or for companions, `ui.selection`/`ui.orderSelection` which formations you have picked
 out and whether their march order is armed, and `ui.draft` the contract you are writing but have not signed —
-`ui.panelTall` how much room the panel gets when it is open, and `ui.eventFilter` whose world news
-the News tab is showing — all on `ui`, so none of it reaches the save file. Ten tabs do not fit one
+`ui.eventFilter` whose world news the News tab is showing — all on `ui`, so none of it reaches the
+save file. Ten tabs do not fit one
 row of the panel, so **the strip wraps**: a tab you cannot read is not a tab you will click.
 
 Four things about the strip itself, and each is there because the panel is one you move around in
@@ -1243,11 +1248,8 @@ constantly:
 - **The active tab wears a bright edge along its top** (`.tab[data-active]::before`). Nine tabs in
   two wrapped rows all shaded the same colour made "which one am I on" a question you answered by
   reading rather than by looking.
-- **`⤢` (or `T`) makes the panel TALL** — `ui.panelTall`, capped at a share of the viewport rather
-  than a fixed height, because the panel docks over the map and must never replace it. The summary
-  card is read in one look; the Ranks table and the tech tree are not, and scrolling a pane sized
-  for a card is the wrong answer to both. It is a second control beside the collapse button because
-  it answers a different question: how tall, versus whether at all.
+- **The `▸` collapse control (or `T`) shows or hides the top panel.** There is only one panel
+  visibility state (`ui.panelOpen`); content that exceeds the dock scrolls inside its pane.
 - **A war, or a declaration counting down toward one, marks the Diplomacy tab urgent**
   (`data-urgent`, a pulsing badge — and it respects `prefers-reduced-motion`). It is the one thing
   on the strip worth interrupting whatever you are reading.
@@ -1256,7 +1258,7 @@ constantly:
 `Space` runs/pauses, `Esc` drops whatever the pointer is carrying — and clears the marquee selection
 and any march order armed on it, since "I am carrying nothing" and "I have picked nothing out" are
 the same statement — `B` folds the build dock,
-`T` makes the top panel tall, `+`/`-` zoom, `1`–`9` and `←`/`→` pick a view, **`H` finds your own
+`T` shows or hides the top panel, `+`/`-` zoom, `1`–`9` and `←`/`→` pick a view, **`H` finds your own
 country again** (`onCenterHome`, the same call the ⌖ button makes) and **`M` moves the selected
 formation** (`onMoveSelected` → `onMoveUnit`, the same call the Move button makes). Two rules hold
 for all of them:
