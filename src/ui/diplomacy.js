@@ -1,6 +1,6 @@
 import { CONFIG } from '../core/config.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
-import { opinionOf } from '../core/state.js';
+import { opinionOf, isAlive } from '../core/state.js';
 import { relationOf, terroristForce } from '../systems/military.js';
 import { canPropose, canDeclareWar, diplomacyOf, proposalBetween, ultimatumBetween,
   relationAppetite, alliesOf } from '../systems/relations.js';
@@ -65,18 +65,23 @@ export function updateDiplomacy(refs, ctx) {
     const ultimatum = ultimatumBetween(state, state.home, id);
     const countdown = ultimatum ? Math.max(0, ultimatum.beginsAt - state.tick) : null;
     const opinion = Math.round(opinionOf(state, state.home, id));
+    // A nation conquered out of existence keeps its row rather than vanishing
+    // from a list built once at mount — but it must not read `Neutral`, which
+    // is what a nation you have never dealt with reads.
+    const alive = isAlive(state, id);
 
     // The signature is what stops two hundred and fifty-seven rows being
     // rewritten on a tick in which nothing was said. The countdown is in it
     // because it changes every tick — but only for the handful of pairs that
     // actually have a declaration standing.
-    const sig = [relation, proposal?.id ?? '', proposal?.from ?? '', countdown ?? '', opinion].join('|');
+    const sig = [relation, proposal?.id ?? '', proposal?.from ?? '', countdown ?? '', opinion, alive].join('|');
     if (row.dataset.sig === sig) continue;
     row.dataset.sig = sig;
 
     setAttr(row, 'data-relation', relation);
+    setAttr(row, 'data-dead', alive ? null : 'true');
     setAttr(row, 'data-pending', ultimatum ? 'war' : proposal ? 'proposal' : null);
-    setText(row.querySelector('.dip__state'), stateLine(state, id, relation, proposal, countdown));
+    setText(row.querySelector('.dip__state'), stateLine(state, id, relation, proposal, countdown, alive));
     const opinionNode = row.querySelector('.dip__opinion');
     setText(opinionNode.querySelector('.dip__opinion-word'), opinionWord(opinion));
     opinionNode.style.setProperty('--opinion', `${Math.abs(opinion)}%`);
@@ -107,7 +112,11 @@ function opinionWord(value) {
 // One line saying where the two of you actually stand — and it is the only
 // place a countdown to a war appears in a list of two hundred and fifty-seven
 // nations, so it says the number rather than "pending".
-function stateLine(state, id, relation, proposal, countdown) {
+function stateLine(state, id, relation, proposal, countdown, alive) {
+  // Conquest outranks everything else a row could say. `eliminate` clears the
+  // relation, so without this the nation you have just annexed would read as a
+  // neutral neighbour you had never spoken to.
+  if (!alive) return 'Conquered';
   if (countdown != null) return `War in ${countdown}t`;
   if (proposal) {
     return proposal.from === state.home

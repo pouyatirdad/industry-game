@@ -3115,6 +3115,52 @@ test('a nation with no land left ceases to exist and can do nothing', () => {
   equal(isAlive(state, them), false, 'conquest is permanent');
 });
 
+test('conquering a nation ends the war with it', () => {
+  const state = fixture();
+  const them = other(state);
+  const owned = state.tiles.filter((t) => t.countryId === them);
+  for (const tile of owned.slice(1)) tile.countryId = null;
+  const last = owned[0];
+  last.terrain = 'plain';
+  setRelation(state, state.home, them, 'war');
+  nudgeOpinion(state, state.home, them, -40);
+  nudgeOpinion(state, them, state.home, -40);
+  station(state, 'infantry', last);
+
+  state.tick = CONFIG.war.conquerEvery;
+  runMilitary(state);
+
+  equal(isAlive(state, them), false, 'the nation is finished');
+  // The whole bug: the annexation alert arrived and the topbar still said
+  // "At war (1)" against a country with no ground left anywhere on the map.
+  equal(relationOf(state, state.home, them), 'neutral', 'a conquered nation is not still an enemy');
+  equal(enemiesOf(state, state.home).length, 0, 'and there is nobody left to fight');
+  equal(Object.keys(state.diplomacy.relations[them] ?? {}).length, 0,
+    'its side of the relation table goes with it');
+  equal(opinionOf(state, state.home, them), 0, 'and so does what anybody thought of it');
+});
+
+test('a nation conquered by somebody else stops being at war with you too', () => {
+  const state = fixture();
+  const them = other(state);
+  const third = COUNTRY_IDS.find((id) => id !== state.home && id !== them
+    && state.tiles.some((t) => t.countryId === id));
+  const owned = state.tiles.filter((t) => t.countryId === them);
+  for (const tile of owned.slice(1)) tile.countryId = null;
+  const last = owned[0];
+  last.terrain = 'plain';
+  setRelation(state, state.home, them, 'war');
+  setRelation(state, third, them, 'war');
+  station(state, 'infantry', last, third);
+
+  state.tick = CONFIG.war.conquerEvery;
+  runMilitary(state);
+
+  equal(isAlive(state, them), false, 'the third party finished them');
+  equal(relationOf(state, state.home, them), 'neutral', 'your war with them is over as well');
+  equal(relationOf(state, third, them), 'neutral', 'and so is the conqueror’s');
+});
+
 test('a march holds the straight line rather than dog-legging to a corner', () => {
   const state = fixture();
   // A wide open field so terrain cannot be the reason for any bend in the path.

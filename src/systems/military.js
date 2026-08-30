@@ -4,6 +4,7 @@ import { COMMODITIES } from '../data/commodities.js';
 import { COUNTRIES, COUNTRY_IDS } from '../data/countries.js';
 import { isPlayer, noteLedger, pushAlert, noteEvent, setTileOwner } from '../core/state.js';
 import { drawFrom, depotsByOwner, stockIn } from './logistics.js';
+import { landOf } from './worldIndex.js';
 
 export const RELATIONS = ['neutral', 'alliance', 'access', 'war'];
 export const TERRORIST_NAMES = ['ISIS cell', 'Taliban cell', 'Insurgent camp'];
@@ -250,6 +251,13 @@ export function moveMilitaryUnit(state, unitId, tileId) {
     // and the check is cheap.
     if (!canMilitaryEnter(state, member, tile)) continue;
     member.orderTileId = tileId;
+    // A player-issued destination always replaces a sweep order. Otherwise a
+    // redirected unit would quietly resume annexing when it arrived.
+    member.autoConquerCountryId = null;
+    member.autoConquerTargetId = null;
+    member.autoConquerSkipped = null;
+    member.autoConquerClosest = null;
+    member.autoConquerStalled = null;
     // A new order is judged on its own: forget how close the LAST one came.
     member.closest = null;
     member.stalled = 0;
@@ -261,6 +269,89 @@ export function moveMilitaryUnit(state, unitId, tileId) {
     ordered.push(member);
   }
   return { ok: true, unit, ordered };
+}
+
+// A CAMPAIGN ORDER: march at the nearest enemy and keep taking its ground, one
+// tile a security phase, until there is none of it left to take.
+//
+// The one condition is that an ENEMY EXISTS — somebody this formation's
+// government is actually at war with, who still holds land. It used to also
+// require that enemy to have no formations left, which made this a tidying-up
+// order for a war already won and nothing else; the fighting is the half a
+// player most wants automated, and it needs no rule of its own to get it. A
+// formation that walks into a defended country is fought by whatever it walks
+// into: `resolveWarCombat` triggers on proximity plus a relation of `war` and
+// has never taken an attack order, so "march at the enemy and take its ground"
+// IS "attack the enemy", with no second code path for the shooting.
+//
+// It is LAND-only, because an aircraft occupies nothing (`takeGround`), and it
+// only ever begins on an explicit order — yours, or none.
+export function canAutoConquer(state, unit, countryId = null) {
+  if (!unit || !state.military?.units?.includes(unit)) return { ok: false, reason: 'No such formation.' };
+  if ((UNIT_TYPES[unit.type]?.domain ?? unit.domain) !== 'land') return { ok: false, reason: 'Only land formations can occupy territory.' };
+  const enemies = enemiesOf(state, unit.owner);
+  if (countryId && !enemies.includes(countryId)) return { ok: false, reason: 'You are not at war with them, or they have no land left.' };
+  if (!enemies.length) return { ok: false, reason: 'No enemy at war has land left to take.' };
+  return { ok: true, enemies };
+}
+
+// Everybody this government is at war with who still holds ground. It is the
+// whole gate on an automatic campaign, and the reason one cannot be started in
+// peacetime by any route — the panel asks it to decide whether to show the
+// button, and the order asks it again before it writes anything.
+export function enemiesOf(state, owner) {
+  return Object.keys(state.countries ?? {}).filter((id) =>
+    id !== owner && relationOf(state, owner, id) === 'war' && hasLand(state, id));
+}
+
+export function startAutoConquest(state, unitId, countryId = null) {
+  ensureMilitary(state);
+  const unit = state.military.units.find((u) => u.id === unitId);
+  const picked = pickCampaignTarget(state, unit, countryId);
+  if (!picked.ok) return picked;
+  const target = picked.countryId;
+  unit.orderTileId = null;
+  unit.closest = null;
+  unit.stalled = 0;
+  unit.trail = [];
+  unit.autoConquerCountryId = target;
+  unit.autoConquerTargetId = null;
+  unit.autoConquerSkipped = [];
+  unit.autoConquerClosest = null;
+  unit.autoConquerStalled = 0;
+  return { ok: true, unit, countryId: target };
+}
+
+// ...and calling one off, which is the same button pressed a second time. It
+// is deliberately a separate entry point rather than a toggle inside
+// `startAutoConquest`: "stop" has to work on a formation whose campaign the
+// system has already ended for it, and a toggle would restart that one instead.
+export function cancelAutoConquest(state, unitId) {
+  ensureMilitary(state);
+  const unit = state.military.units.find((u) => u.id === unitId);
+  if (!unit) return { ok: false, reason: 'No such formation.' };
+  if (!unit.autoConquerCountryId) return { ok: false, reason: 'That formation is not campaigning.' };
+  const countryId = unit.autoConquerCountryId;
+  // Announced by the caller, not here: the alert for an order you gave says
+  // something different from the one for a campaign that ran out of ground.
+  stopAutoConquest(state, unit, 'called off', false);
+  return { ok: true, unit, countryId };
+}
+
+// WHICH ENEMY THIS FORMATION MARCHES AT: the nearest one it is at war with
+// that still holds land, unless one was named. It is one function because it is
+// asked in two places — when the order is given, and again whenever a campaign
+// runs its target country out of ground — and the two must not disagree about
+// what an enemy is.
+function pickCampaignTarget(state, unit, countryId = null) {
+  const check = canAutoConquer(state, unit, countryId);
+  if (!check.ok) return check;
+  if (countryId) return { ok: true, countryId };
+  const nearest = check.enemies.reduce((best, id) => {
+    const distance = nearestEnemyLandDistance(state, unit, id);
+    return distance < best.distance ? { id, distance } : best;
+  }, { id: check.enemies[0], distance: Infinity });
+  return { ok: true, countryId: nearest.id };
 }
 
 export function disbandUnit(state, unitId) {
@@ -572,6 +663,47 @@ export function hasLand(state, countryId) {
 // trip over — its formations disband, its contracts are torn up, its listings
 // come off the book. Its BUILDINGS are not touched, because they already changed
 // hands tile by tile with the ground they stand on.
+// A conquered nation is not still at war with anybody, and the relation table is
+// what the topbar's Standing, the Diplomacy head and all 257 rows read — so a
+// `war` left standing against a country that no longer exists is a war you can
+// neither fight nor end. That is exactly what happened: the annexation alert
+// arrived, the people and the treasury changed hands, and the header still said
+// "At war (1)" against a nation with no ground left on the map.
+//
+// The pair-keyed tables that hang off a relation go with it. They are sparse on
+// purpose (see the note on `state.diplomacy` in CLAUDE.md), so leaving a dead
+// government's rows behind is save-file weight that can never be read again.
+function forgetRelations(state, countryId) {
+  const d = state.diplomacy;
+  if (!d) return;
+  const relations = d.relations ?? {};
+  for (const other of Object.keys(relations[countryId] ?? {})) {
+    const row = relations[other];
+    if (!row) continue;
+    delete row[countryId];
+    if (!Object.keys(row).length) delete relations[other];
+  }
+  delete relations[countryId];
+
+  // Opinion is ASYMMETRIC and sparse, so somebody may hold a view of this
+  // government without it holding one of them: every row has to be swept, not
+  // only the pairs the relation table happened to know about.
+  const opinion = d.opinion ?? {};
+  for (const other of Object.keys(opinion)) {
+    if (other === countryId) continue;
+    const row = opinion[other];
+    delete row[countryId];
+    if (!Object.keys(row).length) delete opinion[other];
+  }
+  delete opinion[countryId];
+
+  // ...and the cooldowns, which are keyed on the pair in either order.
+  for (const k of Object.keys(d.history ?? {})) {
+    const [a, b] = k.split('|');
+    if (a === countryId || b === countryId) delete d.history[k];
+  }
+}
+
 export function eliminate(state, countryId, victor = null) {
   const gov = state.countries[countryId];
   if (!gov || gov.alive === false) return false;
@@ -616,6 +748,7 @@ export function eliminate(state, countryId, victor = null) {
     state.diplomacy.ultimatums = (state.diplomacy.ultimatums ?? [])
       .filter((u) => u.from !== countryId && u.to !== countryId);
   }
+  forgetRelations(state, countryId);
   noteEvent(state, 'conquered', countryId);
   pushAlert(state, isPlayer(state, countryId)
     ? `${COUNTRIES[countryId]?.name ?? countryId} — your nation — has been conquered. It no longer exists.`
@@ -645,6 +778,7 @@ function maxRange() {
 function advanceUnits(state) {
   const units = state.military.units;
   if (!units.length) return;
+  advanceAutoConquests(state, units);
   // Group paces are worked out ONCE for the world rather than per member, for
   // the same reason depots are indexed once: a hundred grouped formations must
   // not each walk the whole army looking for their companions.
@@ -657,6 +791,7 @@ function advanceUnits(state) {
   }
   const w = state.grid.w;
   for (const unit of units) {
+    if (unit.autoConquerCountryId) continue;
     if (unit.orderTileId == null) continue;
     const goal = state.tiles[unit.orderTileId];
     if (!goal) { unit.orderTileId = null; continue; }
@@ -700,6 +835,109 @@ function advanceUnits(state) {
       giveUp(state, unit, 'there is no way through to it');
     }
   }
+}
+
+// This is still a real march: every selected formation moves only ONE tile per
+// tick, and `takeGround` records each tile it crosses. Its target refreshes
+// after capture, so it visits all reachable land rather than stopping once.
+function advanceAutoConquests(state, units) {
+  for (const unit of units) {
+    let countryId = unit.autoConquerCountryId;
+    if (!countryId) continue;
+    // FINISHING ONE ENEMY IS NOT FINISHING THE WAR. A campaign whose target has
+    // been annexed, or has made peace, moves on to the next enemy that still
+    // holds land rather than ending — otherwise the last tile of a country
+    // silently stood the whole army down and the war carried on without it.
+    if (!canAutoConquer(state, unit, countryId).ok) {
+      const next = pickCampaignTarget(state, unit);
+      if (!next.ok) { stopAutoConquest(state, unit, next.reason); continue; }
+      countryId = unit.autoConquerCountryId = next.countryId;
+      unit.autoConquerTargetId = null;
+      unit.autoConquerSkipped = [];
+      unit.autoConquerClosest = null;
+      unit.autoConquerStalled = 0;
+    }
+    let goal = state.tiles[unit.autoConquerTargetId];
+    if (!goal || goal.countryId !== countryId || goal.terrain === 'water') {
+      goal = nearestAutoConquestTile(state, unit, countryId);
+      unit.autoConquerTargetId = goal?.id ?? null;
+      unit.autoConquerClosest = goal ? Math.max(Math.abs(goal.x - unit.x), Math.abs(goal.y - unit.y)) : null;
+      unit.autoConquerStalled = 0;
+      unit.trail = [];
+      unit.fromX = unit.x;
+      unit.fromY = unit.y;
+    }
+    if (!goal) { stopAutoConquest(state, unit, 'no reachable enemy land remains'); continue; }
+    if (unit.tileId === goal.id) {
+      takeGround(state, unit, goal);
+      unit.autoConquerTargetId = null;
+      continue;
+    }
+    const next = stepToward(state, unit, goal, state.grid.w);
+    if (!next) {
+      unit.autoConquerSkipped = [...new Set([...(unit.autoConquerSkipped ?? []), goal.id])];
+      unit.autoConquerTargetId = null;
+      continue;
+    }
+    remember(unit, unit.tileId);
+    unit.x = next.x;
+    unit.y = next.y;
+    unit.tileId = next.id;
+    takeGround(state, unit, next);
+    if (next.id === goal.id) {
+      unit.autoConquerTargetId = null;
+      continue;
+    }
+    const away = Math.max(Math.abs(goal.x - unit.x), Math.abs(goal.y - unit.y));
+    if (away < (unit.autoConquerClosest ?? Infinity)) {
+      unit.autoConquerClosest = away;
+      unit.autoConquerStalled = 0;
+    } else if ((unit.autoConquerStalled = (unit.autoConquerStalled ?? 0) + 1) > CONFIG.war.giveUpAfter) {
+      unit.autoConquerSkipped = [...new Set([...(unit.autoConquerSkipped ?? []), goal.id])];
+      unit.autoConquerTargetId = null;
+    }
+  }
+}
+
+// BOTH OF THESE ASK "WHERE IS THAT COUNTRY", AND BOTH GO THROUGH `landOf`.
+//
+// They walked `state.tiles` — a million of them — once per formation per tick,
+// which was affordable only while a campaign was a rare tidying-up order for a
+// war already won. It is an ordinary order now, and a whole army may be on one,
+// so the answer comes out of the index `stateIndustry` and `stateMilitary`
+// already pay for: it is rebuilt when a border moves and shared by everything
+// that asks, rather than rescanned per unit.
+function nearestAutoConquestTile(state, unit, countryId) {
+  const skipped = new Set(unit.autoConquerSkipped ?? []);
+  let nearest = null;
+  for (const tile of landOf(state, countryId).all) {
+    if (tile.terrain === 'water' || skipped.has(tile.id)) continue;
+    if (!canMilitaryEnter(state, unit, tile)) continue;
+    const distance = Math.max(Math.abs(tile.x - unit.x), Math.abs(tile.y - unit.y));
+    if (!nearest || distance < nearest.distance || (distance === nearest.distance && tile.id < nearest.tile.id)) nearest = { tile, distance };
+  }
+  return nearest?.tile ?? null;
+}
+
+function nearestEnemyLandDistance(state, unit, countryId) {
+  let nearest = Infinity;
+  for (const tile of landOf(state, countryId).all) {
+    if (tile.terrain !== 'water') nearest = Math.min(nearest, Math.max(Math.abs(tile.x - unit.x), Math.abs(tile.y - unit.y)));
+  }
+  return nearest;
+}
+
+// Calling a campaign off. It is the SAME function whether the sweep ran out of
+// ground or you pressed the button a second time, so a stopped formation is
+// left in exactly one state either way.
+export function stopAutoConquest(state, unit, why, announce = true) {
+  const countryId = unit.autoConquerCountryId;
+  unit.autoConquerCountryId = null;
+  unit.autoConquerTargetId = null;
+  unit.autoConquerSkipped = null;
+  unit.autoConquerClosest = null;
+  unit.autoConquerStalled = null;
+  if (announce && isPlayer(state, unit.owner)) pushAlert(state, `${UNIT_TYPES[unit.type]?.name ?? 'Formation'} ended its campaign against ${COUNTRIES[countryId]?.name ?? countryId} — ${why}.`, 'info');
 }
 
 // A march that is over, one way or the other. The progress figures are cleared

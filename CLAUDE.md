@@ -758,12 +758,28 @@ are fixed and both fixes are load-bearing:
   so what passes here is what was never on the map. **A terrorist cell inherits nothing**: it is not
   a government and cannot annex anything, so `seizeForCell` calls `eliminate` with no victor and a
   test asserts no treasury on earth grows when a cell finishes a country.
+- **AND THE WAR ENDS WITH THE NATION.** `eliminate` calls `forgetRelations`, which deletes every
+  relation involving the dead government from `state.diplomacy.relations`, plus its rows in the
+  sparse `opinion` table and every `history` cooldown keyed on a pair it was in. The proposals and
+  ultimatums were already cleared; the RELATION was not, and that single omission was visible
+  everywhere at once: the annexation alert arrived, the treasury and the people changed hands, and
+  the topbar still read `At war (1)`, the Diplomacy tab still listed the annexed nation under **At
+  war**, and its row still said `AT WAR` — a war with nobody, which could be neither fought nor
+  ended, since `canPropose` quite correctly refuses to let you sue for peace with a nation that no
+  longer exists. Everything that reads a war (`updateStanding`, the tab's urgent badge, the
+  Diplomacy head, `enemiesOf`, `atWar`) goes through that one table, so clearing it is the whole
+  fix. **Anything else that ends a government must go through `eliminate`** for the same reason.
+- **A conquered nation keeps its Diplomacy row and reads `Conquered`.** The 257 rows are built once
+  at mount, so one cannot simply disappear — and left alone it would read `Neutral`, which is what a
+  nation you have never spoken to reads. `isAlive` is in the row's `dataset.sig` for exactly the
+  reason everything else is: without it the row would never repaint after the conquest.
 - **A terrorist cell takes ground too**, both what it walks over and the ground under anything it
   wrecks. Held ground becomes **nobody's** (`countryId: null`) and `state.occupied` remembers whose
   it was — a cell is not a government and cannot own anything.
 - **Liberating is not annexing.** `defeatTerrorists` hands every held tile back to the country it was
   taken FROM, never to whoever cleared the cell. A nation eliminated while a cell held its last
-  ground comes back (`revive`), which is the honest difference between *occupied* and *conquered*.
+  ground comes back (`revive`), which is the honest difference between *occupied* and *conquered* —
+  though it comes back with a clean sheet, since `eliminate` forgot its treaties on the way out.
 
 ### A war actually does something
 

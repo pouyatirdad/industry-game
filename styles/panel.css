@@ -209,6 +209,11 @@
 .dip[data-pending="war"] { border-color: var(--accent); background: #f0a04b12; }
 .dip[data-pending="war"] .dip__state { color: var(--accent); font-weight: 700; }
 .dip[data-pending="proposal"] .dip__state { color: var(--accent); }
+/* A government that no longer exists. Its row stays — the list is built once at
+   mount — but nothing on it can be acted on, so it recedes rather than sitting
+   among the neighbours you can still deal with. */
+.dip[data-dead] { opacity: 0.42; }
+.dip[data-dead] .dip__state { color: var(--muted); font-style: italic; }
 
 .bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .bars li { display: grid; grid-template-columns: 82px 1fr 38px; align-items: center; gap: 7px; font-size: 11px; }
@@ -320,7 +325,7 @@
 /* ---- the commodity book ---- */
 
 /* ONE table: the market half and your own half of every commodity on the same
-   line. Thirteen columns is more than the panel used to carry, so the figures
+   line. Fourteen columns is more than the panel used to carry, so the figures
    are short (`priceShort`/`qtyShort`), the name truncates, and the padding is
    the tightest that still leaves the columns apart. */
 .prices__head {
@@ -352,10 +357,10 @@
 .prices__groups + tr th { border-bottom: 1px solid #ffffff1a; }
 /* The two halves are told apart by a rule down the middle rather than by
    colour, which the swatches and the drift arrows are already using. */
-.prices tr > :nth-child(2), .prices tr > :nth-child(7), .prices tr > :nth-child(13) {
+.prices tr > :nth-child(2), .prices tr > :nth-child(8), .prices tr > :nth-child(14) {
   border-left: 1px solid #ffffff14;
 }
-/* Thirteen columns in one line. The name column is fixed and the twelve figure
+/* Fourteen columns in one line. The name column is fixed and the thirteen figure
    columns divide what is left evenly, so the two halves line up down the
    table however wide the dock happens to be. */
 .prices th[scope="row"], .prices__groups > :first-child { width: 88px; }
@@ -373,9 +378,9 @@
 /* ---- ranks ---- */
 
 .ranks__head { margin-bottom: 10px; }
-.ranks td { text-align: right; }
+.ranks th, .ranks td { text-align: center; }
 .ranks th[scope="row"] { max-width: 78px; }
-.ranks__place { color: var(--muted); font-size: 10px; text-align: right; }
+.ranks__place { color: var(--muted); font-size: 10px; text-align: center; }
 .ranks__col { cursor: pointer; user-select: none; }
 .ranks__col:hover { color: var(--ink); }
 .ranks__col[data-active="true"] { color: var(--accent); }
