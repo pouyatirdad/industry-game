@@ -271,7 +271,7 @@ export const BUILDINGS = {
              'quarry', 'farmland', 'forest', 'desert', 'uraniumore', 'lithiumflat', 'rareearth'],
     radius: 20, capacity: 3000,
     recipe: null,
-    blurb: 'Stores goods and serves industry within 20 tiles. Your people buy from here first; whatever they do not eat is what you have to export.',
+    blurb: 'Stores goods and serves industry within 20 tiles, and hauls to any of your depots whose radius it touches — build one in between and a distant factory is fed. Your people buy from here first; whatever they do not eat is what you have to export.',
   },
 };
 

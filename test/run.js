@@ -15,19 +15,22 @@ import { CONFIG } from '../src/core/config.js';
 import { build, canBuild, demolish,
   setResearch, setResearchShare, buyTech, canBuyTech, proposeContract, cancelContract,
   acceptContractOffer, postListing, take, takeLoan, repayLoan, toggleExport, toggleImport,
-  setAllExports, setAllImports } from '../src/actions.js';
+  setAllExports, setAllImports, orderAutoConquest, orderAutoConquestAll, orderMoveMany,
+  groupMany, unitsInBox, canCampaign } from '../src/actions.js';
 import { runTick, PIPELINE } from '../src/systems/index.js';
 import { produce } from '../src/systems/production.js';
 import { payWages } from '../src/systems/economy.js';
 import { movePrices, growEconomies } from '../src/systems/market.js';
 import { sellDomestic, unmet, supplyRatio } from '../src/systems/domestic.js';
-import { warehousesServing, spoil } from '../src/systems/logistics.js';
+import { warehousesServing, spoil, relay } from '../src/systems/logistics.js';
 import { runStateIndustry } from '../src/systems/stateIndustry.js';
 import { runResearch, runTechTrade, licenceCost } from '../src/systems/research.js';
-import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice } from '../src/systems/contracts.js';
+import { runContracts, runContractDiplomacy, signContract, canSignContract, quotePrice,
+  suggestExportContract } from '../src/systems/contracts.js';
 import { runExchange, runLending, post, takeListing, borrow, repay, borrowLimit,
   suggestListing } from '../src/systems/exchange.js';
-import { canMilitaryEnter, createMilitaryUnit, defeatTerrorists, moveMilitaryUnit, relationOf, setRelation, ticksToTerror,
+import { canMilitaryEnter, createMilitaryUnit, defeatTerrorists, moveMilitaryUnit, startAutoConquest,
+  cancelAutoConquest, canAutoConquer, enemiesOf, relationOf, setRelation, ticksToTerror,
   runMilitary, terroristForce, terroristStrength, unitsOf, armyCostOf, UNIT_TYPES, UNIT_IDS,
   canGroup, joinGroup, leaveGroup, groupMembers, groupSpeed, speedOf, rangeOf,
   unitShortfall, unitInStock, unitOnTile } from '../src/systems/military.js';
@@ -568,6 +571,69 @@ test('a fishing fleet feeds a cannery', () => {
   for (let i = 0; i < 14; i++) runTick(state);
 
   assert(cannery.status === 'running', 'the cannery should be fed within 14 ticks');
+});
+
+// ---- the depot network ------------------------------------------------------
+
+test('a depot hauls to a neighbouring depot what the far side is short of', () => {
+  const state = fixture();
+  // Three depots in a line, each 30 tiles from the next: the ends are 60 apart,
+  // which is further than any warehouse reaches, so only the one in the middle
+  // joins them up.
+  const east = place(state, 'warehouse', 100, 100, 'plain');
+  place(state, 'warehouse', 130, 100, 'plain');
+  const west = place(state, 'warehouse', 160, 100, 'plain');
+  const smelter = place(state, 'copperSmelter', 161, 100, 'plain');
+  east.store.power = 400;
+  east.store.copperOre = 400;
+
+  for (let i = 0; i < 12; i++) runTick(state);
+
+  assert((west.store.power ?? 0) > 0 || (smelter.input.power ?? 0) > 0,
+    'power should have been hauled across the country to the smelter');
+  equal(smelter.status, 'running', 'the smelter should be fed through the middle depot');
+});
+
+test('a depot does not accumulate what nothing near it needs', () => {
+  const state = fixture();
+  const east = place(state, 'warehouse', 100, 100, 'plain');
+  const west = place(state, 'warehouse', 130, 100, 'plain');
+  place(state, 'copperSmelter', 131, 100, 'plain');
+  east.store.power = 200;
+  east.store.aluminium = 200;
+
+  for (let i = 0; i < 6; i++) relay(state);
+
+  assert((west.store.power ?? 0) > 0, 'the smelter next door wants power');
+  equal(Math.round(west.store.aluminium ?? 0), 0, 'nothing near the west depot eats aluminium');
+});
+
+test('a depot never gives away what its own industry is waiting for', () => {
+  const state = fixture();
+  const a = place(state, 'warehouse', 100, 100, 'plain');
+  const b = place(state, 'warehouse', 130, 100, 'plain');
+  place(state, 'copperSmelter', 101, 100, 'plain');
+  place(state, 'copperSmelter', 131, 100, 'plain');
+  a.store.power = 10;
+
+  const before = a.store.power;
+  relay(state);
+
+  equal(a.store.power, before, 'a depot short of power for its own smelter hauls none away');
+  equal(b.store.power ?? 0, 0, 'and the neighbour gets nothing');
+});
+
+test('depots too far apart do not haul to each other', () => {
+  const state = fixture();
+  const east = place(state, 'warehouse', 100, 100, 'plain');
+  const west = place(state, 'warehouse', 200, 100, 'plain');
+  place(state, 'copperSmelter', 201, 100, 'plain');
+  east.store.power = 300;
+
+  for (let i = 0; i < 6; i++) relay(state);
+
+  equal(Math.round(west.store.power ?? 0), 0, 'a hundred tiles is beyond any warehouse');
+  equal(Math.round(east.store.power), 300, 'and the cargo stays where it was');
 });
 
 // ---- saving ----------------------------------------------------------------
@@ -1509,6 +1575,87 @@ test('a contract moves goods at its own price, not the market price', () => {
 
   close(mine.store.coal, 10, 0.001, 'the full order is delivered');
   close(before - me(state).cash, 10 * agreed, 0.01, 'and billed at the price agreed on the day');
+});
+// A SELLER'S RED WARNING IS ABOUT NOW, NOT ABOUT WHAT IT ONCE MISSED.
+//
+// `lastShort` and its two halves are an audit of the settlement that just
+// happened, and `missed` is a lifetime total that only ever grows. Neither can
+// be the live "this contract is in trouble" flag for a seller: a rig opened
+// after a missed cargo means the cargo was still missed and the contract is no
+// longer in any trouble at all. `refreshSupplyHealth` recomputes `supplyShort`
+// every tick from the same `spareRates` figure the offer filter uses, so the
+// warning clears the moment the production does.
+test('a seller warning clears when the production arrives, and the miss stays history', () => {
+  const state = fixture();
+  const them = other(state);
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  placeIn(state, them, 'warehouse', 24, 24, 'plain');
+  state.countries[them].cash = 50_000_000;
+
+  const signed = signContract(state, {
+    seller: state.home, buyer: them, commodity: 'coal', qty: 4, every: 1, term: 40,
+  });
+  assert(signed.ok, `the contract should sign: ${signed.reason}`);
+  const contract = signed.contract;
+  state.tick = contract.started;
+
+  // Nothing dug and nothing on the shelf: the delivery is missed outright, and
+  // the promise is a rate this nation cannot sustain.
+  runContracts(state);
+  close(contract.lastSellerShort, 4, 0.001, 'the whole cargo was short on the seller side');
+  assert(contract.missed > 0, 'and the miss is recorded');
+  assert(contract.supplyShort > 0, 'the seller is flagged as unable to sustain the rate');
+
+  // Now dig it. Enough collieries to cover four a tick, and the shelf filled so
+  // the very next settlement goes out in full.
+  for (let i = 0; i < 8; i++) place(state, 'coalMine', 21 + i, 20, 'coalfield');
+  depot.store.coal = 500;
+  const missedBefore = contract.missed;
+  state.tick += contract.every;
+  runContracts(state);
+
+  close(contract.lastSellerShort, 0, 0.001, 'the latest delivery went out in full');
+  close(contract.supplyShort, 0, 0.001, 'so the live seller warning is clear');
+  equal(contract.missed, missedBefore, 'and the earlier miss is still a fact of the record');
+});
+
+// THE TRADE TAB'S "SUGGEST BEST BUYER" IS A DRAFT, NOT A DEAL.
+//
+// It starts from what you can actually sustain — spare rate less what you have
+// already promised — and picks a country that genuinely NEEDS it rather than
+// merely the richest one, because a contract a buyer cannot receive is a
+// contract that defaults. It signs nothing: the player still sends it.
+test('a suggested export is a real surplus offered to a country that needs it', () => {
+  const state = fixture();
+  const depot = place(state, 'warehouse', 20, 20, 'plain');
+  depot.store.coal = 2000;
+
+  // No collieries yet, so there is no sustainable surplus to promise however
+  // full the warehouse is — the same rule the offer filter goes by.
+  const none = suggestExportContract(state, state.home, 'coal');
+  equal(none.ok, false, 'nothing is suggested without a surplus RATE');
+
+  for (let i = 0; i < 8; i++) place(state, 'coalMine', 21 + i, 20, 'coalfield');
+  const spare = spareRates(state, state.home).coal;
+  assert(spare > 1, `eight collieries leave a real surplus (${spare.toFixed(1)}/tick)`);
+
+  const suggestion = suggestExportContract(state, state.home, 'coal');
+  assert(suggestion.ok, `a buyer should be found: ${suggestion.reason}`);
+  assert(suggestion.buyerId !== state.home, 'and it is somebody else');
+  assert(suggestion.qty > 0 && suggestion.qty <= spare + 1e-6,
+    `it never offers more than the surplus (${suggestion.qty} of ${spare.toFixed(1)})`);
+  assert(suggestion.need > 0, 'the buyer it names is actually short of it');
+  equal(state.contracts.length, 0, 'and nothing is signed — it fills a draft and no more');
+
+  // Promise the whole surplus away and there is nothing left to suggest, which
+  // is the half that stops the same coal being sold twice.
+  const signed = signContract(state, {
+    seller: state.home, buyer: suggestion.buyerId, commodity: 'coal',
+    qty: Math.ceil(spare) + 2, every: 1, term: 40,
+  });
+  assert(signed.ok, `the over-committing contract should sign: ${signed.reason}`);
+  equal(suggestExportContract(state, state.home, 'coal').ok, false,
+    'a surplus already promised is not offered again');
 });
 
 test('a nation can hold more than the old contract cap', () => {
@@ -2711,6 +2858,154 @@ test('a march takes EVERY tile it crosses, not just the one it stops on', () => 
   for (let i = 1; i <= 6; i++) {
     equal(lane[i].countryId, state.home, `tile ${i} of the corridor was taken`);
   }
+});
+// A CAMPAIGN NEEDS A WAR AND NOTHING ELSE.
+//
+// It marches at the nearest enemy that still holds ground and takes every tile
+// it crosses, one a tick even for a formation that could cover three — the pace
+// is what makes it something you watch rather than a button that wins a war.
+test('a land formation can automatically occupy an enemy one tile per tick', () => {
+  const state = fixture();
+  const lane = marchLane(state, 5);
+  const them = other(state);
+  // Keep the test country to this small, reachable corridor so the sweep has a
+  // finite and observable objective.
+  for (const tile of state.tiles) if (tile.countryId === them) tile.countryId = null;
+  for (let i = 1; i <= 4; i++) claim(state, them, lane[i].x, lane[i].y, 'plain');
+  setRelation(state, state.home, them, 'war');
+  const unit = station(state, 'armoredCar', lane[0]);
+
+  const order = startAutoConquest(state, unit.id);
+  assert(order.ok, 'a land unit can campaign against an enemy');
+  equal(order.countryId, them, 'it selects the enemy');
+  for (let i = 1; i <= 4; i++) {
+    state.tick++;
+    runMilitary(state);
+    equal(unit.tileId, lane[i].id, `it advances exactly one tile on tick ${i}`);
+    equal(lane[i].countryId, state.home, `it occupies tile ${i} as it crosses it`);
+  }
+  equal(isAlive(state, them), false, 'taking the final tile annexes the country');
+  assert(!startAutoConquest(state, unit.id).ok, 'the order is unavailable once no enemy at war has land');
+});
+
+// The gate USED to be narrower: the enemy also had to have no formations left,
+// which made this a tidying-up order for a war already won rather than the "go
+// and take them" button it reads as. The fighting needs no rule of its own —
+// `resolveWarCombat` triggers on proximity plus `war` and has never taken an
+// attack order — so marching at the enemy IS attacking it.
+test('an automatic campaign needs only an enemy at war that still holds ground', () => {
+  const state = fixture();
+  const lane = marchLane(state, 5);
+  const them = other(state);
+  const unit = station(state, 'infantry', lane[0]);
+
+  assert(!canAutoConquer(state, unit).ok, 'no war, no campaign');
+  equal(canCampaign(state), false, 'and the army-wide button is not offered either');
+
+  setRelation(state, state.home, them, 'war');
+  // ...and they field a formation of their own, which used to be what refused
+  // the order outright.
+  const theirs = state.tiles.find((t) => t.countryId === them && t.terrain !== 'water');
+  station(state, 'infantry', theirs, them);
+  assert(canAutoConquer(state, unit).ok, 'a defended enemy can still be campaigned against');
+  assert(enemiesOf(state, state.home).includes(them), 'and they count as an enemy holding land');
+  equal(canCampaign(state), true, 'so the army-wide button is offered');
+
+  const order = orderAutoConquest(state, unit.id, true);
+  assert(order.ok, 'the order is taken');
+  equal(unit.autoConquerCountryId, them, 'and it marches at them');
+
+  // The SAME button pressed again is what calls it off. It is a separate entry
+  // point rather than a toggle inside the start, so a campaign the system has
+  // already ended cannot be restarted by trying to stop it.
+  assert(orderAutoConquest(state, unit.id, false).ok, 'the same order stops it');
+  equal(unit.autoConquerCountryId, null, 'the campaign is off');
+  assert(!cancelAutoConquest(state, unit.id).ok, 'and stopping a formation that is not campaigning is refused');
+});
+
+test('a campaign moves on to the next enemy rather than ending with the first', () => {
+  const state = fixture();
+  const lane = marchLane(state, 6);
+  const [them, alsoThem] = COUNTRY_IDS.filter((id) => id !== state.home).slice(0, 2);
+  for (const tile of state.tiles) if (tile.countryId === them || tile.countryId === alsoThem) tile.countryId = null;
+  // Two enemies along one lane, a tile each: the first is annexed almost at
+  // once, so the campaign has to find the second by itself or it stops there.
+  claim(state, them, lane[1].x, lane[1].y, 'plain');
+  claim(state, alsoThem, lane[3].x, lane[3].y, 'plain');
+  setRelation(state, state.home, them, 'war');
+  setRelation(state, state.home, alsoThem, 'war');
+  const unit = station(state, 'infantry', lane[0]);
+
+  assert(startAutoConquest(state, unit.id).ok, 'the campaign begins');
+  equal(unit.autoConquerCountryId, them, 'against the nearer of the two');
+  for (let i = 0; i < 8; i++) { state.tick++; runMilitary(state); }
+  equal(lane[1].countryId, state.home, 'the first enemy tile was taken');
+  equal(lane[3].countryId, state.home, 'and so was the second enemy, without a new order');
+});
+
+test('one order can campaign a whole army, and one can call every campaign off', () => {
+  const state = fixture();
+  const lane = marchLane(state, 8);
+  const them = other(state);
+  setRelation(state, state.home, them, 'war');
+  const foot = station(state, 'infantry', lane[0]);
+  const car = station(state, 'armoredCar', lane[1]);
+  // An aircraft occupies nothing, so a bulk order must refuse it for exactly the
+  // reason a single one does — a campaign is ground being taken.
+  const plane = station(state, 'aircraft', lane[2]);
+
+  const all = orderAutoConquestAll(state, null, true);
+  assert(all.ok, 'the whole army is ordered at once');
+  equal(all.ordered, 2, 'both land formations campaign');
+  assert(foot.autoConquerCountryId && car.autoConquerCountryId, 'the two land formations are campaigning');
+  equal(plane.autoConquerCountryId ?? null, null, 'the aircraft is not');
+
+  const off = orderAutoConquestAll(state, null, false);
+  assert(off.ok, 'and one order calls them all off');
+  equal(off.ordered, 2, 'both campaigns stopped');
+  assert(!foot.autoConquerCountryId && !car.autoConquerCountryId, 'nothing is campaigning');
+
+  // ...and the same order confined to a SELECTION touches only what is in it.
+  assert(orderAutoConquestAll(state, [car.id], true).ok, 'a selection can be ordered on its own');
+  equal(foot.autoConquerCountryId ?? null, null, 'the formation outside the selection is untouched');
+  assert(Boolean(car.autoConquerCountryId), 'and the one inside it is campaigning');
+});
+
+test('a campaign cannot be started in peacetime by any route', () => {
+  const state = fixture();
+  const lane = marchLane(state, 3);
+  const unit = station(state, 'infantry', lane[0]);
+  equal(orderAutoConquestAll(state, null, true).ok, false, 'the bulk order is refused');
+  equal(unit.autoConquerCountryId ?? null, null, 'and nothing is campaigning');
+});
+
+test('a selection box picks out your own formations and orders them together', () => {
+  const state = fixture();
+  const lane = marchLane(state, 6);
+  const them = other(state);
+  const mine = station(state, 'infantry', lane[1]);
+  const alsoMine = station(state, 'tank', lane[2]);
+  const outside = station(state, 'infantry', lane[5]);
+  const theirs = station(state, 'infantry', lane[3], them);
+
+  const box = unitsInBox(state, lane[1].x, lane[1].y, lane[3].x, lane[3].y);
+  assert(box.includes(mine.id) && box.includes(alsoMine.id), 'both of yours inside the box are caught');
+  assert(!box.includes(theirs.id), 'a foreign formation inside it is not');
+  assert(!box.includes(outside.id), 'and one of yours outside it is not');
+
+  // ...and a selection is ordered as one. Every formation in it marches, and a
+  // formation left out of it does not.
+  const order = orderMoveMany(state, box, lane[4]);
+  assert(order.ok, 'the selection takes the order');
+  equal(order.ordered, 2, 'both selected formations march');
+  equal(mine.orderTileId, lane[4].id, 'the first is marching');
+  equal(alsoMine.orderTileId, lane[4].id, 'and so is the second');
+  equal(outside.orderTileId ?? null, null, 'the unselected one is not');
+
+  // Grouping a selection goes through `joinGroup`, so land stays with land and
+  // this file needs to know nothing about domains.
+  assert(groupMany(state, box).ok, 'the selection groups');
+  assert(mine.groupId != null && mine.groupId === alsoMine.groupId, 'into one column');
 });
 
 test('a formation can walk BACKWARDS off a peninsula to get where it is going', () => {

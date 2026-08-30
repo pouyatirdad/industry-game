@@ -165,6 +165,11 @@ Two consequences are load-bearing:
   before the shopkeeper opens. That single ordering is what gives one teeth — over-commit your own
   supply and you really will starve your own people for it — and whatever survives every contract is
   what its own factories, and then its own people, get to work with.
+- **`relay` runs between `contracts` and `distribute`.** A nation's depots are a NETWORK, not a
+  set of islands: a depot hauls to a neighbouring depot whatever the factories on the far side of
+  it are short of. It is after `contracts` because a promise still outranks a smelter, and before
+  `distribute` so a cargo hauled across the country reaches the plant that asked for it on the same
+  tick rather than a tick later.
 - **`distribute` runs after `contracts` and BEFORE `domestic`.** A factory draws its inputs out of
   the depot before the counter opens, because otherwise a nation's own population outbids its own
   industry for free: an imported cargo of coal landed in the warehouse and was sold over the counter
@@ -193,6 +198,33 @@ Two consequences are load-bearing:
 
 Treat the order as a contract. If a change seems to need a different order, that is a game-design
 question for the user.
+
+### Depots are a NETWORK, not a set of islands
+
+`relay` in `systems/logistics.js`. A depot serves the industry inside its own radius and nothing
+further, which is why a nation whose power stations stand in the east and whose copper smelter
+stands in the west could watch one warehouse fill with electricity while the other starved: the two
+never spoke, and the smelter sat `starved` for ever with the goods it wanted already in the country.
+
+- **Two depots of one owner are NEIGHBOURS when their catchment areas touch** — Chebyshev distance
+  no greater than the SUM of their radii. So a warehouse built halfway between two distant ones
+  genuinely bridges them, which is the whole reason a player would put one there. The rule is
+  derived from `radius` in `buildings.js`; there is no distance written in the system.
+- **Cargo is PULLED, never pushed, and only toward a factory that is actually short of it.** A depot
+  with nothing near it that eats aluminium never accumulates aluminium, so this cannot become a
+  second, invisible way to hoard. Need is measured exactly as `distribute` measures it — `inCap`
+  minus what the plant is holding — so the two can never disagree about what "short" means.
+- **Flow is strictly DOWN a hop gradient, and that is what makes it acyclic.** `hopsToNeed` is a BFS
+  from every depot that wants the commodity; a depot only ever draws from a neighbour at the same
+  depth or deeper. Nothing can be handed back and forth, and a depot never gives away what its own
+  industry is waiting for — a donor offers `held - need`, never its whole shelf.
+- **An unmet request passes OUTWARD as `pending`.** Shallower depots are served first, so by the
+  time a deep one is reached it knows everything being asked of it: that is what makes the middle
+  warehouse ask the eastern one for power because the western one asked IT. One hop a tick, which is
+  the same visible latency `distribute` has always had.
+- It is owner-scoped like the rest of `logistics.js` — a government's depots are never free
+  infrastructure for anybody else's industry — and it moves nothing across a border, so it is not a
+  second way for goods to leave the country.
 
 ### How money actually moves
 
@@ -562,6 +594,21 @@ Contracts are settled against **depots indexed once per tick** (`depotsByOwner`)
 `distribute`, because a tick that settles a hundred of them must not scan every building in the
 world twice per contract.
 
+**A contract warning says which side is currently at risk, not whether it ever missed once.**
+`lastBuyerShort` and `lastSellerShort` retain the latest settlement's audit, while
+`refreshSupplyHealth` recalculates a seller's `supplyShort` every tick from `spareRates` minus its
+other promises. Thus building enough oil production clears the red seller warning immediately, but
+the earlier missed quantity and penalties remain historical facts. A buyer can still be short because
+it cannot pay past its payroll reserve or has no warehouse space; its own last-delivery warning must
+not be mistaken for the exporter lacking stock.
+
+**The Trade tab can draft an export without guesswork.** `suggestExportContract` starts from the
+selected commodity, subtracts existing export promises from the player's sustainable surplus, then
+chooses the solvent country with unmet demand and the highest live market price (need breaks a price
+tie). It will not recommend a buyer that fails the ordinary underwriting check. The **Suggest best
+buyer** button only fills the draft — partner, one-tick quantity and explanatory price/need/surplus
+data — and the player still sends the contract request explicitly.
+
 There is **no per-nation contract cap**. A country may hold as many contracts as it can arrange; the
 guardrail is commodity cover, not a raw count. Automatic exchange and AI-seeking paths must subtract
 already promised export rates before offering more of the same commodity, so removing a count limit
@@ -657,8 +704,8 @@ trade is not open borders. What changed is **how a relation comes into being**.
   of pacts is a stack nobody reads — the same reason a declined licence has a cooldown.
 - **A proposal expires on the TICK clock**, not the wall clock the contract and licence offers use.
   A treaty is not a thing you answer in five seconds, and a paused game must not decide one for you.
-  That is why the pact card in the inbox has no animated countdown bar and says its remaining ticks
-  in words instead.
+  `CONFIG.diplomacy.proposalTtl` is **10** ticks, so an unanswered pact clears promptly while the
+  pact card still says its remaining ticks in words rather than using a wall-clock bar.
 
 The file is named `relations.js` rather than `diplomacy.js` on purpose: the old `systems/diplomacy.js`
 was about permission to TRADE and is gone for good (see the footgun below). This one is about
@@ -868,6 +915,38 @@ The consequences are worth stating, because each one used to go the other way:
   - **Formations STACK.** Only `canDeployUnit` refuses occupied ground — you may not *raise* a unit
     on top of another, but you may march onto one, and a group converging on a destination does
     exactly that. `unitOnTile` still returns one unit; the map indexes a tile to a LIST.
+- **A war can be fought automatically, and the only condition is that an ENEMY EXISTS.** A land
+  formation's **Auto conquer** button appears whenever its government is at war with somebody who
+  still holds ground (`enemiesOf`, the whole gate, asked by `canAutoConquer`). `startAutoConquest`
+  fixes the nearest such country as its objective, then `advanceAutoConquests` picks that country's
+  nearest reachable land and walks **one tile per tick** — even for faster formations — taking every
+  crossed tile through the usual `takeGround` rule.
+  - **There is no separate "attack" half, and there must not be one.** `resolveWarCombat` triggers on
+    proximity plus a relation of `war` and has never taken an attack order, so a formation that
+    marches into a defended country is fought by whatever it walks into. "March at the enemy and take
+    its ground" IS "attack the enemy" — adding a combat path here would be a second copy of a rule
+    that already exists.
+  - It used to also require that enemy to have **no formations left**, which made it a tidying-up
+    order for a war already won and nothing else. The fighting is the half a player most wants
+    automated.
+  - **Annexing one enemy does not end the campaign**: `advanceAutoConquests` retargets through
+    `pickCampaignTarget` to the next enemy still holding land, because the last tile of one country
+    silently standing the whole army down while the war ran on was the obvious wrong answer.
+  - **Pressing the button again calls it off** — `cancelAutoConquest`, a separate entry point rather
+    than a toggle inside the start, because "stop" has to work on a formation whose campaign the
+    system has already ended for it and a toggle would restart that one instead. `stopAutoConquest`
+    is the single place a campaign ends either way; its `announce` flag is what lets the deliberate
+    stop say something different from the one that ran out of ground.
+  - **`orderAutoConquestAll` is the same order for many at once** — a selection, or your whole army
+    when nothing is selected (`unitIds == null`). It goes through `startAutoConquest` per formation,
+    so a bulk order cannot write anything a single one could not: an aircraft is refused for the same
+    reason, and so is a campaign in peacetime. What it adds is ONE alert for the lot.
+  - Aircraft never receive the button (an aircraft occupies nothing), and issuing a normal Move
+    replaces a campaign.
+  - **`nearestAutoConquestTile` and `nearestEnemyLandDistance` go through `landOf`, not `state.tiles`.**
+    They walked a million tiles per formation per tick, which was affordable only while this was a
+    rare order. It is an ordinary one now and a whole army may be on it, so both read the country
+    index `stateIndustry` and `stateMilitary` already pay for.
 - **Formations can be GROUPED, and a group is a `groupId` and nothing else** — no object, no list, no
   `Map` — so it round-trips through the save like everything else on `state`. What it buys is one
   thing: an order given to any member is given to all of them (`moveMilitaryUnit` walks
@@ -883,6 +962,27 @@ The consequences are worth stating, because each one used to go the other way:
     is assembled in a run of clicks. Clicking anything else ends it. The map rings the formations
     that could legally join in green, which is how "aircraft only with aircraft" is something you
     see rather than a refusal you discover by clicking.
+- **AN ARMY IS SELECTED THE WAY FILES ARE, and a selection is a thing you HAVE rather than a thing
+  the pointer is carrying.** `ui.selection` is a plain array of unit ids — the only piece of pointer
+  state that is NOT exclusive with the other four, because picking six formations out and then
+  picking up a building are not contradictory statements. `ui.orderSelection` is the mode that
+  SPENDS one: while it is set, the next tile click is a march order for every id in the list
+  (`orderMoveMany`), and it is checked before `ui.moveUnit` because a selection is the bigger order.
+  - **The gesture is a rubber band, because the map has no empty space to drag on.** Panning is
+    dragging — the scrollbars are gone — so a plain drag cannot be the marquee. **Shift-drag** starts
+    a fresh selection box, **Ctrl/⌘-drag** adds to the one you have, and a modified drag under the
+    four-pixel threshold is treated as an additive CLICK, which is how one formation is added or
+    removed. A plain click replaces the selection with whatever it landed on, exactly as it does in a
+    file list; Escape clears it.
+  - **The band itself lives on `view`, not on `ui`.** It exists only between a pointer going down and
+    coming up again, so nothing outside `map.js` has any use for it — and `boxTiles` converts it from
+    content pixels to tiles ONCE, so the drawing and the selection can never disagree about which
+    tiles the box covered. `unitsInBox` in `actions.js` is what turns that rectangle into ids, so the
+    map drags a box without knowing what a formation is.
+  - **Every button on the army card acts on the SELECTION when there is one and on the whole army
+    when there is not**, and says which in its label. That is what makes "order these six" and "order
+    all thirty" one control rather than two sets of them — and it is how the campaign is enabled or
+    disabled for a whole army in one press.
 - **The five are told apart by what they consume**, and that ordering is covered by a test:
   infantry eat food and nothing else; an armoured car burns less fuel than a tank, and a tank less
   than an aircraft; artillery burn no fuel at all and eat less than infantry.
@@ -1110,7 +1210,8 @@ the panel is unfolded at all, `ui.leftOpen` whether the build panel is, `ui.open
 has its numbers unfolded, `ui.goodsView` whether the commodity book reads the tick or the game,
 `ui.rankSort` which column the nation table is ranked by, `ui.bookFilter` whether the exchange shows
 everybody's terms or only yours, `ui.moveUnit`/`ui.groupUnit` which formation is waiting for a
-destination or for companions, and `ui.draft` the contract you are writing but have not signed —
+destination or for companions, `ui.selection`/`ui.orderSelection` which formations you have picked
+out and whether their march order is armed, and `ui.draft` the contract you are writing but have not signed —
 `ui.panelTall` how much room the panel gets when it is open, and `ui.eventFilter` whose world news
 the News tab is showing — all on `ui`, so none of it reaches the save file. Ten tabs do not fit one
 row of the panel, so **the strip wraps**: a tab you cannot read is not a tab you will click.
@@ -1133,7 +1234,9 @@ constantly:
   on the strip worth interrupting whatever you are reading.
 
 **The keyboard is a whole control surface, and `main.js`'s keydown handler is all of it**:
-`Space` runs/pauses, `Esc` drops whatever the pointer is carrying, `B` folds the build dock,
+`Space` runs/pauses, `Esc` drops whatever the pointer is carrying — and clears the marquee selection
+and any march order armed on it, since "I am carrying nothing" and "I have picked nothing out" are
+the same statement — `B` folds the build dock,
 `T` makes the top panel tall, `+`/`-` zoom, `1`–`9` and `←`/`→` pick a view, **`H` finds your own
 country again** (`onCenterHome`, the same call the ⌖ button makes) and **`M` moves the selected
 formation** (`onMoveSelected` → `onMoveUnit`, the same call the Move button makes). Two rules hold
@@ -1193,15 +1296,18 @@ Five things earn their own view rather than sharing one:
 - **Summary** is derived from the other four and owns nothing. It exists so the answer to "how is the
   nation doing" is not four tabs of reading.
 - **Goods** (`src/ui/resources.js`, pane id `resources`) is the commodity book: **ONE table, one line
-  a commodity, thirteen columns.** Prices and Goods were two tabs, then two tables stacked in one
+  a commodity, fourteen columns.** Prices and Goods were two tabs, then two tables stacked in one
   pane, then two tables side by side — every one of which meant the price of coal was in one place
   and what you were doing with coal was in another, though both were the same thirty-four rows in the
-  same order. On one line: the first group of columns is the market named in the header (price,
+  same order. On one line: the first group of columns is the market named in the header (live price,
+  base price,
   drift, need, met, held — any nation on earth, chosen in the select), the second is your own book
   (made, burned, sold, balance, shipped out, bought in, per tick or for the whole game from
   `state.ledger`), and the `↗`/`↙` flags at the end are your policy. It fits because the table is
-  `table-layout: fixed` with one fixed name column and twelve even figure columns, at a font size
-  smaller than the rest of the panel.
+  `table-layout: fixed` with one fixed name column and thirteen even figure columns, at a font size
+  smaller than the rest of the panel. **Base** sits directly beside the selected market's live
+  **Price**: it is the commodity definition's fixed reference price, so the adjacent drift is
+  readable without inferring its baseline.
   **The two halves are different nations whenever the select is not you**, which is the point — what
   Germany pays and how short it is, beside what you can actually spare — so the group header row is
   load-bearing and says whose figures each half is. The bracket in the `In` column is the feedstock
@@ -1235,7 +1341,9 @@ Five things earn their own view rather than sharing one:
 - **Ranks** scores all countries against each other. The scoring rule (`scoreNations` in
   `src/ui/ranks.js`) is the one piece of UI with a rule rather than a layout in it, so it is covered
   by the suite — which means it must stay free of the DOM, like a system. Its measures are
-  normalised against the best in the world, so a score is a standing rather than a unit.
+  normalised against the best in the world, so a score is a standing rather than a unit. Headers and
+  cells are centred deliberately: dense comparative columns scan vertically more cleanly when their
+  labels and values share the same centre line.
 - **Diplomacy** is where relations are asked for, and it is no longer a dropdown per nation — that
   said the quiet part out loud, that a relation was something you SET. Each of the 257 rows carries
   four buttons in a fixed order (**Ally / Access / Peace / War**), a line saying where the two of
@@ -1253,6 +1361,13 @@ Five things earn their own view rather than sharing one:
   every non-self country.
 - **Selected** is the old inspector. Clicking the map lands there only when no build tool is in hand:
   laying out a chain must not yank the panel away from the list you were reading.
+  It renders **two cards, not one**: an ARMY card above whatever the clicked tile is, shown whenever
+  you have a formation at all. That card is the only place a selection can be spent, and having to
+  hunt for a formation to click on before you can order the other twenty is not a gesture — so it is
+  not gated on the click having landed on one. Both cards are in the pane's single `dataset.sig`
+  (`armySig` — the army's size, how much of it is selected, how much is campaigning, and whether a
+  campaign is available at all), because a formation joining a campaign while you are looking at a
+  coalfield still has to repaint the buttons.
 
 ### Messages and offers expire differently
 
@@ -1286,7 +1401,9 @@ never repaint — with no error. The tech-row signature uses a **boolean** for w
 affordable rather than the cash figure, so the tree does not rebuild on every tick the treasury moves.
 The unit inspector carries the formation's `orderTileId` and its group's **SIZE** rather than its
 `groupId`: a companion joining or standing down leaves the id untouched, and the panel is showing the
-size — so the id alone would have gone quietly stale.
+size — so the id alone would have gone quietly stale. It also carries `armySig`, and that one is in
+the signature **even when no tile is selected at all** (`none|${armySig}`), because the army card is
+shown whether or not a click has landed anywhere.
 
 **The factory list diffs on two levels, and the outer one is a list of ids** (`dataset.ids`). Rows are
 rebuilt only when the set of your sites changes; every tick after that writes the numbers into the
@@ -1386,6 +1503,15 @@ Consequences worth knowing before editing the map:
   showing — and not worth a per-tile question over a viewport that can be the whole planet. A
   grouped unit wears a second ring for the same reason: grouping changes nothing you can see until
   an order moves four formations at once, which is exactly the surprise a marker prevents.
+- **A formation in `ui.selection` wears a cyan rim, and the rubber band is painted LAST**, over the
+  frontiers and the labels, because it is a gesture rather than part of the world. The selection is
+  turned into a `Set` once per draw for the same reason everything else in the tile loop is indexed
+  once. The rim and the band are deliberately the same colour: "these six" has to mean one thing in
+  both places, and it is the same cyan the army card's Move button lights up in.
+- **A drag with Shift or Ctrl/⌘ held is a SELECTION BOX, not a pan**, and `attachPan` decides that on
+  `pointerdown` — before `from` is ever set, so the map cannot lurch. `draw` is called directly on
+  each `pointermove` of a band: a render happens on a TICK, and a paused game would otherwise show
+  a rubber band that never moved.
 
 Zoom is `ui.zoom`, an index into `CONFIG.zoomLevels`. It lives on `ui`, not `state`, so it never
 reaches the save file. Glyphs are dropped below 10px because they are illegible there.
@@ -1499,11 +1625,16 @@ deadlock chains and is covered by a test.
 site — which scans every building in the world — is the hottest pair of loops in the game, and at two
 thousand buildings it was over half the tick on its own. The index is built in `state.buildings`
 order, so the order goods are drawn in is unchanged and ticks stay deterministic. `warehousesServing`
-itself is still the answer for one-off questions from the UI and from state industry.
+itself is still the answer for one-off questions from the UI and from state industry. `relay` pays
+the same index once and then works per OWNER rather than per site: the depot graph is quadratic in
+one nation's depots (tens, not thousands) and the BFS is per commodity over that graph, so it costs
+about what `distribute` costs and does not grow with the world.
 
 **`worldIndex.js` and `worldBalance.js` are shared AI infrastructure.** `worldIndex.js` owns
-`tilesByCountry`/`landOf`, cached on `state.tiles` plus `state.mapVersion`, and is used by both state
-industry and state military. `worldBalance.js` owns world demand, supply, offered stock and scarcity;
+`tilesByCountry`/`landOf`, cached on `state.tiles` plus `state.mapVersion`, and is used by state
+industry, state military and `military.js` itself — an automatic campaign asks "where is that
+country" every tick per formation, and walking a million tiles to answer it is what the index is for.
+`worldBalance.js` owns world demand, supply, offered stock and scarcity;
 state industry and research should read it rather than growing private copies of the same scan.
 
 **The exchange indexes stock and payroll once per posting round.** Asking `warehouseStock`/`projectedWages` per

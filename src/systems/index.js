@@ -1,4 +1,4 @@
-import { collect, distribute, spoil } from './logistics.js';
+import { collect, distribute, relay, spoil } from './logistics.js';
 import { produce } from './production.js';
 import { payWages } from './economy.js';
 import { sellDomestic } from './domestic.js';
@@ -29,6 +29,9 @@ import { runStateMilitary } from './stateMilitary.js';
 //                            you really will starve your own people for it.
 //                            Whatever survives every contract is what the home
 //                            market and then the spot market get to work with.
+// relay before distribute -> depots of one owner hand goods along to each
+//                            other, so a chain whose ends are too far apart for
+//                            one warehouse is fed by a warehouse in between.
 // distribute after contracts -> and BEFORE domestic. A factory draws its inputs
 //                            out of the depot before the counter opens, because
 //                            otherwise a nation's own population outbids its own
@@ -84,6 +87,12 @@ export const PIPELINE = [
   ['produce', produce],
   ['wages', payWages],
   ['contracts', runContracts],
+  // A nation's depots are a NETWORK, not a set of islands: a warehouse hauls to
+  // the neighbouring warehouse whatever the factories on the far side of it are
+  // short of. It runs after contracts (a promise still outranks a shopkeeper and
+  // a smelter alike) and before distribute, so a cargo that has just been hauled
+  // across the country reaches the plant that asked for it on the same tick.
+  ['relay', relay],
   ['distribute', distribute],
   ['domestic', sellDomestic],
   ['carry', spoil],
