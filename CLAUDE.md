@@ -1215,7 +1215,11 @@ Consequences worth knowing:
   sheet, the tab strip is one sideways-scrolling row with sticky close/tall buttons, and the build
   dock deliberately overrides the desktop "two rows, always" grid into **one row** of touch-sized
   boxes. The dock height is the `--dock` custom property; tune that variable rather than chasing
-  individual panel heights.
+  individual panel heights. The mobile dock is `min(184px, 30dvh)` plus the device safe area, with
+  132px build cards and 36px touch targets. `--dock` includes `env(safe-area-inset-bottom)` and the
+  app uses `100dvh` (with `100vh` fallback): never replace these with bare `vh` on phone layouts, or
+  browser and gesture-navigation chrome can cover the bottom build controls. `viewport-fit=cover` is
+  intentional; the top bar and dock both account for their respective safe areas.
 - **The mobile overflow menu is `data-open`, not `hidden`.** `.controls__more` is a real sheet under
   the `...` button on phones and ordinary controls on desktop, so the closed mobile state is
   `.controls__more[data-open="false"] { display: none; }`. The renderer toggles `data-open`; do not
